@@ -207,7 +207,8 @@ public:
     void ProcessDownloadImages();
     /// V3.2 Phase A (guest thread): proactively disarms watched image traps in user space before
     /// memcpy / tiling / block free so guest threads never fault into SIGSEGV -> DrainDrawPipe().
-    void DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty);
+    /// Returns true if any registered image overlapped [addr, addr + size).
+    bool DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty);
     /// V3.2 Phase B (Stage B stream order): retires freed blocks and uploads .tpf/.gnf assets
     /// directly into DEVICE_LOCAL VkImages transitioned to eShaderReadOnlyOptimal.
     void ProcessDirectTextureEvents(Core::MemoryManager* memory);

@@ -28,7 +28,13 @@ void TextureCache::RegisterImage(ImageId image_id) {
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     image.lru_touched_tick = gc_tick;
     ImageRegistry::ForEachPageIndex(image.info.guest_address, image.info.guest_size,
-                                    [&](u64 page) { registry.At(page).push_back(image_id); });
+                                    [&](u64 page) {
+                                        auto& ids = registry.At(page);
+                                        if (ids.empty()) {
+                                            registry.SetPageActive(page);
+                                        }
+                                        ids.push_back(image_id);
+                                    });
 }
 
 void TextureCache::UnregisterImage(ImageId image_id) {
@@ -53,6 +59,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
             ASSERT_MSG(it != ids->end(), "image missing from page {:#x}",
                        page << ImageRegistry::PageBits);
             ids->erase(it);
+            if (ids->empty()) {
+                registry.ClearPageActive(page);
+            }
         });
 }
 
@@ -237,22 +246,28 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
     });
 }
 
-void TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) {
+bool TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) {
     if (addr == 0 || size == 0) {
-        return;
+        return false;
     }
+    const VAddr pages_begin = mark_dirty ? BbMem::PageStart(addr) : addr;
+    const VAddr pages_end = mark_dirty ? BbMem::NextPage(addr + size - 1) : (addr + size);
+    if (!registry.AnyPageActive(pages_begin, pages_end - pages_begin)) {
+        return false;
+    }
+    bool any_overlapped = false;
     std::scoped_lock lock{mutex};
     if (!mark_dirty) {
         ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
+            any_overlapped = true;
             if (False(image.flags & ImageFlagBits::DirectImmutable) && image.IsTracked()) {
                 UntrackImage(image_id);
             }
         });
-        return;
+        return any_overlapped;
     }
-    const VAddr pages_begin = BbMem::PageStart(addr);
-    const VAddr pages_end = BbMem::NextPage(addr + size - 1);
     ForEachImageInRegion(pages_begin, pages_end - pages_begin, [&](ImageId image_id, Image& image) {
+        any_overlapped = true;
         if (True(image.flags & ImageFlagBits::DirectImmutable) || !image.IsTracked()) {
             return;
         }
@@ -269,6 +284,7 @@ void TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) 
             MarkAsMaybeDirty(image_id, image);
         }
     });
+    return any_overlapped;
 }
 
 void TextureCache::WatchImage(const Image& image, const char* what) {

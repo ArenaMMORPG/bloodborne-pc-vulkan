@@ -14,6 +14,7 @@ namespace {
 
 std::atomic<TextureCache*> g_active_cache{nullptr};
 std::atomic<u32> g_pending_count{0};
+std::atomic<u32> g_pending_registers{0};
 std::mutex g_queue_mutex;
 std::vector<Event> g_queue;
 
@@ -23,6 +24,9 @@ void PushEvent(const Event& ev) {
         g_queue.reserve(1024);
     }
     g_queue.push_back(ev);
+    if (ev.kind == EventKind::RegisterAsset) {
+        g_pending_registers.fetch_add(1, std::memory_order_release);
+    }
     g_pending_count.fetch_add(1, std::memory_order_release);
 }
 
@@ -33,6 +37,7 @@ void SetActiveCache(TextureCache* cache) noexcept {
     if (!cache) {
         std::scoped_lock lock{g_queue_mutex};
         g_queue.clear();
+        g_pending_registers.store(0, std::memory_order_release);
         g_pending_count.store(0, std::memory_order_release);
     }
 }
@@ -48,10 +53,12 @@ void DrainEvents(std::vector<Event>& out) {
     }
     std::scoped_lock lock{g_queue_mutex};
     if (g_queue.empty()) {
+        g_pending_registers.store(0, std::memory_order_release);
         g_pending_count.store(0, std::memory_order_release);
         return;
     }
     out.swap(g_queue);
+    g_pending_registers.store(0, std::memory_order_release);
     g_pending_count.store(0, std::memory_order_release);
 }
 
@@ -90,15 +97,20 @@ void bb_direct_vk_retire_gpu_range(const void* gpu_addr, uint64_t byte_size) noe
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    bool has_registered_image = false;
     if (auto* cache =
             VideoCore::DirectTextures::g_active_cache.load(std::memory_order_acquire)) {
-        cache->DisarmWatchedRange(addr, static_cast<size_t>(byte_size), /*mark_dirty=*/false);
+        has_registered_image =
+            cache->DisarmWatchedRange(addr, static_cast<size_t>(byte_size), /*mark_dirty=*/false);
     }
-    VideoCore::DirectTextures::Event ev{};
-    ev.kind = VideoCore::DirectTextures::EventKind::RetireRange;
-    ev.addr = addr;
-    ev.byte_size = byte_size;
-    VideoCore::DirectTextures::PushEvent(ev);
+    if (has_registered_image ||
+        VideoCore::DirectTextures::g_pending_registers.load(std::memory_order_acquire) != 0) {
+        VideoCore::DirectTextures::Event ev{};
+        ev.kind = VideoCore::DirectTextures::EventKind::RetireRange;
+        ev.addr = addr;
+        ev.byte_size = byte_size;
+        VideoCore::DirectTextures::PushEvent(ev);
+    }
     bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
 }
 

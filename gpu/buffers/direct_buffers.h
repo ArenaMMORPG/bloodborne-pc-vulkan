@@ -86,11 +86,12 @@ public:
     /// stale immutable data can never shadow subsequent GPU-written bytes.
     void OnGpuWrite(VAddr addr, u64 size) noexcept;
 
-private:
     static constexpr u64 kMaxGuestVa = 1ULL << 36; // 64 GiB guest VA coverage
     static constexpr u32 kPageShift64K = 16u;
     static constexpr size_t kBitmapWords =
         static_cast<size_t>((kMaxGuestVa >> kPageShift64K) / 64ULL); // 16384 u64s = 128 KiB
+
+private:
 
     struct Entry {
         u32 resource_id{0};

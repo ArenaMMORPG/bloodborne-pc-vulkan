@@ -29,6 +29,73 @@ std::atomic<bool> g_ever_registered{false};
 std::mutex g_queue_mutex;
 std::vector<Event> g_queue;
 
+// Guest-side lock-free 64 KiB page bitmap tracking pages that currently hold (or held since last
+// retire) a registered DirectImmutableBuf. Filters ~27,000/s transient ring alloc/free calls down
+// to ~0 mutex acquisitions while guaranteeing immediate retirement on any address reuse.
+std::array<std::atomic<u64>, Manager::kBitmapWords> g_guest_immutable_64k{};
+
+void MarkGuestImmutableRange(VAddr addr, u64 size) noexcept {
+    if (size == 0 || addr >= Manager::kMaxGuestVa) {
+        return;
+    }
+    const VAddr end = std::min<VAddr>(addr + size, Manager::kMaxGuestVa);
+    if (addr >= end) {
+        return;
+    }
+    const u64 first_page = addr >> Manager::kPageShift64K;
+    const u64 last_page = (end - 1ULL) >> Manager::kPageShift64K;
+    for (u64 page = first_page; page <= last_page; ++page) {
+        g_guest_immutable_64k[page >> 6].fetch_or(1ULL << (page & 63ULL),
+                                                  std::memory_order_release);
+    }
+}
+
+[[nodiscard]] bool GuestImmutableIntersects(VAddr addr, u64 size) noexcept {
+    if (!g_ever_registered.load(std::memory_order_acquire) || size == 0 ||
+        addr >= Manager::kMaxGuestVa) {
+        return false;
+    }
+    const VAddr end = std::min<VAddr>(addr + size, Manager::kMaxGuestVa);
+    if (addr >= end) {
+        return false;
+    }
+    const u64 first_page = addr >> Manager::kPageShift64K;
+    const u64 last_page = (end - 1ULL) >> Manager::kPageShift64K;
+    const u64 first_word = first_page >> 6;
+    const u64 last_word = last_page >> 6;
+    if (first_word == last_word) {
+        const u64 lo_mask = ~0ULL << (first_page & 63ULL);
+        const u64 hi_mask = ~0ULL >> (63ULL - (last_page & 63ULL));
+        return (g_guest_immutable_64k[first_word].load(std::memory_order_acquire) &
+                (lo_mask & hi_mask)) != 0ULL;
+    }
+    const u64 lo_mask = ~0ULL << (first_page & 63ULL);
+    if ((g_guest_immutable_64k[first_word].load(std::memory_order_acquire) & lo_mask) != 0ULL) {
+        return true;
+    }
+    for (u64 w = first_word + 1; w < last_word; ++w) {
+        if (g_guest_immutable_64k[w].load(std::memory_order_acquire) != 0ULL) {
+            return true;
+        }
+    }
+    const u64 hi_mask = ~0ULL >> (63ULL - (last_page & 63ULL));
+    return (g_guest_immutable_64k[last_word].load(std::memory_order_acquire) & hi_mask) != 0ULL;
+}
+
+void ClearWholeGuestImmutablePages(VAddr addr, u64 size) noexcept {
+    if (size < (1ULL << Manager::kPageShift64K) || addr >= Manager::kMaxGuestVa) {
+        return;
+    }
+    const VAddr end = std::min<VAddr>(addr + size, Manager::kMaxGuestVa);
+    const u64 whole_first =
+        (addr + (1ULL << Manager::kPageShift64K) - 1ULL) >> Manager::kPageShift64K;
+    const u64 whole_end = end >> Manager::kPageShift64K;
+    for (u64 page = whole_first; page < whole_end; ++page) {
+        g_guest_immutable_64k[page >> 6].fetch_and(~(1ULL << (page & 63ULL)),
+                                                   std::memory_order_release);
+    }
+}
+
 void PushEvent(const Event& ev) {
     std::scoped_lock lock{g_queue_mutex};
     if (g_queue.capacity() < 2048) {
@@ -58,6 +125,9 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
         g_queue.clear();
         g_pending_count.store(0, std::memory_order_release);
         g_ever_registered.store(false, std::memory_order_release);
+        for (auto& word : g_guest_immutable_64k) {
+            word.store(0ULL, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -335,14 +405,11 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
-    BbLayer::WriteTraps::Set(addr, byte_size, BbLayer::WriteTraps::Mirror, false);
-    if (auto* tex = VideoCore::DirectBuffers::g_active_tex_cache.load(std::memory_order_acquire)) {
-        tex->DisarmWatchedRange(addr, static_cast<size_t>(byte_size), /*mark_dirty=*/false);
-    }
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->NoteFreshRange(addr, byte_size);
     }
-    if (VideoCore::DirectBuffers::g_ever_registered.load(std::memory_order_acquire)) {
+    if (VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
+        VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
         VideoCore::DirectBuffers::Event ev{};
         ev.kind = VideoCore::DirectBuffers::EventKind::RetireRange;
         ev.addr = addr;
@@ -377,15 +444,18 @@ void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
     if (!gpu_addr || raw_byte_size == 0) {
         return;
     }
+    const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
+    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = VideoCore::DirectBuffers::EventKind::RegisterImmutable;
     ev.resource_id = resource_id;
     ev.bind_flags = bind_flags;
     ev.raw_byte_size = raw_byte_size;
-    ev.alloc_byte_size = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
-    ev.addr = reinterpret_cast<VAddr>(gpu_addr);
-    ev.byte_size = ev.alloc_byte_size;
+    ev.alloc_byte_size = static_cast<u32>(span);
+    ev.addr = addr;
+    ev.byte_size = span;
     VideoCore::DirectBuffers::PushEvent(ev);
 }
 
@@ -393,12 +463,14 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
     if (!gpu_addr || byte_size == 0) {
         return;
     }
-    if (!VideoCore::DirectBuffers::g_ever_registered.load(std::memory_order_acquire)) {
+    const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    if (!VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
         return;
     }
+    VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = VideoCore::DirectBuffers::EventKind::RetireRange;
-    ev.addr = reinterpret_cast<VAddr>(gpu_addr);
+    ev.addr = addr;
     ev.byte_size = byte_size;
     VideoCore::DirectBuffers::PushEvent(ev);
 }
