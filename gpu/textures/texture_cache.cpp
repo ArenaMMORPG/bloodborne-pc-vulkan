@@ -514,18 +514,14 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     }
     image.usage.render_target = 1;
     UpdateImage(image_id);
-    // Its metadata surfaces (only touch the hash map when the address first binds or changes).
+    // Its metadata surfaces.
     if (const VAddr cmask = desc.info.meta_info.cmask_addr) {
-        if (image.info.meta_info.cmask_addr != cmask) {
-            surface_metas.emplace(cmask, MetaInfo{.type = MetaType::CMask});
-            image.info.meta_info.cmask_addr = cmask;
-        }
+        surface_metas.emplace(cmask, MetaInfo{.type = MetaType::CMask});
+        image.info.meta_info.cmask_addr = cmask;
     }
     if (const VAddr fmask = desc.info.meta_info.fmask_addr) {
-        if (image.info.meta_info.fmask_addr != fmask) {
-            surface_metas.emplace(fmask, MetaInfo{.type = MetaType::FMask});
-            image.info.meta_info.fmask_addr = fmask;
-        }
+        surface_metas.emplace(fmask, MetaInfo{.type = MetaType::FMask});
+        image.info.meta_info.fmask_addr = fmask;
     }
     if (!memo || BbToggle::Disabled(BbToggle::TextureViewMemo)) {
         return image.FindView(desc.view_info, false);
@@ -551,11 +547,9 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     image.usage.depth_target = 1;
     UpdateImage(image_id);
     if (const VAddr htile = desc.info.meta_info.htile_addr) {
-        if (image.info.meta_info.htile_addr != htile) {
-            surface_metas.emplace(htile, MetaInfo{.type = MetaType::HTile,
-                                                  .clear_mask = image.info.meta_info.htile_clear_mask});
-            image.info.meta_info.htile_addr = htile;
-        }
+        surface_metas.emplace(htile, MetaInfo{.type = MetaType::HTile,
+                                              .clear_mask = image.info.meta_info.htile_clear_mask});
+        image.info.meta_info.htile_addr = htile;
     }
     // The stencil surface: an image of its own (a placeholder of no format) linked to the depth.
     // V3.1: Cache stencil_id + stencil_uid on the depth image so we avoid scanning 900+ pages
