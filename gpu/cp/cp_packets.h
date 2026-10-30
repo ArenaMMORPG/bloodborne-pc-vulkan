@@ -444,6 +444,9 @@ enum class Op : u32 {
     DispatchDirect = 15u,
     DispatchIndirect = 16u,
     SetStageUserData = 17u,
+    SetContextRegsPacked = 18u,
+    SetRenderTarget = 19u,
+    SetDepthRenderTarget = 20u,
 };
 struct CopyRegion {
     u64 dst_va;

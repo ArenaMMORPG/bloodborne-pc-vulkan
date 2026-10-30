@@ -347,10 +347,72 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
             }
             break;
         case NopPayload::DirectVulkan:
+            if (body_words >= 2) {
+                const u32 op_word = body[1];
+                const auto vk_op = DirectVk::Op(op_word & 0xFFFFu);
+                if (vk_op == DirectVk::Op::SetStageUserData) {
+                    // Graphics stages applied in ApplyGraphicsRegisterPacket; CS stage updates cs_state.
+                    if (body_words >= 3u) {
+                        const u32 sh_offset = body[2] & 0xFFFFu;
+                        if (sh_offset >= ComputeShOffset && sh_offset <= ComputeShOffset + ComputeWords) {
+                            u32 mask = body[2] >> 16;
+                            if (static_cast<u32>(__builtin_popcount(mask)) == body_words - 3u) {
+                                auto* state = reinterpret_cast<u32*>(&queues[GfxQueueId].cs_state);
+                                const u32 base = sh_offset - ComputeShOffset;
+                                u32 src = 3u;
+                                while (mask != 0u) {
+                                    const u32 bit = static_cast<u32>(__builtin_ctz(mask));
+                                    mask &= (mask - 1u);
+                                    if ((base + bit) * sizeof(u32) < sizeof(ComputeProgram)) {
+                                        state[base + bit] = body[src];
+                                    }
+                                    ++src;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                if (vk_op == DirectVk::Op::SetContextRegsPacked ||
+                    vk_op == DirectVk::Op::SetIndexState) {
+                    // Applied in ApplyGraphicsRegisterPacket (including DrawPreparation).
+                    break;
+                }
+                if (vk_op == DirectVk::Op::SetRenderTarget) {
+                    const u32 slot = (op_word >> 16) & 0x7u;
+                    const bool valid = ((op_word >> 24) & 1u) != 0u;
+                    if (valid && body_words == 14u) {
+                        last_cb_extent[slot].raw = body[13];
+                    }
+                    break;
+                }
+                if (vk_op == DirectVk::Op::SetDepthRenderTarget) {
+                    const bool valid = ((op_word >> 16) & 1u) != 0u;
+                    if (valid && body_words == 15u) {
+                        last_db_extent.raw = body[14];
+                    } else if (!valid && body_words == 2u) {
+                        last_db_extent.raw = 0u;
+                    }
+                    break;
+                }
+            }
             if (rasterizer && body_words >= 2) {
                 const u32 op_word = body[1];
                 const auto vk_op = DirectVk::Op(op_word & 0xFFFFu);
-                if (vk_op == DirectVk::Op::CopyBufferBatch) {
+                if (vk_op == DirectVk::Op::DrawIndexed) {
+                    if (body_words == 6u) {
+                        DirectVk::DrawIndexedArgs args{};
+                        std::memcpy(&args, body + 2u, sizeof(args));
+                        const auto* prepared =
+                            level.prepared ? rasterizer->GetDrawPreparation().NextDraw() : nullptr;
+                        if (!PredicationSkips(header)) {
+                            const void* at = packet;
+                            rasterizer->ScopeMarker(
+                                "gfx:{}:DirectDrawIndexed", fmt::make_format_args(at),
+                                [&] { rasterizer->Draw(true, args.start_index, prepared); });
+                        }
+                    }
+                } else if (vk_op == DirectVk::Op::CopyBufferBatch) {
                     const u32 count = op_word >> 16;
                     if (count > 0 && count <= 32 && body_words == 2u + count * 6u) {
                         for (u32 i = 0; i < count; ++i) {
@@ -508,42 +570,6 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 }
                                 rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
                             }
-                        }
-                    }
-                } else if (vk_op == DirectVk::Op::SetIndexState) {
-                    // Applied in ApplyGraphicsRegisterPacket (including DrawPreparation).
-                } else if (vk_op == DirectVk::Op::SetStageUserData) {
-                    // Graphics stages applied in ApplyGraphicsRegisterPacket; CS stage updates cs_state.
-                    if (body_words >= 3u) {
-                        const u32 sh_offset = body[2] & 0xFFFFu;
-                        if (sh_offset >= ComputeShOffset && sh_offset <= ComputeShOffset + ComputeWords) {
-                            u32 mask = body[2] >> 16;
-                            if (static_cast<u32>(__builtin_popcount(mask)) == body_words - 3u) {
-                                auto* state = reinterpret_cast<u32*>(&queues[GfxQueueId].cs_state);
-                                const u32 base = sh_offset - ComputeShOffset;
-                                u32 src = 3u;
-                                while (mask != 0u) {
-                                    const u32 bit = static_cast<u32>(__builtin_ctz(mask));
-                                    mask &= (mask - 1u);
-                                    if ((base + bit) * sizeof(u32) < sizeof(ComputeProgram)) {
-                                        state[base + bit] = body[src];
-                                    }
-                                    ++src;
-                                }
-                            }
-                        }
-                    }
-                } else if (vk_op == DirectVk::Op::DrawIndexed) {
-                    if (body_words == 6u) {
-                        DirectVk::DrawIndexedArgs args{};
-                        std::memcpy(&args, body + 2u, sizeof(args));
-                        const auto* prepared =
-                            level.prepared ? rasterizer->GetDrawPreparation().NextDraw() : nullptr;
-                        if (!PredicationSkips(header)) {
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDrawIndexed", fmt::make_format_args(at),
-                                [&] { rasterizer->Draw(true, args.start_index, prepared); });
                         }
                     }
                 } else if (vk_op == DirectVk::Op::DrawIndexAddr) {

@@ -76,6 +76,9 @@ inline constexpr uint32_t kV2Sub_YebisDrawDispatch  = 1u << 4; // 0x21d5f80 (Yeb
 inline constexpr uint32_t kV2Sub_SkipShaderPrefetch = 1u << 5; // CGShaderResourceBinderGnm: skip dummy 0x1073f50 DMA_DATA L2 prefetch (0x3022C)
 inline constexpr uint32_t kV2Sub_NativeVsharp       = 1u << 6; // CGShaderResourceBinderGnm: native C++20 V# descriptors, active stages & PS usage
 inline constexpr uint32_t kV2Sub_StageUserData      = 1u << 7; // CGShaderResourceBinderGnm: coalesced bitmasked stage SGPR packet (0 Razor NOPs)
+inline constexpr uint32_t kV2Sub_RasterState        = 1u << 8; // CGRasterizerCacheGnm: coalesced Rasterizer, Viewport 0..15, Scissor 0..15 & Guardband batch
+inline constexpr uint32_t kV2Sub_BlendDsState       = 1u << 9; // CGOutputMergerCacheGnm: coalesced Blend, DepthStencil, StencilRef, DepthBounds & Clear batch
+inline constexpr uint32_t kV2Sub_RenderTargets      = 1u << 10; // CGOutputMergerCacheGnm: single-packet RTV/DSV binding with embedded extent hints
 
 inline uint32_t ActiveV2SubMask() noexcept {
     static const uint32_t sub = []() -> uint32_t {
@@ -115,6 +118,10 @@ enum class Op : uint32_t {
     DispatchIndirect         = 16u,
     // V2.2: Coalesced bitmasked stage user-data SGPR packet
     SetStageUserData         = 17u,
+    // V2.3: Coalesced context-register state batch & single-packet RTV/DSV binding
+    SetContextRegsPacked     = 18u,
+    SetRenderTarget          = 19u,
+    SetDepthRenderTarget     = 20u,
 };
 
 struct CopyRegion {
@@ -725,6 +732,312 @@ inline void GenerateAndEmitPsShaderUsage(
             const uint32_t bit10 = (((ps_w >> 12) | (ps_w >> 10)) & 0x1u) << 10;
             dst[i] = mid2 | bit10;
         }
+    }
+}
+
+// ============================================================================
+// V2.3: Coalesced Context Register Batch & Single-Packet RTV/DSV Binders
+// ============================================================================
+
+inline uint32_t FloatBits(float f) noexcept {
+    uint32_t u = 0u;
+    std::memcpy(&u, &f, sizeof(uint32_t));
+    return u;
+}
+
+// 1-to-1 C++20 replacement for 0x10868c0 (bextr $0x30c, 0x14(%rdi))
+inline uint32_t GnmRt_GetWidthHeightSampleCode(const void* gnm_rt) noexcept {
+    return (static_cast<const uint32_t*>(gnm_rt)[5] >> 12) & 0x7u;
+}
+
+// 1-to-1 C++20 replacement for 0x10726c0 (bextr $0x202, (%rdi))
+inline uint32_t GnmDt_GetNumSamplesLog2(const void* gnm_dt) noexcept {
+    return (static_cast<const uint32_t*>(gnm_dt)[0] >> 2) & 0x3u;
+}
+
+// Coalesces arbitrary (including non-contiguous and automatically merged contiguous)
+// Context-bank register writes into a single Op::SetContextRegsPacked Direct Vulkan packet.
+struct ContextRegBatch {
+    static constexpr uint32_t kMaxPayloadWords = 128u;
+    uint32_t payload[kMaxPayloadWords];
+    uint32_t num_words = 0u;
+    uint32_t num_spans = 0u;
+    uint32_t last_span_hdr_idx = 0u;
+    uint32_t last_end_reg = 0xFFFFFFFFu;
+
+    inline void Flush(void* dcb_raw) noexcept {
+        if (num_spans == 0u || !dcb_raw) {
+            num_words = 0u;
+            num_spans = 0u;
+            last_end_reg = 0xFFFFFFFFu;
+            return;
+        }
+        const uint32_t body_dwords = 2u + num_words;
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 1u + body_dwords);
+        if (pkt) {
+            pkt[0] = MakeNopHeader(body_dwords);
+            pkt[1] = kNopPayloadTag;
+            pkt[2] = static_cast<uint32_t>(Op::SetContextRegsPacked) | (num_spans << 16);
+            std::memcpy(pkt + 3u, payload, num_words * sizeof(uint32_t));
+        }
+        num_words = 0u;
+        num_spans = 0u;
+        last_end_reg = 0xFFFFFFFFu;
+    }
+
+    inline void Write1(void* dcb_raw, uint32_t ctx_reg, uint32_t v0) noexcept {
+        if (ctx_reg == last_end_reg && num_words + 1u <= kMaxPayloadWords) {
+            payload[last_span_hdr_idx] += (1u << 16);
+            payload[num_words++] = v0;
+            ++last_end_reg;
+            return;
+        }
+        if (num_words + 2u > kMaxPayloadWords) {
+            Flush(dcb_raw);
+        }
+        last_span_hdr_idx = num_words;
+        payload[num_words++] = (ctx_reg & 0xFFFFu) | (1u << 16);
+        payload[num_words++] = v0;
+        last_end_reg = ctx_reg + 1u;
+        ++num_spans;
+    }
+
+    inline void WriteN(void* dcb_raw, uint32_t ctx_reg, const uint32_t* vals, uint32_t count) noexcept {
+        if (count == 0u) {
+            return;
+        }
+        if (ctx_reg == last_end_reg && num_words + count <= kMaxPayloadWords) {
+            payload[last_span_hdr_idx] += (count << 16);
+            std::memcpy(&payload[num_words], vals, count * sizeof(uint32_t));
+            num_words += count;
+            last_end_reg += count;
+            return;
+        }
+        if (num_words + 1u + count > kMaxPayloadWords) {
+            Flush(dcb_raw);
+        }
+        last_span_hdr_idx = num_words;
+        payload[num_words++] = (ctx_reg & 0xFFFFu) | (count << 16);
+        std::memcpy(&payload[num_words], vals, count * sizeof(uint32_t));
+        num_words += count;
+        last_end_reg = ctx_reg + count;
+        ++num_spans;
+    }
+
+    // --- Rasterizer & Viewport / Scissor State (0x1076b30 .. 0x10766d0) ---
+    inline void SetPrimitiveSetup(void* dcb_raw, uint32_t prim_setup) noexcept {
+        Write1(dcb_raw, 0x204u, prim_setup & 0x0F7FE03Fu);
+    }
+
+    inline void SetClipControl(void* dcb_raw, uint32_t clip_ctrl) noexcept {
+        Write1(dcb_raw, 0x205u, clip_ctrl & 0x00393FFFu);
+    }
+
+    inline void SetPolygonOffsetFrontBack(void* dcb_raw, float scaled_bias, float slope_bias) noexcept {
+        const uint32_t sb = FloatBits(scaled_bias);
+        const uint32_t sl = FloatBits(slope_bias);
+        const uint32_t vals[4] = {sb, sl, sb, sl};
+        WriteN(dcb_raw, 0x2E0u, vals, 4u);
+    }
+
+    inline void SetPolygonOffsetClamp(void* dcb_raw, float clamp_val) noexcept {
+        Write1(dcb_raw, 0x2DFu, FloatBits(clamp_val));
+    }
+
+    inline void SetPolygonOffsetZFormat(void* dcb_raw, uint32_t z_fmt) noexcept {
+        static constexpr uint32_t kZFmtTable[4] = {0x0u, 0xF0u, 0xE8u, 0x1E9u};
+        Write1(dcb_raw, 0x2DEu, (z_fmt <= 3u) ? kZFmtTable[z_fmt] : 0u);
+    }
+
+    inline void SetAaScissorEnable(void* dcb_raw, uint32_t msaa_en, uint32_t scissor_en) noexcept {
+        Write1(dcb_raw, 0x292u, (msaa_en & 1u) | ((scissor_en << 1) & 2u));
+    }
+
+    inline void SetViewport(
+        void* dcb_raw,
+        uint32_t vp_id,
+        float dmin,
+        float dmax,
+        const float* scale,
+        const float* offset) noexcept
+    {
+        const uint32_t zrange[2] = {FloatBits(dmin), FloatBits(dmax)};
+        const uint32_t xform[6] = {
+            FloatBits(scale[0]), FloatBits(offset[0]),
+            FloatBits(scale[1]), FloatBits(offset[1]),
+            FloatBits(scale[2]), FloatBits(offset[2]),
+        };
+        WriteN(dcb_raw, 0x0B4u + vp_id * 2u, zrange, 2u);
+        WriteN(dcb_raw, 0x10Fu + vp_id * 6u, xform, 6u);
+    }
+
+    inline void SetViewportTransform(void* dcb_raw, uint32_t vp_ctrl) noexcept {
+        Write1(dcb_raw, 0x206u, vp_ctrl & 0x00000F3Fu);
+    }
+
+    inline void SetGenericScissor(void* dcb_raw, int32_t left, int32_t top, int32_t right, int32_t bottom) noexcept {
+        const uint32_t vals[2] = {
+            static_cast<uint32_t>(static_cast<uint16_t>(left)) | (static_cast<uint32_t>(top) << 16),
+            static_cast<uint32_t>(static_cast<uint16_t>(right)) | (static_cast<uint32_t>(bottom) << 16),
+        };
+        WriteN(dcb_raw, 0x00Cu, vals, 2u);
+    }
+
+    inline void SetHardwareScreenOffset(void* dcb_raw, int32_t off_x, int32_t off_y) noexcept {
+        Write1(
+            dcb_raw,
+            0x08Du,
+            (static_cast<uint32_t>(off_x) & 0x1FCu) |
+            ((static_cast<uint32_t>(off_y) << 16) & 0x01FC0000u));
+    }
+
+    inline void SetGuardBands(void* dcb_raw, float clip_x, float clip_y, float disc_x, float disc_y) noexcept {
+        // 0x2FA = VERT_CLIP_ADJ (clip_y), 0x2FB = VERT_DISCARD_ADJ (disc_y),
+        // 0x2FC = HORZ_CLIP_ADJ (clip_x), 0x2FD = HORZ_DISCARD_ADJ (disc_x)
+        const uint32_t vals[4] = {
+            FloatBits(clip_y),
+            FloatBits(disc_y),
+            FloatBits(clip_x),
+            FloatBits(disc_x),
+        };
+        WriteN(dcb_raw, 0x2FAu, vals, 4u);
+    }
+
+    inline void SetViewportScissor(
+        void* dcb_raw,
+        uint32_t vp_id,
+        int32_t left,
+        int32_t top,
+        int32_t right,
+        int32_t bottom,
+        uint32_t win_off_enable) noexcept
+    {
+        const uint32_t win_off_dis_bit = (win_off_enable == 0u) ? 0x80000000u : 0u;
+        const uint32_t vals[2] = {
+            (static_cast<uint32_t>(left) & 0x7FFFu) |
+                ((static_cast<uint32_t>(top) << 16) & 0x7FFF0000u) |
+                win_off_dis_bit,
+            (static_cast<uint32_t>(right) & 0x7FFFu) |
+                ((static_cast<uint32_t>(bottom) << 16) & 0x7FFF0000u),
+        };
+        WriteN(dcb_raw, 0x094u + vp_id * 2u, vals, 2u);
+    }
+
+    // --- Blend, Depth-Stencil & Clear State (0x1072fd0 .. 0x1076ab0) ---
+    inline void SetAlphaToMaskControl(void* dcb_raw, uint32_t a2c_enable) noexcept {
+        Write1(dcb_raw, 0x2DCu, 0xAA00u | (a2c_enable & 1u));
+    }
+
+    inline void SetRenderTargetMask(void* dcb_raw, uint32_t rt_mask) noexcept {
+        Write1(dcb_raw, 0x08Eu, rt_mask);
+    }
+
+    inline void SetBlendControl(void* dcb_raw, uint32_t slot, uint32_t bc) noexcept {
+        Write1(dcb_raw, 0x1E0u + slot, bc & 0xFFFF1FFFu);
+    }
+
+    inline void SetBlendColor(void* dcb_raw, float r, float g, float b, float a) noexcept {
+        const uint32_t vals[4] = {FloatBits(r), FloatBits(g), FloatBits(b), FloatBits(a)};
+        WriteN(dcb_raw, 0x105u, vals, 4u);
+    }
+
+    inline void SetDepthControl(void* dcb_raw, uint32_t depth_ctrl) noexcept {
+        Write1(dcb_raw, 0x200u, depth_ctrl & 0xC07007FFu);
+    }
+
+    inline void SetStencil(void* dcb_raw, uint32_t stencil_ctrl) noexcept {
+        Write1(dcb_raw, 0x10Bu, stencil_ctrl & 0x00FFFFFFu);
+    }
+
+    inline void SetStencilSeparate(void* dcb_raw, uint32_t combined_stencil) noexcept {
+        const uint32_t vals[2] = {combined_stencil, combined_stencil};
+        WriteN(dcb_raw, 0x10Cu, vals, 2u);
+    }
+
+    inline void SetDepthBoundsRangeBits(void* dcb_raw, uint32_t zmin_bits, uint32_t zmax_bits) noexcept {
+        const uint32_t vals[2] = {zmin_bits, zmax_bits};
+        WriteN(dcb_raw, 0x008u, vals, 2u);
+    }
+
+    inline void SetDepthClearValue(void* dcb_raw, float depth_clear) noexcept {
+        Write1(dcb_raw, 0x00Bu, FloatBits(depth_clear));
+    }
+
+    inline void SetStencilClearValue(void* dcb_raw, uint32_t stencil_clear) noexcept {
+        Write1(dcb_raw, 0x00Au, stencil_clear & 0xFFu);
+    }
+
+    inline void SetCmaskClearColor(void* dcb_raw, uint32_t slot, const uint32_t* clear_dwords) noexcept {
+        WriteN(dcb_raw, 0x323u + slot * 0x0Fu, clear_dwords, 2u);
+    }
+
+    inline void SetScanModeControl(void* dcb_raw, uint32_t log2_samples, uint32_t wh_packed) noexcept {
+        const uint32_t scan_mode =
+            (log2_samples & 0x7u) | ((wh_packed & 0x7u) << 12) | (1u << 20);
+        Write1(dcb_raw, 0x201u, scan_mode & 0x0F3F7777u);
+    }
+
+    inline void SetDbRenderOverrideControl(void* dcb_raw, uint32_t mode, uint32_t rop3) noexcept {
+        const uint32_t val =
+            0x11000100u | ((mode << 1) & 0x2u) | ((rop3 << 4) & 0x70u);
+        Write1(dcb_raw, 0x001u, val);
+    }
+};
+
+// 1-to-1 single-packet replacement for 0x10738b0 (DrawCommandBuffer::setRenderTarget)
+inline void EmitSetRenderTarget(void* dcb_raw, uint32_t slot, const void* rtv_raw) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    const auto* rtv = static_cast<const uint32_t*>(rtv_raw);
+    const bool valid = (rtv != nullptr) && (rtv[0] != 0u);
+    if (valid) {
+        // body_dwords = 14: [0]=tag, [1]=op|slot|valid, [2..12]=cb_regs[0..10], [13]=cb_extent(rtv[6])
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 15u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(14u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetRenderTarget) | ((slot & 0x7u) << 16) | (1u << 24);
+        std::memcpy(pkt + 3u, rtv, 11u * sizeof(uint32_t));
+        pkt[14] = rtv[6];
+    } else {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(2u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetRenderTarget) | ((slot & 0x7u) << 16);
+    }
+}
+
+// 1-to-1 single-packet replacement for 0x10739b0 (DrawCommandBuffer::setDepthRenderTarget, 6 PM4 packets -> 1 packet)
+inline void EmitSetDepthRenderTarget(void* dcb_raw, const void* dt_raw) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    const auto* dt = static_cast<const uint32_t*>(dt_raw);
+    const bool valid = (dt != nullptr) && (dt[2] != 0u || dt[3] != 0u);
+    if (valid) {
+        // body_dwords = 15: [0]=tag, [1]=op|valid, [2..14]=dt[0..12] (db_regs[8], view, htile_base, htile_surf, ovr2, db_extent)
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 16u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(15u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget) | (1u << 16);
+        std::memcpy(pkt + 3u, dt, 13u * sizeof(uint32_t));
+    } else {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(2u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget);
     }
 }
 

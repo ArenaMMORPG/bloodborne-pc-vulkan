@@ -235,6 +235,64 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
             }
             break;
         }
+        if (vk_op == DirectVk::Op::SetContextRegsPacked && body_words >= 4u) {
+            const u32 num_spans = body[1] >> 16;
+            u32 idx = 2u;
+            for (u32 s = 0u; s < num_spans; ++s) {
+                if (idx >= body_words) {
+                    return;
+                }
+                const u32 span_hdr = body[idx++];
+                const u32 ctx_off = span_hdr & 0xFFFFu;
+                const u32 count = span_hdr >> 16;
+                if (count == 0u || idx + count > body_words ||
+                    Bank::Context + ctx_off + count > std::size(regs.reg_array)) {
+                    return;
+                }
+                const u32 dst_reg = Bank::Context + ctx_off;
+                std::memcpy(&regs.reg_array[dst_reg], &body[idx], count * sizeof(u32));
+                mark(dst_reg, count);
+                idx += count;
+            }
+            if (idx != body_words) {
+                return;
+            }
+            break;
+        }
+        if (vk_op == DirectVk::Op::SetRenderTarget) {
+            const u32 slot = (body[1] >> 16) & 0x7u;
+            const bool valid = ((body[1] >> 24) & 1u) != 0u;
+            if (valid && body_words == 14u) {
+                const u32 dst_reg = Bank::Context + 0x318u + slot * 0x0Fu;
+                std::memcpy(&regs.reg_array[dst_reg], body + 2u, 11u * sizeof(u32));
+                mark(dst_reg, 11u);
+                break;
+            }
+            if (!valid && body_words == 2u) {
+                write(Bank::Context + 0x31Cu + slot * 0x0Fu, 0u);
+                break;
+            }
+            return;
+        }
+        if (vk_op == DirectVk::Op::SetDepthRenderTarget) {
+            const bool valid = ((body[1] >> 16) & 1u) != 0u;
+            if (valid && body_words == 15u) {
+                const u32* dt = body + 2u;
+                std::memcpy(&regs.reg_array[Bank::Context + 0x010u], dt, 8u * sizeof(u32));
+                mark(Bank::Context + 0x010u, 8u);
+                write(Bank::Context + 0x00Fu, dt[11]);
+                write(Bank::Context + 0x002u, dt[8]);
+                write(Bank::Context + 0x005u, dt[9]);
+                write(Bank::Context + 0x2AFu, dt[10]);
+                break;
+            }
+            if (!valid && body_words == 2u) {
+                write(Bank::Context + 0x010u, 0u);
+                write(Bank::Context + 0x011u, 0u);
+                break;
+            }
+            return;
+        }
         return;
     }
     default:
