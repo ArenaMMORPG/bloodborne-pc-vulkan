@@ -151,6 +151,8 @@ struct Image {
     u64 gpu_write_tick{}; ///< the scheduler tick of the last binding the GPU may write
     ImageId depth_id{};
     u64 depth_uid{};
+    ImageId stencil_id{}; ///< V3.1: O(1) cached companion stencil image for D32_S8 targets
+    u64 stencil_uid{};
     u64 image_uid{};
 
     ImageInfo info;

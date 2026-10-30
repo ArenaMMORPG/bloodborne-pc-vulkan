@@ -504,7 +504,7 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     return view;
 }
 
-ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
+ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc, ViewMemo* memo) {
     Image& image = slot_images[image_id];
     WatchImage(image, "render target");
     image.flags |= ImageFlagBits::GpuModified;
@@ -514,19 +514,36 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     }
     image.usage.render_target = 1;
     UpdateImage(image_id);
-    // Its metadata surfaces.
+    // Its metadata surfaces (only touch the hash map when the address first binds or changes).
     if (const VAddr cmask = desc.info.meta_info.cmask_addr) {
-        surface_metas.emplace(cmask, MetaInfo{.type = MetaType::CMask});
-        image.info.meta_info.cmask_addr = cmask;
+        if (image.info.meta_info.cmask_addr != cmask) {
+            surface_metas.emplace(cmask, MetaInfo{.type = MetaType::CMask});
+            image.info.meta_info.cmask_addr = cmask;
+        }
     }
     if (const VAddr fmask = desc.info.meta_info.fmask_addr) {
-        surface_metas.emplace(fmask, MetaInfo{.type = MetaType::FMask});
-        image.info.meta_info.fmask_addr = fmask;
+        if (image.info.meta_info.fmask_addr != fmask) {
+            surface_metas.emplace(fmask, MetaInfo{.type = MetaType::FMask});
+            image.info.meta_info.fmask_addr = fmask;
+        }
     }
-    return image.FindView(desc.view_info, false);
+    if (!memo || BbToggle::Disabled(BbToggle::TextureViewMemo)) {
+        return image.FindView(desc.view_info, false);
+    }
+    if (memo->image_id == image_id && memo->backing == image.backing && memo->view_id) {
+        return slot_image_views[memo->view_id];
+    }
+    ImageView& view = image.FindView(desc.view_info, false);
+    const auto& ids = image.backing->image_view_ids;
+    const u32 last = image.backing->last_view;
+    memo->image_id = image_id;
+    memo->backing = image.backing;
+    memo->view_id =
+        last < ids.size() && &slot_image_views[ids[last]] == &view ? ids[last] : ids.back();
+    return view;
 }
 
-ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc) {
+ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc, ViewMemo* memo) {
     Image& image = slot_images[image_id];
     WatchImage(image, "depth target");
     image.flags |= ImageFlagBits::GpuModified;
@@ -534,31 +551,60 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     image.usage.depth_target = 1;
     UpdateImage(image_id);
     if (const VAddr htile = desc.info.meta_info.htile_addr) {
-        surface_metas.emplace(htile, MetaInfo{.type = MetaType::HTile,
-                                              .clear_mask = image.info.meta_info.htile_clear_mask});
-        image.info.meta_info.htile_addr = htile;
+        if (image.info.meta_info.htile_addr != htile) {
+            surface_metas.emplace(htile, MetaInfo{.type = MetaType::HTile,
+                                                  .clear_mask = image.info.meta_info.htile_clear_mask});
+            image.info.meta_info.htile_addr = htile;
+        }
     }
     // The stencil surface: an image of its own (a placeholder of no format) linked to the depth.
+    // V3.1: Cache stencil_id + stencil_uid on the depth image so we avoid scanning 900+ pages
+    // of the 2560x1440 stencil buffer via ForEachImageInRegion on every depth pass.
     if (desc.info.stencil_addr != 0) {
         ImageId stencil_id{};
-        ForEachImageInRegion(desc.info.stencil_addr, desc.info.stencil_size,
-                             [&](ImageId id, Image& candidate) {
-                                 if (candidate.info.guest_address == desc.info.stencil_addr) {
-                                     stencil_id = id;
-                                 }
-                             });
+        if (image.stencil_id && slot_images.is_allocated(image.stencil_id)) {
+            const Image& cached_st = slot_images[image.stencil_id];
+            if (cached_st.image_uid == image.stencil_uid &&
+                True(cached_st.flags & ImageFlagBits::Registered) &&
+                cached_st.info.guest_address == desc.info.stencil_addr) {
+                stencil_id = image.stencil_id;
+            }
+        }
         if (!stencil_id) {
-            ImageInfo info{};
-            info.guest_address = desc.info.stencil_addr;
-            info.guest_size = desc.info.stencil_size;
-            info.size = desc.info.size;
-            stencil_id = InsertImage(info);
+            ForEachImageInRegion(desc.info.stencil_addr, desc.info.stencil_size,
+                                 [&](ImageId id, Image& candidate) {
+                                     if (candidate.info.guest_address == desc.info.stencil_addr) {
+                                         stencil_id = id;
+                                     }
+                                 });
+            if (!stencil_id) {
+                ImageInfo info{};
+                info.guest_address = desc.info.stencil_addr;
+                info.guest_size = desc.info.stencil_size;
+                info.size = desc.info.size;
+                stencil_id = InsertImage(info);
+            }
+            image.stencil_id = stencil_id;
+            image.stencil_uid = slot_images[stencil_id].image_uid;
         }
         Image& stencil = slot_images[stencil_id];
         TouchImage(stencil);
         stencil.AssociateDepth(image_id, image.image_uid);
     }
-    return image.FindView(desc.view_info, false);
+    if (!memo || BbToggle::Disabled(BbToggle::TextureViewMemo)) {
+        return image.FindView(desc.view_info, false);
+    }
+    if (memo->image_id == image_id && memo->backing == image.backing && memo->view_id) {
+        return slot_image_views[memo->view_id];
+    }
+    ImageView& view = image.FindView(desc.view_info, false);
+    const auto& ids = image.backing->image_view_ids;
+    const u32 last = image.backing->last_view;
+    memo->image_id = image_id;
+    memo->backing = image.backing;
+    memo->view_id =
+        last < ids.size() && &slot_image_views[ids[last]] == &view ? ids[last] : ids.back();
+    return view;
 }
 
 ImageId TextureCache::GetAssociatedDepth(Image& image) {

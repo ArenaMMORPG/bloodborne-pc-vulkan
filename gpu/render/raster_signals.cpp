@@ -401,8 +401,9 @@ bool Rasterizer::WriteZeroLabelsBatchOnGpu(std::span<const VAddr> addresses) {
                                  vk::AccessFlagBits2::eTransferWrite);
         }
         buffer_cache.NoteLateCommandWrite(item.addr, &zero_val, 8u);
-        SignalAfterGpu([] {}, item.addr, 0ULL);
     }
+    // Single submission-policy tracking signal per batch (CGQueryLabelPoolGnm slots are CPU-polled).
+    SignalAfterGpu([] {}, resolved.back().addr, 0ULL);
     BbStats::gpu_labels.fetch_add(resolved.size(), std::memory_order_relaxed);
     return true;
 }

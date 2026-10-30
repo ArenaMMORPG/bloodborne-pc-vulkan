@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <immintrin.h>
+#include "gx_direct_vulkan.h"
 
 namespace Bloodborne {
 namespace GX {
@@ -1700,13 +1701,19 @@ extern "C" int GXGnmSurfaceView_InitRenderTargetViewAndClearCMask(
 
     sceGnmRenderTargetSetCmaskClearColor(pOutRtView, ((rtFlags & 0x04u) != 0) ? 0u : 1u);
     if (!sceGnmRenderTargetGetCmaskFastClearEnable(pOutRtView)) {
+        gx_direct_vk::RegisterDirectDepthTarget(
+            pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
         return 0;
     }
     if ((rtFlags & 0x08u) == 0) {
+        gx_direct_vk::RegisterDirectDepthTarget(
+            pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
         return 0;
     }
 
     sceGnmRenderTargetSetCmaskFastClearEnable(pOutRtView, 1u);
+    gx_direct_vk::RegisterDirectDepthTarget(
+        pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
     uintptr_t cmaskBase = static_cast<uintptr_t>(sceGnmRenderTargetGetCmaskAddress256ByteBlocks(pOutRtView)) << 8;
     uint32_t cmaskSliceBytes = sceGnmRenderTargetGetCmaskSliceSizeInBytes(pOutRtView);
     uint32_t baseSlice = sceGnmRenderTargetGetBaseArraySliceIndex(pOutRtView);

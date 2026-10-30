@@ -113,8 +113,10 @@ public:
     /// used as is (the caller checked it).
     [[nodiscard]] ImageView& FindTexture(ImageId image_id, const ImageDesc& desc,
                                          ViewMemo* memo = nullptr, bool refresh = true);
-    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc);
-    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
+    [[nodiscard]] ImageView& FindRenderTarget(ImageId image_id, const ImageDesc& desc,
+                                              ViewMemo* memo = nullptr);
+    [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc,
+                                             ViewMemo* memo = nullptr);
     /// The sampler of an S#.
     [[nodiscard]] vk::Sampler GetSampler(const Gcn::Sampler& sampler,
                                          Gcn::BorderColorBuffer border_color_base, bool is_depth,

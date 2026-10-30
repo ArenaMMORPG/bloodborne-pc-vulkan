@@ -261,7 +261,7 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
         }
         if (vk_op == DirectVk::Op::SetRenderTarget) {
             const u32 slot = (body[1] >> 16) & 0x7u;
-            const bool valid = ((body[1] >> 24) & 1u) != 0u;
+            const bool valid = ((body[1] >> 19) & 1u) != 0u;
             if (valid && body_words == 14u) {
                 const u32 dst_reg = Bank::Context + 0x318u + slot * 0x0Fu;
                 std::memcpy(&regs.reg_array[dst_reg], body + 2u, 11u * sizeof(u32));

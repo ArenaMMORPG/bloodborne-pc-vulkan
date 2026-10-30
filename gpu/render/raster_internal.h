@@ -67,6 +67,14 @@ inline Gcn::CbDbExtent Rasterizer::DbExtent() const {
     return stage_regs ? pipe_db_extent : liverpool->last_db_extent;
 }
 
+inline u16 Rasterizer::CbUid(u32 index) const {
+    return stage_regs ? pipe_cb_uid[index] : liverpool->last_cb_uid[index];
+}
+
+inline u16 Rasterizer::DbUid() const {
+    return stage_regs ? pipe_db_uid : liverpool->last_db_uid;
+}
+
 /// Whether the formats are ones the hardware defines (magic_enum::enum_contains from a table:
 /// that scans every enumerator, per texture per draw).
 inline bool IsKnownFormat(Gcn::DataFormat data_fmt, Gcn::NumberFormat num_fmt) {

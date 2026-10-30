@@ -93,7 +93,7 @@ LockMode SubmitLock() {
 u32 SubmitsAheadOption() {
     static const u32 ahead = [] {
         const char* env = std::getenv("BB_SUBMIT_AHEAD");
-        return env ? u32(std::max(0, std::atoi(env))) : 2u;
+        return env ? u32(std::max(0, std::atoi(env))) : 16u;
     }();
     return ahead;
 }

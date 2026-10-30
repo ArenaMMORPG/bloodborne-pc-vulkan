@@ -538,6 +538,8 @@ private:
     const Gcn::Regs& Regs() const;
     Gcn::CbDbExtent CbExtent(u32 index) const;
     Gcn::CbDbExtent DbExtent() const;
+    u16 CbUid(u32 index) const;
+    u16 DbUid() const;
 
     void BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                      Shader::Backend::Bindings& binding,
@@ -719,6 +721,47 @@ private:
     VideoCore::ImageId FindTargetMemoized(VideoCore::TextureCache::ImageDesc& desc,
                                           LastTarget& last, auto&& make_desc,
                                           const Parts&... parts);
+
+    // V3.1: Direct RenderTarget & DepthTarget O(1) Stage-B cache + per-pass fast signature.
+    struct DirectTargetStageBCache {
+        u32 slot_epoch = 0;
+        u64 registry_generation = ~0ULL;
+        bool parent_ensured = false;
+        VideoCore::ImageId image_id{};
+        VideoCore::TextureCache::ImageDesc desc{};
+        VideoCore::TextureCache::ViewMemo color_view_memo{};
+        std::array<VideoCore::TextureCache::ViewMemo, 2> depth_view_memo{};
+    };
+    std::array<DirectTargetStageBCache, 4096> direct_target_cache{};
+    std::array<u16, Gcn::NUM_COLOR_BUFFERS> active_cb_uid{};
+    u16 active_db_uid = 0;
+    std::array<VideoCore::TextureCache::ViewMemo, Gcn::NUM_COLOR_BUFFERS> fallback_cb_view_memo{};
+    std::array<VideoCore::TextureCache::ViewMemo, 2> fallback_db_view_memo{};
+
+    struct PreparedPassMemo {
+        bool valid = false;
+        bool skip_cb = false;
+        bool has_depth = false;
+        u8 mrt_mask = 0;
+        u8 active_cb_mask = 0;
+        u64 generation = ~0ULL;
+        std::array<Gcn::ColorBuffer, Gcn::NUM_COLOR_BUFFERS> cb_buf{};
+        std::array<Gcn::CbDbExtent, Gcn::NUM_COLOR_BUFFERS> cb_extent{};
+        Gcn::DepthBuffer depth_buf{};
+        u32 depth_view_raw = 0;
+        VAddr htile_addr = 0;
+        Gcn::CbDbExtent db_extent{};
+    };
+    PreparedPassMemo prepared_pass{};
+
+    VideoCore::ImageId ResolveDirectColorTarget(u16 uid, const Gcn::ColorBuffer& col_buf,
+                                                Gcn::CbDbExtent hint,
+                                                VideoCore::TextureCache::ImageDesc& out_desc);
+    VideoCore::ImageId ResolveDirectDepthTarget(u16 uid, const Gcn::DepthBuffer& depth_buf,
+                                                Gcn::DepthView depth_view,
+                                                Gcn::DepthControl depth_ctrl,
+                                                VAddr htile_address, Gcn::CbDbExtent hint,
+                                                VideoCore::TextureCache::ImageDesc& out_desc);
     /// The prepared draw whose pipeline the current Draw uses (its sharps are valid), or null.
     const PreparedDraw* bind_prepared = nullptr;
     /// `hash` is ImageDescHash(sharp, res), computed by a draw-preparation worker or here.
@@ -786,6 +829,8 @@ private:
     bool pipe_synced = false;
     std::array<Gcn::CbDbExtent, Gcn::NUM_COLOR_BUFFERS> pipe_cb_extent{};
     Gcn::CbDbExtent pipe_db_extent{};
+    std::array<u16, Gcn::NUM_COLOR_BUFFERS> pipe_cb_uid{};
+    u16 pipe_db_uid = 0;
     /// Stage A: small read-only guest buffers copied into the constant ring for a packet.
     struct RingBinding {
         u32 index;  ///< buffer resource of the stage

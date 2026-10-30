@@ -4,6 +4,25 @@
 #include <cstdlib>
 #include <cstring>
 
+extern "C" {
+__attribute__((weak)) uint32_t bb_direct_vk_register_color_target(
+    const void* gnm_rt_11dw,
+    const void* parent_tsharp_8dw,
+    uint32_t mip_level,
+    uint32_t first_slice,
+    uint32_t slice_count) noexcept;
+
+__attribute__((weak)) uint32_t bb_direct_vk_register_depth_target(
+    const void* gnm_dt_13dw,
+    const void* parent_tsharp_8dw,
+    uint32_t mip_level,
+    uint32_t first_slice,
+    uint32_t slice_count) noexcept;
+
+__attribute__((weak)) uint32_t bb_direct_vk_lookup_color_target_uid(const void* gnm_rt_11dw) noexcept;
+__attribute__((weak)) uint32_t bb_direct_vk_lookup_depth_target_uid(const void* gnm_dt_13dw) noexcept;
+}
+
 namespace gx_direct_vk {
 
 // Per-module bitmask for A/B runtime verification via BB_DIRECT_VULKAN and BB_DIRECT_VULKAN_MASK:
@@ -95,6 +114,65 @@ inline uint32_t ActiveV2SubMask() noexcept {
 
 inline bool EnabledV2Sub(uint32_t bit) noexcept {
     return EnabledV2() && ((ActiveV2SubMask() & bit) != 0u);
+}
+
+inline bool EnabledV3() noexcept {
+    return (ActiveMask() & kModuleV3_ResourceViews) != 0u;
+}
+
+inline constexpr uint32_t kV3Sub_DirectTargets = 1u << 0; // V3.1: Direct RenderTarget & DepthTarget Registration + O(1) UID binding
+
+inline uint32_t ActiveV3SubMask() noexcept {
+    static const uint32_t sub = []() -> uint32_t {
+        const char* env_sub = std::getenv("BB_DIRECT_V3_MASK");
+        if (env_sub && env_sub[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_sub, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return sub;
+}
+
+inline bool EnabledV3Sub(uint32_t bit) noexcept {
+    return EnabledV3() && ((ActiveV3SubMask() & bit) != 0u);
+}
+
+inline uint32_t RegisterDirectColorTarget(const void* gnm_rt_11dw,
+                                          const void* parent_tsharp_8dw,
+                                          uint32_t mip_level,
+                                          uint32_t first_slice,
+                                          uint32_t slice_count) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectTargets) || !bb_direct_vk_register_color_target) {
+        return 0u;
+    }
+    return bb_direct_vk_register_color_target(
+        gnm_rt_11dw, parent_tsharp_8dw, mip_level, first_slice, slice_count);
+}
+
+inline uint32_t RegisterDirectDepthTarget(const void* gnm_dt_13dw,
+                                          const void* parent_tsharp_8dw,
+                                          uint32_t mip_level,
+                                          uint32_t first_slice,
+                                          uint32_t slice_count) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectTargets) || !bb_direct_vk_register_depth_target) {
+        return 0u;
+    }
+    return bb_direct_vk_register_depth_target(
+        gnm_dt_13dw, parent_tsharp_8dw, mip_level, first_slice, slice_count);
+}
+
+inline uint32_t LookupDirectColorTargetUid(const void* gnm_rt_11dw) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectTargets) || !bb_direct_vk_lookup_color_target_uid) {
+        return 0u;
+    }
+    return bb_direct_vk_lookup_color_target_uid(gnm_rt_11dw) & 0xFFFu;
+}
+
+inline uint32_t LookupDirectDepthTargetUid(const void* gnm_dt_13dw) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectTargets) || !bb_direct_vk_lookup_depth_target_uid) {
+        return 0u;
+    }
+    return bb_direct_vk_lookup_depth_target_uid(gnm_dt_13dw) & 0xFFFu;
 }
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer
@@ -989,6 +1067,7 @@ struct ContextRegBatch {
 };
 
 // 1-to-1 single-packet replacement for 0x10738b0 (DrawCommandBuffer::setRenderTarget)
+// V3.1: embeds 12-bit pre-registered DirectTarget UID in bits [31:20] (valid in bit 19, slot in [18:16]).
 inline void EmitSetRenderTarget(void* dcb_raw, uint32_t slot, const void* rtv_raw) noexcept {
     if (!dcb_raw) {
         return;
@@ -996,14 +1075,18 @@ inline void EmitSetRenderTarget(void* dcb_raw, uint32_t slot, const void* rtv_ra
     const auto* rtv = static_cast<const uint32_t*>(rtv_raw);
     const bool valid = (rtv != nullptr) && (rtv[0] != 0u);
     if (valid) {
-        // body_dwords = 14: [0]=tag, [1]=op|slot|valid, [2..12]=cb_regs[0..10], [13]=cb_extent(rtv[6])
+        // body_dwords = 14: [0]=tag, [1]=op|slot|valid|uid12, [2..12]=cb_regs[0..10], [13]=cb_extent(rtv[6])
         uint32_t* pkt = ReserveDcbDwords(dcb_raw, 15u);
         if (!pkt) {
             return;
         }
+        const uint32_t uid = LookupDirectColorTargetUid(rtv);
         pkt[0] = MakeNopHeader(14u);
         pkt[1] = kNopPayloadTag;
-        pkt[2] = static_cast<uint32_t>(Op::SetRenderTarget) | ((slot & 0x7u) << 16) | (1u << 24);
+        pkt[2] = static_cast<uint32_t>(Op::SetRenderTarget) |
+                 ((slot & 0x7u) << 16) |
+                 (1u << 19) |
+                 ((uid & 0xFFFu) << 20);
         std::memcpy(pkt + 3u, rtv, 11u * sizeof(uint32_t));
         pkt[14] = rtv[6];
     } else {
@@ -1018,6 +1101,7 @@ inline void EmitSetRenderTarget(void* dcb_raw, uint32_t slot, const void* rtv_ra
 }
 
 // 1-to-1 single-packet replacement for 0x10739b0 (DrawCommandBuffer::setDepthRenderTarget, 6 PM4 packets -> 1 packet)
+// V3.1: embeds 12-bit pre-registered DirectTarget UID in bits [31:20] (valid in bit 16).
 inline void EmitSetDepthRenderTarget(void* dcb_raw, const void* dt_raw) noexcept {
     if (!dcb_raw) {
         return;
@@ -1025,14 +1109,17 @@ inline void EmitSetDepthRenderTarget(void* dcb_raw, const void* dt_raw) noexcept
     const auto* dt = static_cast<const uint32_t*>(dt_raw);
     const bool valid = (dt != nullptr) && (dt[2] != 0u || dt[3] != 0u);
     if (valid) {
-        // body_dwords = 15: [0]=tag, [1]=op|valid, [2..14]=dt[0..12] (db_regs[8], view, htile_base, htile_surf, ovr2, db_extent)
+        // body_dwords = 15: [0]=tag, [1]=op|valid|uid12, [2..14]=dt[0..12] (db_regs[8], view, htile_base, htile_surf, ovr2, db_extent)
         uint32_t* pkt = ReserveDcbDwords(dcb_raw, 16u);
         if (!pkt) {
             return;
         }
+        const uint32_t uid = LookupDirectDepthTargetUid(dt);
         pkt[0] = MakeNopHeader(15u);
         pkt[1] = kNopPayloadTag;
-        pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget) | (1u << 16);
+        pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget) |
+                 (1u << 16) |
+                 ((uid & 0xFFFu) << 20);
         std::memcpy(pkt + 3u, dt, 13u * sizeof(uint32_t));
     } else {
         uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);

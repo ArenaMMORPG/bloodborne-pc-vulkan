@@ -142,6 +142,9 @@ public:
     /// Render target extents from the driver's NOP hints after CB/DB setup.
     std::array<CbDbExtent, Gcn::NUM_COLOR_BUFFERS> last_cb_extent{};
     CbDbExtent last_db_extent{};
+    /// V3.1: Direct pre-registered RenderTarget / DepthTarget 12-bit UIDs (0 = unregistered).
+    std::array<u16, Gcn::NUM_COLOR_BUFFERS> last_cb_uid{};
+    u16 last_db_uid{};
     /// Register blocks written since the last draw handed to the draw recording thread.
     RegDirty pipe_dirty;
     /// Running checksum of graphics-register packets (ApplyGraphicsRegisterPacket).

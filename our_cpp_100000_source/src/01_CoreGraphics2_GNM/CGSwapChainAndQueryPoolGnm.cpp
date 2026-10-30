@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "gx_direct_vulkan.h"
 
 namespace Bloodborne::CoreGraphics2::Gnm {
 
@@ -156,10 +157,11 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
     std::memset(gpuMem, 0, totalGpuSize);
     uint32_t curOff = 0;
     for (uint32_t i = 0; i < bufCount; ++i) {
+        uint8_t* rtSlot = self + static_cast<size_t>(i) * 0x2cULL;
         uint32_t base256 = reinterpret_cast<uint32_t(*)(void*)>(GX_VMA(0x26baeb0ULL))(
             static_cast<uint8_t*>(gpuMem) + curOff);
-        reinterpret_cast<void(*)(void*, uint32_t)>(GX_VMA(0x1086c50ULL))(
-            self + static_cast<size_t>(i) * 0x2cULL, base256);
+        reinterpret_cast<void(*)(void*, uint32_t)>(GX_VMA(0x1086c50ULL))(rtSlot, base256);
+        gx_direct_vk::RegisterDirectColorTarget(rtSlot, nullptr, 0u, 0u, 1u);
         curOff += alignedStride;
     }
 

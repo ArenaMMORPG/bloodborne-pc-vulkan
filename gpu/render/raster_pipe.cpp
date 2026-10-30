@@ -28,6 +28,9 @@ struct DrawPacket {
     u32 verify;
     std::array<Gcn::CbDbExtent, Gcn::NUM_COLOR_BUFFERS> cb_extent;
     Gcn::CbDbExtent db_extent;
+    std::array<u16, Gcn::NUM_COLOR_BUFFERS> cb_uid;
+    u16 db_uid;
+    u16 uid_pad;
     u32 num_vsharps; ///< V#s of the vertex streams, after the indirect arguments
     u32 worker; ///< the resolve worker that copied constants for it (~0u: none)
     u64 ring_end; ///< constant ring position after this packet's copies
@@ -901,6 +904,9 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     packet.verify = verify;
     packet.cb_extent = liverpool->last_cb_extent;
     packet.db_extent = liverpool->last_db_extent;
+    packet.cb_uid = liverpool->last_cb_uid;
+    packet.db_uid = liverpool->last_db_uid;
+    packet.uid_pad = 0;
     packet.ring_end = constant_ring ? constant_ring->Position() : 0;
     packet.num_vsharps = static_cast<u32>(vsharps.size());
     packet.worker = ~0u;
@@ -1128,6 +1134,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     stage_regs = &regs;
     self.pipe_cb_extent = packet.cb_extent;
     self.pipe_db_extent = packet.db_extent;
+    self.pipe_cb_uid = packet.cb_uid;
+    self.pipe_db_uid = packet.db_uid;
     if (packet.kind == PacketKind::Special) {
         // A draw FilterDraw handles (fast clear elimination, resolve, depth copy, skip).
         FrameCapture::Poll();

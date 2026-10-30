@@ -2,6 +2,7 @@
 // bbport render: Rasterizer, render targets: special passes (fast clear elimination, resolve, depth
 // copies), target lookup, the render pass (BeginRendering) and the UI placement.
 
+#include "render/direct_targets.h"
 #include "render/raster_internal.h"
 
 namespace Vulkan {
@@ -134,6 +135,110 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
     return image_id;
 }
 
+VideoCore::ImageId Rasterizer::ResolveDirectColorTarget(
+    u16 uid, const Gcn::ColorBuffer& col_buf, Gcn::CbDbExtent hint,
+    VideoCore::TextureCache::ImageDesc& out_desc) {
+    if (uid == 0u || uid >= DirectTargets::kMaxTargets) {
+        return {};
+    }
+    DirectTargets::TargetSnapshot snap{};
+    if (!DirectTargets::ReadTargetSlot(uid, snap) || snap.is_depth) {
+        return {};
+    }
+    const auto* raw = reinterpret_cast<const u32*>(&col_buf);
+    constexpr u32 kColorInfoIdentityMask = 0x80001FFFu;
+    if (raw[0] != snap.raw_regs[0] || raw[1] != snap.raw_regs[1] ||
+        raw[2] != snap.raw_regs[2] || raw[3] != snap.raw_regs[3] ||
+        ((raw[4] ^ snap.raw_regs[4]) & kColorInfoIdentityMask) != 0u ||
+        raw[5] != snap.raw_regs[5] || hint.raw != snap.raw_regs[6] ||
+        raw[7] != snap.raw_regs[7] || raw[9] != snap.raw_regs[9]) {
+        return {};
+    }
+
+    auto& cached = direct_target_cache[uid];
+    const u64 generation = texture_cache.RegistryGeneration();
+    const bool memo_enabled = !BbToggle::Disabled(BbToggle::TextureBindingMemo);
+    if (memo_enabled && cached.slot_epoch == snap.epoch &&
+        cached.registry_generation == generation && cached.image_id) {
+        out_desc = cached.desc;
+        texture_cache.MarkFound(cached.image_id);
+        return cached.image_id;
+    }
+
+    if (snap.has_parent_tsharp && (cached.slot_epoch != snap.epoch || !cached.parent_ensured)) {
+        Gcn::Image parent_img{};
+        std::memcpy(&parent_img, snap.parent_tsharp.data(), sizeof(parent_img));
+        if (parent_img.Valid()) {
+            Shader::ImageResource parent_res{};
+            const auto img_type = parent_img.GetType();
+            parent_res.is_array = (img_type == Gcn::ImageType::Color1DArray ||
+                                   img_type == Gcn::ImageType::Color2DArray ||
+                                   img_type == Gcn::ImageType::Color2DMsaaArray);
+            VideoCore::TextureCache::ImageDesc parent_desc(parent_img, parent_res);
+            if (parent_desc.info.guest_address != 0 &&
+                parent_desc.info.pixel_format != vk::Format::eUndefined) {
+                (void)texture_cache.FindImage(parent_desc);
+            }
+        }
+        cached.parent_ensured = true;
+    }
+
+    std::construct_at(&cached.desc, col_buf, hint);
+    const u64 gen_before = texture_cache.RegistryGeneration();
+    const VideoCore::ImageId id = texture_cache.FindImage(cached.desc);
+    cached.image_id = id;
+    cached.slot_epoch = snap.epoch;
+    cached.color_view_memo = {};
+    cached.registry_generation =
+        (gen_before == texture_cache.RegistryGeneration()) ? gen_before : ~0ULL;
+    out_desc = cached.desc;
+    return id;
+}
+
+VideoCore::ImageId Rasterizer::ResolveDirectDepthTarget(
+    u16 uid, const Gcn::DepthBuffer& depth_buf, Gcn::DepthView depth_view,
+    Gcn::DepthControl depth_ctrl, VAddr htile_address, Gcn::CbDbExtent hint,
+    VideoCore::TextureCache::ImageDesc& out_desc) {
+    if (uid == 0u || uid >= DirectTargets::kMaxTargets) {
+        return {};
+    }
+    DirectTargets::TargetSnapshot snap{};
+    if (!DirectTargets::ReadTargetSlot(uid, snap) || !snap.is_depth) {
+        return {};
+    }
+    const auto* raw = reinterpret_cast<const u32*>(&depth_buf);
+    const u32 view_raw = std::bit_cast<u32>(depth_view);
+    if (raw[0] != snap.raw_regs[0] || raw[1] != snap.raw_regs[1] ||
+        raw[2] != snap.raw_regs[2] || raw[3] != snap.raw_regs[3] ||
+        raw[6] != snap.raw_regs[6] || raw[7] != snap.raw_regs[7] ||
+        view_raw != snap.raw_regs[8] || hint.raw != snap.raw_regs[12] ||
+        (VAddr(snap.raw_regs[9]) << 8) != htile_address) {
+        return {};
+    }
+
+    auto& cached = direct_target_cache[uid];
+    const u64 generation = texture_cache.RegistryGeneration();
+    const bool memo_enabled = !BbToggle::Disabled(BbToggle::TextureBindingMemo);
+    if (memo_enabled && cached.slot_epoch == snap.epoch &&
+        cached.registry_generation == generation && cached.image_id) {
+        out_desc = cached.desc;
+        out_desc.view_info.is_storage = bool(depth_ctrl.depth_write_enable);
+        texture_cache.MarkFound(cached.image_id);
+        return cached.image_id;
+    }
+
+    std::construct_at(&cached.desc, depth_buf, depth_view, depth_ctrl, htile_address, hint);
+    const u64 gen_before = texture_cache.RegistryGeneration();
+    const VideoCore::ImageId id = texture_cache.FindImage(cached.desc);
+    cached.image_id = id;
+    cached.slot_epoch = snap.epoch;
+    cached.depth_view_memo = {};
+    cached.registry_generation =
+        (gen_before == texture_cache.RegistryGeneration()) ? gen_before : ~0ULL;
+    out_desc = cached.desc;
+    return id;
+}
+
 void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     BB_SECTION(PrepareRenderState);
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
@@ -145,40 +250,145 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
 
     const bool skip_cb_binding =
         regs.color_control.mode == Gcn::ColorControl::OperationMode::Disable;
-    for (s32 cb = 0; cb < std::bit_width(key.mrt_mask); ++cb) {
-        auto& [image_id, desc] = cb_descs[cb];
-        const auto& col_buf = regs.color_buffers[cb];
-        const u32 target_mask = regs.color_target_mask.GetMask(cb);
-        if (skip_cb_binding || !col_buf || !target_mask || (key.mrt_mask & (1 << cb)) == 0) {
-            image_id = {};
-            continue;
+    const s32 num_cb = std::bit_width(key.mrt_mask);
+    const bool want_depth =
+        (regs.depth_control.depth_enable && regs.depth_buffer.DepthValid()) ||
+        (regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid());
+    const VAddr htile_address = want_depth ? regs.depth_htile_data_base.GetAddress() : 0;
+    const u64 cur_gen = texture_cache.RegistryGeneration();
+
+    u8 active_cb_mask = 0;
+    if (!skip_cb_binding) {
+        for (s32 cb = 0; cb < num_cb; ++cb) {
+            if ((key.mrt_mask & (1u << cb)) != 0 && regs.color_buffers[cb] &&
+                regs.color_target_mask.GetMask(cb) != 0) {
+                active_cb_mask |= static_cast<u8>(1u << cb);
+            }
         }
-        const auto& hint = CbExtent(cb);
-        const u32 tag = 1;
-        image_id = bound_images.emplace_back(FindTargetMemoized(
-            desc, last_targets[cb], [&] { std::construct_at(&desc, col_buf, hint); }, tag,
-            col_buf, hint));
-        auto& image = texture_cache.GetImage(image_id);
-        image.binding.is_target = 1u;
     }
 
-    if ((regs.depth_control.depth_enable && regs.depth_buffer.DepthValid()) ||
-        (regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid())) {
-        const auto htile_address = regs.depth_htile_data_base.GetAddress();
-        const auto& hint = DbExtent();
-        auto& [image_id, desc] = db_desc;
-        const u32 tag = 2;
-        image_id = bound_images.emplace_back(FindTargetMemoized(
-            desc, last_targets[Gcn::NUM_COLOR_BUFFERS],
-            [&] {
-                std::construct_at(&desc, regs.depth_buffer, regs.depth_view, regs.depth_control,
-                                  htile_address, hint);
-            },
-            tag, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address, hint));
-        auto& image = texture_cache.GetImage(image_id);
-        image.binding.is_target = 1u;
+    // V3.1 Per-Pass Fast Path (~95% of draws): inline L1 register signature match with zero
+    // 256-byte stack zeroing or FNV-1a hashing across consecutive draws in the same render pass.
+    bool fast_hit = !BbToggle::Disabled(BbToggle::TextureBindingMemo) &&
+                    prepared_pass.valid &&
+                    prepared_pass.generation == cur_gen &&
+                    prepared_pass.mrt_mask == key.mrt_mask &&
+                    prepared_pass.skip_cb == skip_cb_binding &&
+                    prepared_pass.active_cb_mask == active_cb_mask &&
+                    prepared_pass.has_depth == want_depth;
+    if (fast_hit) {
+        constexpr u32 kColorInfoIdentityMask = 0x80001FFFu;
+        u8 m = active_cb_mask;
+        while (m != 0 && fast_hit) {
+            const u32 cb = static_cast<u32>(std::countr_zero(m));
+            m &= static_cast<u8>(m - 1u);
+            const auto& cur = regs.color_buffers[cb];
+            const auto& prev = prepared_pass.cb_buf[cb];
+            const auto id = cb_descs[cb].first;
+            fast_hit = bool(id) &&
+                       !texture_cache.GetImage(id).binding.needs_rebind &&
+                       CbExtent(cb).raw == prepared_pass.cb_extent[cb].raw &&
+                       cur.base_address == prev.base_address &&
+                       std::memcmp(&cur, &prev, 4 * sizeof(u32)) == 0 &&
+                       ((cur.info.raw ^ prev.info.raw) & kColorInfoIdentityMask) == 0u &&
+                       cur.attrib.raw == prev.attrib.raw &&
+                       cur.cmask_base_address == prev.cmask_base_address &&
+                       cur.fmask_base_address == prev.fmask_base_address;
+        }
+        if (fast_hit && want_depth) {
+            const auto id = db_desc.first;
+            fast_hit = bool(id) &&
+                       !texture_cache.GetImage(id).binding.needs_rebind &&
+                       DbExtent().raw == prepared_pass.db_extent.raw &&
+                       htile_address == prepared_pass.htile_addr &&
+                       std::bit_cast<u32>(regs.depth_view) == prepared_pass.depth_view_raw &&
+                       std::memcmp(&regs.depth_buffer, &prepared_pass.depth_buf,
+                                   sizeof(Gcn::DepthBuffer)) == 0;
+        }
+    }
+
+    if (fast_hit) {
+        for (s32 cb = 0; cb < num_cb; ++cb) {
+            if (const auto id = cb_descs[cb].first) {
+                bound_images.emplace_back(id);
+                texture_cache.MarkFound(id);
+                texture_cache.GetImage(id).binding.is_target = 1u;
+            }
+        }
+        if (want_depth) {
+            db_desc.second.view_info.is_storage = bool(regs.depth_control.depth_write_enable);
+            const auto id = db_desc.first;
+            bound_images.emplace_back(id);
+            texture_cache.MarkFound(id);
+            texture_cache.GetImage(id).binding.is_target = 1u;
+        }
     } else {
-        db_desc.first = {};
+        for (s32 cb = 0; cb < num_cb; ++cb) {
+            auto& [image_id, desc] = cb_descs[cb];
+            if ((active_cb_mask & (1u << cb)) == 0) {
+                image_id = {};
+                active_cb_uid[cb] = 0;
+                continue;
+            }
+            const auto& col_buf = regs.color_buffers[cb];
+            const auto& hint = CbExtent(cb);
+            const u16 uid = CbUid(cb);
+            VideoCore::ImageId resolved = ResolveDirectColorTarget(uid, col_buf, hint, desc);
+            if (resolved) {
+                active_cb_uid[cb] = uid;
+            } else {
+                active_cb_uid[cb] = 0;
+                const u32 tag = 1;
+                resolved = FindTargetMemoized(
+                    desc, last_targets[cb], [&] { std::construct_at(&desc, col_buf, hint); }, tag,
+                    col_buf, hint);
+            }
+            image_id = bound_images.emplace_back(resolved);
+            auto& image = texture_cache.GetImage(image_id);
+            image.binding.is_target = 1u;
+            prepared_pass.cb_buf[cb] = col_buf;
+            prepared_pass.cb_extent[cb] = hint;
+        }
+
+        if (want_depth) {
+            const auto& hint = DbExtent();
+            auto& [image_id, desc] = db_desc;
+            const u16 uid = DbUid();
+            VideoCore::ImageId resolved = ResolveDirectDepthTarget(
+                uid, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address, hint,
+                desc);
+            if (resolved) {
+                active_db_uid = uid;
+            } else {
+                active_db_uid = 0;
+                const u32 tag = 2;
+                resolved = FindTargetMemoized(
+                    desc, last_targets[Gcn::NUM_COLOR_BUFFERS],
+                    [&] {
+                        std::construct_at(&desc, regs.depth_buffer, regs.depth_view,
+                                          regs.depth_control, htile_address, hint);
+                    },
+                    tag, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address,
+                    hint);
+            }
+            image_id = bound_images.emplace_back(resolved);
+            auto& image = texture_cache.GetImage(image_id);
+            image.binding.is_target = 1u;
+            prepared_pass.depth_buf = regs.depth_buffer;
+            prepared_pass.depth_view_raw = std::bit_cast<u32>(regs.depth_view);
+            prepared_pass.htile_addr = htile_address;
+            prepared_pass.db_extent = hint;
+        } else {
+            db_desc.first = {};
+            active_db_uid = 0;
+        }
+
+        prepared_pass.mrt_mask = key.mrt_mask;
+        prepared_pass.skip_cb = skip_cb_binding;
+        prepared_pass.active_cb_mask = active_cb_mask;
+        prepared_pass.has_depth = want_depth;
+        prepared_pass.generation = texture_cache.RegistryGeneration();
+        prepared_pass.valid = (cur_gen == prepared_pass.generation);
     }
     // bbport: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
     // main camera (shadow passes bind the same layout with the light's camera).
@@ -424,12 +634,19 @@ void Rasterizer::BindColorAttachments(RenderState& state, const GraphicsPipeline
         auto* image = &texture_cache.GetImage(image_id);
         if (image->binding.needs_rebind) {
             last_targets[cb].generation = ~0ULL; // FindImage may rewrite the description
+            prepared_pass.valid = false;
+            if (active_cb_uid[cb] != 0 && active_cb_uid[cb] < direct_target_cache.size()) {
+                direct_target_cache[active_cb_uid[cb]].registry_generation = ~0ULL;
+            }
             image_id = bound_images.emplace_back(texture_cache.FindImage(desc));
             image = &texture_cache.GetImage(image_id);
         }
         texture_cache.UpdateImage(image_id);
         runtime.SetBackingSamples(image, key.color_samples[cb]);
-        const auto& view = texture_cache.FindRenderTarget(image_id, desc);
+        auto* view_memo = (active_cb_uid[cb] != 0 && active_cb_uid[cb] < direct_target_cache.size())
+                              ? &direct_target_cache[active_cb_uid[cb]].color_view_memo
+                              : nullptr;
+        const auto& view = texture_cache.FindRenderTarget(image_id, desc, view_memo);
         const u32 slice = view.info.range.base.layer;
         const u32 mip = view.info.range.base.level;
         const auto& col_buf = regs.color_buffers[cb];
@@ -498,7 +715,11 @@ void Rasterizer::BindDepthAttachment(RenderState& state, bool reduced, TargetRed
     const auto& regs = Regs();
     const auto& desc = db_desc.second;
     const auto htile_address = regs.depth_htile_data_base.GetAddress();
-    const auto& view = texture_cache.FindDepthTarget(image_id, desc);
+    auto* view_memo =
+        (active_db_uid != 0 && active_db_uid < direct_target_cache.size())
+            ? &direct_target_cache[active_db_uid].depth_view_memo[desc.view_info.is_storage ? 1 : 0]
+            : nullptr;
+    const auto& view = texture_cache.FindDepthTarget(image_id, desc, view_memo);
     auto& image = texture_cache.GetImage(image_id);
     const u32 slice = view.info.range.base.layer;
     const bool is_depth_clear =

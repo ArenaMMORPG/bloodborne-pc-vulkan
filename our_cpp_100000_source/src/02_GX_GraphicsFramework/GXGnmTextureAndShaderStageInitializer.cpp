@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include "gx_direct_vulkan.h"
 
 // ============================================================================
 // Bloodborne PS4 Engine (ORBIS) - 02_GX_GraphicsFramework (Batch 11)
@@ -2039,9 +2040,19 @@ extern "C" {
     void     SceGnmTexture_SetBaseAddress256ByteBlocks(void* gnmTex, uint32_t addr256); // 0x10890c0
 }
 
+extern "C" int32_t GXGnmShaderResourceView_InitializeForSurfaceMipSlice(
+    void* outGnmTex,
+    const GXGnmTextureHardwareObject* hwTex,
+    uint32_t viewFormat,
+    uint32_t firstMip,
+    uint32_t firstSlice,
+    uint32_t mipCount,
+    uint32_t sliceCount,
+    uint8_t isArrayOrCube);
+
 // [VMA: 0x216fa60 - 0x217100f] (5551 bytes)
 // Initializes a sce::Gnm::DepthRenderTarget for a specific mip level and array slice range of a 2D or 1D depth/stencil texture, computing Z, Stencil, and HTILE base addresses and alignments.
-extern "C" int32_t GXGnmDepthRenderTarget_InitializeForSurfaceMipSlice(
+static int32_t GXGnmDepthRenderTarget_InitializeForSurfaceMipSlice_Impl(
     void* outDrt,
     const GXGnmTextureHardwareObject* hwTex,
     uint32_t viewFormat,
@@ -2499,9 +2510,26 @@ extern "C" int32_t GXGnmDepthRenderTarget_InitializeForSurfaceMipSlice(
     return 8;
 }
 
+extern "C" int32_t GXGnmDepthRenderTarget_InitializeForSurfaceMipSlice(
+    void* outDrt,
+    const GXGnmTextureHardwareObject* hwTex,
+    uint32_t viewFormat,
+    uint32_t mipLevel,
+    uint32_t firstSlice,
+    uint32_t sliceCount)
+{
+    const int32_t rc = GXGnmDepthRenderTarget_InitializeForSurfaceMipSlice_Impl(
+        outDrt, hwTex, viewFormat, mipLevel, firstSlice, sliceCount);
+    if (rc == 0 && gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectTargets)) {
+        gx_direct_vk::RegisterDirectDepthTarget(
+            outDrt, nullptr, mipLevel, firstSlice, sliceCount);
+    }
+    return rc;
+}
+
 // [VMA: 0x216e1d0 - 0x216fa58] (6281 bytes)
 // Initializes a sce::Gnm::RenderTarget for a specific mip level and array/depth slice range of a 2D, 3D, or 1D color texture, computing base, CMASK, and FMASK addresses.
-extern "C" int32_t GXGnmRenderTarget_InitializeForSurfaceMipSlice(
+static int32_t GXGnmRenderTarget_InitializeForSurfaceMipSlice_Impl(
     void* outRt,
     const GXGnmTextureHardwareObject* hwTex,
     uint32_t viewFormat,
@@ -3057,6 +3085,45 @@ extern "C" int32_t GXGnmRenderTarget_InitializeForSurfaceMipSlice(
     }
 
     return 8;
+}
+
+extern "C" int32_t GXGnmRenderTarget_InitializeForSurfaceMipSlice(
+    void* outRt,
+    const GXGnmTextureHardwareObject* hwTex,
+    uint32_t viewFormat,
+    uint32_t mipLevel,
+    uint32_t firstSlice,
+    uint32_t sliceCount)
+{
+    const int32_t rc = GXGnmRenderTarget_InitializeForSurfaceMipSlice_Impl(
+        outRt, hwTex, viewFormat, mipLevel, firstSlice, sliceCount);
+    if (rc == 0 && gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectTargets)) {
+        uint64_t parentTsharp[4] = {0, 0, 0, 0};
+        const void* parentPtr = nullptr;
+        if (hwTex && hwTex->sampleCount <= 1u &&
+            (hwTex->mipLevels != 1u || sliceCount < hwTex->depthOrArray)) {
+            uint32_t totalMips = hwTex->mipLevels;
+            if (totalMips == 0u) {
+                uint32_t maxDim = (hwTex->width > hwTex->height) ? hwTex->width : hwTex->height;
+                if (hwTex->dimType == 4u && hwTex->depthOrArray > maxDim) {
+                    maxDim = hwTex->depthOrArray;
+                }
+                totalMips = maxDim ? (32u - static_cast<uint32_t>(__builtin_clz(maxDim))) : 1u;
+            }
+            const uint8_t isArrOrCube =
+                (hwTex->dimType == 3u && (hwTex->depthOrArray > 1u || (hwTex->miscFlags & 4u) != 0u))
+                    ? 1u
+                    : 0u;
+            if (GXGnmShaderResourceView_InitializeForSurfaceMipSlice(
+                    parentTsharp, hwTex, viewFormat, 0u, 0u,
+                    totalMips, hwTex->depthOrArray, isArrOrCube) == 0) {
+                parentPtr = parentTsharp;
+            }
+        }
+        gx_direct_vk::RegisterDirectColorTarget(
+            outRt, parentPtr, mipLevel, firstSlice, sliceCount);
+    }
+    return rc;
 }
 
 // [VMA: 0x216e1c0 - 0x216e1cc] (13 bytes)

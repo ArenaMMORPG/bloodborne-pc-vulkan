@@ -380,9 +380,12 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                 }
                 if (vk_op == DirectVk::Op::SetRenderTarget) {
                     const u32 slot = (op_word >> 16) & 0x7u;
-                    const bool valid = ((op_word >> 24) & 1u) != 0u;
+                    const bool valid = ((op_word >> 19) & 1u) != 0u;
                     if (valid && body_words == 14u) {
                         last_cb_extent[slot].raw = body[13];
+                        last_cb_uid[slot] = static_cast<u16>((op_word >> 20) & 0xFFFu);
+                    } else if (!valid && body_words == 2u) {
+                        last_cb_uid[slot] = 0u;
                     }
                     break;
                 }
@@ -390,8 +393,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     const bool valid = ((op_word >> 16) & 1u) != 0u;
                     if (valid && body_words == 15u) {
                         last_db_extent.raw = body[14];
+                        last_db_uid = static_cast<u16>((op_word >> 20) & 0xFFFu);
                     } else if (!valid && body_words == 2u) {
                         last_db_extent.raw = 0u;
+                        last_db_uid = 0u;
                     }
                     break;
                 }
@@ -672,8 +677,11 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
         }
         break;
     }
-    case Op::ContextControl:
     case Op::ClearState:
+        last_cb_uid.fill(0u);
+        last_db_uid = 0u;
+        break;
+    case Op::ContextControl:
     case Op::SetConfigReg:
     case Op::SetUconfigReg:
     case Op::IndexType:
@@ -971,6 +979,7 @@ void CommandProcessor::SetContextRegHints(const u32* body, u32 body_words) {
     if (reg >= CbColor0Base && reg < CbColor0Base + 8 * CbColorStride &&
         (reg - CbColor0Base) % CbColorStride == 0) {
         const u32 target = (reg - CbColor0Base) / CbColorStride;
+        last_cb_uid[target] = 0u;
         if (count_field == 0x0E || count_field == 0x0D || count_field == 0x0B) {
             ASSERT_MSG(values[count_field] == NopHeader, "no extent hint after the CB setup");
             last_cb_extent[target].raw = values[count_field + 1];
@@ -979,11 +988,13 @@ void CommandProcessor::SetContextRegHints(const u32* body, u32 body_words) {
         }
     } else if (reg >= CbColor0Cmask && reg < CbColor0Cmask + 8 * CbColorStride &&
                (reg - CbColor0Cmask) % CbColorStride == 0) {
+        last_cb_uid[(reg - CbColor0Cmask) / CbColorStride] = 0u;
         if (count_field == 0x04) {
             ASSERT_MSG(values[count_field] == NopHeader, "no extent hint after the CMASK setup");
             last_cb_extent[(reg - CbColor0Cmask) / CbColorStride].raw = values[count_field + 1];
         }
     } else if (reg == DbZInfo) {
+        last_db_uid = 0u;
         if (count_field == 8) {
             ASSERT_MSG(values[20] == NopHeader, "no extent hint after the DB setup");
             last_db_extent.raw = values[21];
