@@ -12,6 +12,7 @@
 #include "common/alignment.h"
 #include "core/memory.h"
 #include "layer/bblayer_write_traps.h"
+#include "render/direct_shaders.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
 #include "textures/texture_cache.h"
@@ -251,7 +252,11 @@ void Manager::RetireOverlapping(VAddr addr, u64 size) {
 }
 
 void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
-    if (entries_by_base.empty() || size == 0) {
+    if (size == 0) {
+        return;
+    }
+    Vulkan::DirectShaders::InvalidateRange(addr, size);
+    if (entries_by_base.empty()) {
         return;
     }
     RetireOverlapping(addr, size);
@@ -416,6 +421,7 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
         ev.byte_size = byte_size;
         VideoCore::DirectBuffers::PushEvent(ev);
     }
+    Vulkan::DirectShaders::InvalidateRange(addr, byte_size);
 }
 
 void bb_direct_vk_prepare_buffer_write(const void* gpu_addr, uint64_t byte_size) noexcept {

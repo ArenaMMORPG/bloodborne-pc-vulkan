@@ -8,6 +8,7 @@
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
 #include "render/blob_store.h"
+#include "render/direct_shaders.h"
 #include "render/pipeline_cache.h"
 #include "render/pipeline_store.h"
 #include "shader/info.h"
@@ -199,6 +200,8 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
     if (new_program) {
         module = compile();
         it_pgm.value() = std::move(program);
+        it_pgm.value()->info_template = std::make_unique<Shader::Info>(it_pgm.value()->info);
+        DirectShaders::NoteProgramCreated(it_pgm.value()->info.pgm_hash, it_pgm.value().get());
     } else {
         auto& modules = it_pgm.value()->modules;
         const auto it = std::ranges::find(modules, spec, &Program::Module::spec);
@@ -325,9 +328,11 @@ void PipelineCache::DropPreloaded() {
         instance.GetDevice().destroyShaderModule(vk::ShaderModule{module});
     }
     program_cache.clear();
+    DirectShaders::ClearCachedPrograms();
 }
 
 void PipelineCache::WarmUp() {
+    DirectShaders::InitializeManifestLibrary();
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
         return;
     }

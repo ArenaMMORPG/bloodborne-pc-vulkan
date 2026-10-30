@@ -163,7 +163,8 @@ public:
     using Result = std::tuple<const Shader::Info*, vk::ShaderModule,
                               std::optional<Shader::Gcn::FetchShaderData>, u64>;
     Result GetProgram(PipelineSelection& sel, Shader::HwStage stage, Shader::SwStage l_stage,
-                      const Shader::ShaderParams& params, Shader::Backend::Bindings& binding);
+                      const Shader::ShaderParams& params, Shader::Backend::Bindings& binding,
+                      Program* direct_program = nullptr);
 
     static std::string GetShaderName(Shader::HwStage stage, u64 hash,
                                      std::optional<size_t> perm = {});
@@ -178,7 +179,7 @@ private:
     bool RefreshComputeKey();
     Result LookUpProgram(PipelineSelection& sel, const Shader::RuntimeInfo& runtime_info,
                          const Shader::ShaderParams& params, Shader::Backend::Bindings& binding,
-                         Shader::HwStage hw_stage);
+                         Shader::HwStage hw_stage, const Program* direct_program = nullptr);
 
     void DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage, size_t perm_idx,
                     std::string_view ext);

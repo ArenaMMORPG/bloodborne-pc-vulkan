@@ -115,9 +115,34 @@ extern "C" {
 // Forward declaration within this compilation unit (defined at 0x216d7f0)
 extern "C" uint64_t GXGnmTexture2D_InitGnmTextureFromSurfaceInfo(const void* surfaceInfo, void* outGnmTex);
 
+static inline void RetireDirectShaderProgramUcode(const GXShaderProgramBase* self, bool isGs = false) noexcept {
+    if (!self || !self->shaderUcodeGpu) {
+        return;
+    }
+    uint64_t span = 256ULL;
+    if (self->shaderHeaderCpu) {
+        const uint8_t* hdr = static_cast<const uint8_t*>(self->shaderHeaderCpu);
+        span = static_cast<uint64_t>(*reinterpret_cast<const uint32_t*>(hdr) & 0x7FFFFFu) + 256ULL;
+        if (isGs) {
+            const uint32_t gsDwords = hdr[0x03];
+            const uint64_t copyLo = *reinterpret_cast<const uint32_t*>(hdr + gsDwords * 4 + 0x40);
+            const uint64_t copyHi = *reinterpret_cast<const uint32_t*>(hdr + gsDwords * 4 + 0x44);
+            const uint64_t copyAddr = (copyLo << 8) | (copyHi << 40);
+            if (copyAddr != 0) {
+                const uint32_t copySize =
+                    *reinterpret_cast<const uint32_t*>(hdr + gsDwords * 4 + 0x38) & 0x7FFFFFu;
+                gx_direct_vk::RetireDirectShaderRange(
+                    reinterpret_cast<const void*>(copyAddr), static_cast<uint64_t>(copySize) + 256ULL);
+            }
+        }
+    }
+    gx_direct_vk::RetireDirectShaderRange(self->shaderUcodeGpu, span);
+}
+
 // [VMA: 0x21753b0 - 0x21753ea] (58 bytes)
 // Releases CPU shader header (+0x100) via CPU allocator (+0x110) and GPU ucode (+0x108) via GPU allocator (+0x118).
 extern "C" void GXGnmHullShaderProgram_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -168,6 +193,7 @@ extern "C" int32_t GXGnmHullShaderProgram_InitializeFromBinary(
 // [VMA: 0x21751b0 - 0x21751ea] (58 bytes)
 // Releases Domain Shader CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmDomainShaderProgram_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -507,6 +533,7 @@ extern "C" void GXStreamOutElementVector_GrowAndReallocate(GXStreamOutVector* ve
 // [VMA: 0x2173eb0 - 0x2173eea] (58 bytes)
 // Releases Geometry Shader with StreamOut CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmGeometryShaderWithStreamOut_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self, true);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -751,8 +778,19 @@ extern "C" int32_t GXGnmGeometryShaderProgram_InitializeFromShdrBinary(
     self->shaderUcodeGpu = gpuBase;
     uint8_t* vsCopyGpuPtr = gpuBase + gsAlignedSize;
     if (CGMemoryGnm_IsCpuAccessibleAddress(gpuBase)) {
+        if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) && totalGpuSize > 0u) {
+            gx_direct_vk::PrepareDirectBufferWrite(gpuBase, totalGpuSize);
+            gx_direct_vk::NoteDirectAssetBufferWrite(gpuBase, totalGpuSize);
+        }
         CGMemoryGnm_Memcpy(gpuBase, gsPtrs.ucode, gsPtrs.size);
         CGMemoryGnm_Memcpy(vsCopyGpuPtr, vsCopyPtrs.ucode, vsCopyPtrs.size);
+        if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) && totalGpuSize > 0u) {
+            gx_direct_vk::NoteDirectAssetBufferWrite(gpuBase, totalGpuSize);
+        }
+        gx_direct_vk::RegisterDirectShaderBinary(
+            gpuBase, static_cast<uint32_t>(gsAlignedSize), shdrData, static_cast<uint32_t>(shdrSize), 3u);
+        gx_direct_vk::RegisterDirectShaderBinary(
+            vsCopyGpuPtr, vsCopyPtrs.size, shdrData, static_cast<uint32_t>(shdrSize), 1u);
     }
 
     const uint8_t* gsHdr = gsPtrs.header;
@@ -865,6 +903,7 @@ extern "C" int32_t GXGnmGeometryShaderProgram_InitializeFromShdrBinary(
 // [VMA: 0x2173150 - 0x217318a] (58 bytes)
 // Releases Geometry Shader CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmGeometryShaderProgram_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self, true);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -941,6 +980,7 @@ extern "C" int32_t GXGnmVertexOrPixelShaderProgram_InitializeFromShdrBinary(
 // [VMA: 0x2172ee0 - 0x2172f1a] (58 bytes)
 // Releases Vertex/Pixel Shader CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmVertexOrPixelShaderProgram_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -992,6 +1032,7 @@ extern "C" int32_t GXGnmExportShaderProgram_InitializeFromBinary(
 // [VMA: 0x2172ce0 - 0x2172d1a] (58 bytes)
 // Releases Export Shader CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmExportShaderProgram_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -1005,6 +1046,7 @@ extern "C" void GXGnmShaderProgram_ZeroInit128(void* self, const void* src) {
 // [VMA: 0x2172c00 - 0x2172c3a] (58 bytes)
 // Releases Shader Stage variant A CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmShaderStageVariantA_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -1018,6 +1060,7 @@ extern "C" void GXGnmShaderStageVariantA_ZeroInit120(void* self, const void* src
 // [VMA: 0x2172b20 - 0x2172b5a] (58 bytes)
 // Releases Shader Stage variant B CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmShaderStageVariantB_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -1031,6 +1074,7 @@ extern "C" void GXGnmShaderStageVariantB_ZeroInit120(void* self, const void* src
 // [VMA: 0x2172a40 - 0x2172a7a] (58 bytes)
 // Releases Geometry Shader Stage variant C CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmGeometryShaderStageVariantC_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self, true);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -1044,6 +1088,7 @@ extern "C" void GXGnmGeometryShaderStageVariantC_ZeroInit150(void* self, const v
 // [VMA: 0x2172960 - 0x217299a] (58 bytes)
 // Releases Shader Stage variant D CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmShaderStageVariantD_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }
@@ -1057,6 +1102,7 @@ extern "C" void GXGnmShaderStageVariantD_ZeroInit120(void* self, const void* src
 // [VMA: 0x2172880 - 0x21728ba] (58 bytes)
 // Releases Shader Stage variant E CPU header (+0x100) and GPU ucode (+0x108).
 extern "C" void GXGnmShaderStageVariantE_ReleaseBinaries(GXShaderProgramBase* self) {
+    RetireDirectShaderProgramUcode(self);
     self->cpuAllocator->vptr->Free(self->cpuAllocator, self->shaderHeaderCpu);
     self->gpuAllocator->vptr->Free(self->gpuAllocator, self->shaderUcodeGpu);
 }

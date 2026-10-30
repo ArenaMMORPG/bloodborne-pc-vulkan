@@ -29,6 +29,7 @@
 #include "cp/command_processor.h"
 #include "game_profile.h"
 #include "gcn/decoder.h"
+#include "render/direct_shaders.h"
 #include "render/gcn_to_vk.h"
 #include "render/pipeline_cache.h"
 #include "render/pipeline_store.h"
@@ -311,7 +312,20 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     WarmUp();
 }
 
-PipelineCache::~PipelineCache() = default;
+PipelineCache::~PipelineCache() {
+    const auto tel = DirectShaders::ReadTelemetry();
+    if (tel.registered_binaries != 0 || tel.stage_a_direct_hits != 0 ||
+        tel.worker_direct_hits != 0) {
+        std::printf("[bb_vulkan] V4.1 DirectShaders telemetry: registered=%llu "
+                    "(manifest=%llu/%u), StageA_hits=%llu, DrawPrep_hits=%llu\n",
+                    static_cast<unsigned long long>(tel.registered_binaries),
+                    static_cast<unsigned long long>(tel.manifest_binaries_bound),
+                    tel.manifest_total,
+                    static_cast<unsigned long long>(tel.stage_a_direct_hits),
+                    static_cast<unsigned long long>(tel.worker_direct_hits));
+    }
+    DirectShaders::ClearCachedPrograms();
+}
 
 const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& sel, HwStage stage,
                                                            SwStage l_stage) {
@@ -358,9 +372,18 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         gs.out_vertex_data_size = regs.vgt_gs_vert_itemsize[0];
         gs.mode = regs.vgt_gs_mode.mode;
         // The copy shader (the VS program) moves the GS ring's vertices to the outputs.
-        const auto copy = Gcn::GetParams(regs.vs_program);
-        gs.vs_copy = copy.code;
-        gs.vs_copy_hash = copy.hash;
+        DirectShaders::Snapshot copy_snap;
+        const VAddr copy_base = regs.vs_program.Address<VAddr>();
+        if (DirectShaders::TryLookup(copy_base, copy_snap, sel.worker != nullptr) &&
+            copy_snap.cpu_immutable != 0) {
+            gs.vs_copy = std::span<const u32>{reinterpret_cast<const u32*>(copy_base),
+                                              copy_snap.code_dwords};
+            gs.vs_copy_hash = copy_snap.shader_hash;
+        } else {
+            const auto copy = Gcn::GetParams(regs.vs_program);
+            gs.vs_copy = copy.code;
+            gs.vs_copy_hash = copy.hash;
+        }
         DumpShader(gs.vs_copy, gs.vs_copy_hash, HwStage::Vertex, 0, "copy.bin");
         break;
     }
@@ -625,12 +648,20 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         if (base != stage.pgm_base || base == 0) {
             return nullptr;
         }
-        if (program_write_sync) {
-            program_write_sync(base, 256);
-        }
-        const auto* bin = Gcn::DirectBinaryInfo(reinterpret_cast<const u32*>(base));
-        if (!bin || bin->shader_hash != stage.hash) {
-            return nullptr; // not a program or changed: the regular path skips or reselects
+        DirectShaders::Snapshot direct_snap;
+        if (DirectShaders::TryLookup(base, direct_snap, /*is_worker=*/false) &&
+            direct_snap.cpu_immutable != 0) {
+            if (direct_snap.shader_hash != stage.hash) {
+                return nullptr;
+            }
+        } else {
+            if (program_write_sync) {
+                program_write_sync(base, 256);
+            }
+            const auto* bin = Gcn::DirectBinaryInfo(reinterpret_cast<const u32*>(base));
+            if (!bin || bin->shader_hash != stage.hash) {
+                return nullptr; // not a program or changed: the regular path skips or reselects
+            }
         }
         auto& info = const_cast<Program*>(stage.program)->info;
         info.pgm_base = base;
@@ -1025,25 +1056,58 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
         const auto* pgm = regs.stage_enable.IsStageEnabled(in) ? regs.ProgramForStage(in) : nullptr;
         // A geometry stage also runs the copy shader (the VS program).
         const auto* copy = stage_in == HwStage::Geometry && pgm ? &regs.vs_program : nullptr;
-        if (!pgm || !pgm->Address<u32*>() ||
-            !LooksLikeProgram(pgm->Address<u32*>(), stage_in, !sel.worker) ||
-            (copy && (!copy->Address<u32*>() ||
-                      !LooksLikeProgram(copy->Address<u32*>(), HwStage::Vertex, !sel.worker)))) {
-            not_a_program |= pgm && pgm->Address<u32*>();
+        const VAddr pgm_base = pgm ? pgm->Address<VAddr>() : 0;
+        if (pgm_base == 0) {
             key.stage_hashes[out] = 0;
             sel.infos[out] = nullptr;
             return false;
         }
-        const auto params = Gcn::GetParams(*pgm);
-        if (!sel.worker && !program_cache.contains(params.hash) && !ProgramDecodes(params, stage_in)) {
-            not_a_program = true;
-            key.stage_hashes[out] = 0;
-            sel.infos[out] = nullptr;
-            return false;
+        Shader::ShaderParams params{.user_data = pgm->user_data};
+        Program* direct_pgm = nullptr;
+        DirectShaders::Snapshot direct_snap;
+        if (DirectShaders::TryLookup(pgm_base, direct_snap, sel.worker != nullptr) &&
+            direct_snap.cpu_immutable != 0) {
+            if (copy) {
+                const VAddr copy_base = copy->Address<VAddr>();
+                DirectShaders::Snapshot copy_snap;
+                const bool copy_ok =
+                    copy_base != 0 &&
+                    ((DirectShaders::TryLookup(copy_base, copy_snap, sel.worker != nullptr) &&
+                      copy_snap.cpu_immutable != 0) ||
+                     LooksLikeProgram(reinterpret_cast<const u32*>(copy_base), HwStage::Vertex,
+                                      !sel.worker));
+                if (!copy_ok) {
+                    not_a_program = true;
+                    key.stage_hashes[out] = 0;
+                    sel.infos[out] = nullptr;
+                    return false;
+                }
+            }
+            params.code = std::span<const u32>{reinterpret_cast<const u32*>(pgm_base),
+                                               direct_snap.code_dwords};
+            params.hash = direct_snap.shader_hash;
+            direct_pgm = direct_snap.cached_program;
+        } else {
+            if (!LooksLikeProgram(reinterpret_cast<const u32*>(pgm_base), stage_in, !sel.worker) ||
+                (copy && (!copy->Address<u32*>() ||
+                          !LooksLikeProgram(copy->Address<u32*>(), HwStage::Vertex, !sel.worker)))) {
+                not_a_program = true;
+                key.stage_hashes[out] = 0;
+                sel.infos[out] = nullptr;
+                return false;
+            }
+            params = Gcn::GetParams(*pgm);
+            if (!sel.worker && !program_cache.contains(params.hash) &&
+                !ProgramDecodes(params, stage_in)) {
+                not_a_program = true;
+                key.stage_hashes[out] = 0;
+                sel.infos[out] = nullptr;
+                return false;
+            }
         }
         std::optional<Shader::Gcn::FetchShaderData> fetch_shader;
         std::tie(sel.infos[out], sel.modules[out], fetch_shader, key.stage_hashes[out]) =
-            GetProgram(sel, stage_in, stage_out, params, binding);
+            GetProgram(sel, stage_in, stage_out, params, binding, direct_pgm);
         if (!sel.infos[out]) {
             not_a_program |= !sel.worker; // its fetch shader does not decode (GetProgram)
             key.stage_hashes[out] = 0;
@@ -1147,15 +1211,31 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
 bool PipelineCache::RefreshComputeKey() {
     Shader::Backend::Bindings binding{};
     const auto& cs = liverpool->GetCsRegs();
-    if (!cs.Address<u32*>() || !LooksLikeProgram(cs.Address<u32*>(), HwStage::Compute, true)) {
+    const VAddr cs_base = cs.Address<VAddr>();
+    if (cs_base == 0) {
         return false;
     }
-    const auto cs_params = Gcn::GetParams(cs);
-    if (!program_cache.contains(cs_params.hash) && !ProgramDecodes(cs_params, HwStage::Compute)) {
-        return false;
+    Shader::ShaderParams cs_params{.user_data = cs.user_data};
+    Program* direct_pgm = nullptr;
+    DirectShaders::Snapshot direct_snap;
+    if (DirectShaders::TryLookup(cs_base, direct_snap, /*is_worker=*/false) &&
+        direct_snap.cpu_immutable != 0) {
+        cs_params.code =
+            std::span<const u32>{reinterpret_cast<const u32*>(cs_base), direct_snap.code_dwords};
+        cs_params.hash = direct_snap.shader_hash;
+        direct_pgm = direct_snap.cached_program;
+    } else {
+        if (!LooksLikeProgram(reinterpret_cast<const u32*>(cs_base), HwStage::Compute, true)) {
+            return false;
+        }
+        cs_params = Gcn::GetParams(cs);
+        if (!program_cache.contains(cs_params.hash) &&
+            !ProgramDecodes(cs_params, HwStage::Compute)) {
+            return false;
+        }
     }
     std::tie(sel.infos[0], sel.modules[0], sel.fetch_shader, compute_key.value) =
-        GetProgram(sel, HwStage::Compute, SwStage::Compute, cs_params, binding);
+        GetProgram(sel, HwStage::Compute, SwStage::Compute, cs_params, binding, direct_pgm);
     return true;
 }
 
@@ -1194,16 +1274,26 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
                                                    const Shader::RuntimeInfo& runtime_info,
                                                    const Shader::ShaderParams& params,
                                                    Shader::Backend::Bindings& binding,
-                                                   HwStage hw_stage) {
+                                                   HwStage hw_stage,
+                                                   const Program* direct_program) {
     // A draw-preparation worker only looks up, with its own copy of the program's Info.
     auto& worker = *sel.worker;
     std::shared_lock lk{programs_mutex};
-    const auto found = program_cache.find(params.hash);
-    if (found == program_cache.end() || !found->second->info_template) {
+    const Program* program = direct_program;
+    if (!program) {
+        const auto found = program_cache.find(params.hash);
+        if (found == program_cache.end()) {
+            worker.failed = true;
+            return {};
+        }
+        program = found->second.get();
+        DirectShaders::AttachProgramToSlot(params.Base(), params.hash,
+                                           const_cast<Program*>(program));
+    }
+    if (!program->info_template) {
         worker.failed = true;
         return {};
     }
-    const Program* program = found->second.get();
     auto& info = worker.infos.try_emplace(program, *program->info_template).first->second;
     info.pgm_base = params.Base();
     info.user_data = params.user_data;
@@ -1240,31 +1330,40 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
 PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage hw_stage,
                                                 SwStage sw_stage,
                                                 const Shader::ShaderParams& params,
-                                                Shader::Backend::Bindings& binding) {
+                                                Shader::Backend::Bindings& binding,
+                                                Program* direct_program) {
     auto runtime_info = BuildRuntimeInfo(sel, hw_stage, sw_stage);
     if (sel.worker) {
-        return LookUpProgram(sel, runtime_info, params, binding, hw_stage);
+        return LookUpProgram(sel, runtime_info, params, binding, hw_stage, direct_program);
     }
 
-    const auto found = program_cache.find(params.hash); // this thread is the only writer
-    if (found == program_cache.end()) {
-        auto new_program = std::make_unique<Program>(hw_stage, sw_stage, params);
-        const auto start = binding;
-        const auto module = CompileModule(new_program->info, runtime_info, params.code, 0, binding);
-        auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
-        const u64 perm_hash = HashCombine(params.hash, 0);
-        PipelineStore::SaveShaderMeta(new_program->info, spec, perm_hash, 0);
-        new_program->AddPermut(module, std::move(spec));
-        new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
-        Program* program = new_program.get();
-        {
-            std::unique_lock lk{programs_mutex};
-            program_cache.emplace(params.hash, std::move(new_program));
+    Program* resolved = direct_program;
+    if (!resolved) {
+        const auto found = program_cache.find(params.hash); // this thread is the only writer
+        if (found == program_cache.end()) {
+            auto new_program = std::make_unique<Program>(hw_stage, sw_stage, params);
+            const auto start = binding;
+            const auto module =
+                CompileModule(new_program->info, runtime_info, params.code, 0, binding);
+            auto spec =
+                Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
+            const u64 perm_hash = HashCombine(params.hash, 0);
+            PipelineStore::SaveShaderMeta(new_program->info, spec, perm_hash, 0);
+            new_program->AddPermut(module, std::move(spec));
+            new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
+            Program* program = new_program.get();
+            {
+                std::unique_lock lk{programs_mutex};
+                program_cache.emplace(params.hash, std::move(new_program));
+            }
+            DirectShaders::NoteProgramCreated(params.hash, program);
+            return {&program->info, module, program->modules[0].spec.fetch_shader_data, perm_hash};
         }
-        return {&program->info, module, program->modules[0].spec.fetch_shader_data, perm_hash};
+        resolved = found.value().get();
+        DirectShaders::AttachProgramToSlot(params.Base(), params.hash, resolved);
     }
 
-    Program& program = *found.value();
+    Program& program = *resolved;
     if (!program.info_template) {
         // Programs preloaded from the pipeline cache get their template on first use.
         std::unique_lock lk{programs_mutex};

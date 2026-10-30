@@ -29,6 +29,8 @@
 #include <cwchar>
 #include <wctype.h>
 
+#include "gx_direct_vulkan.h"
+
 namespace Bloodborne {
 namespace GX {
 
@@ -1948,6 +1950,11 @@ static void GXShaderResource_FreeGnmShader(CGShaderGnm*& pShd) {
     void* pObjAlloc = CGObject_GetCreatorAllocator(pShd);
     using FreeFn = void(*)(void*, void*);
 
+    if (pShd->m_pShaderHeader) {
+        const uint64_t gpuUcodeSpan =
+            (pShd->m_pShaderBinary ? static_cast<uint64_t>((*pShd->m_pShaderBinary) & 0x7FFFFFu) : 0ULL) + 256ULL;
+        gx_direct_vk::RetireDirectShaderRange(pShd->m_pShaderHeader, gpuUcodeSpan);
+    }
     if (pShd->m_pBinaryAllocator) {
         void** vtbl = *reinterpret_cast<void***>(pShd->m_pBinaryAllocator);
         reinterpret_cast<FreeFn>(vtbl[0x70 / 8])(pShd->m_pBinaryAllocator, pShd->m_pShaderBinary);
@@ -2258,6 +2265,14 @@ void GXComputeShaderResource_DeletingDtor(GXShaderResource* pThis) {
         if (pThis->m_pGnmShader) {
             void* pObjAlloc = CGObject_GetCreatorAllocator(pThis->m_pGnmShader);
             using FreeFn = void(*)(void*, void*);
+            if (pThis->m_pGnmShader->m_pShaderHeader) {
+                const uint64_t gpuUcodeSpan =
+                    (pThis->m_pGnmShader->m_pShaderBinary
+                         ? static_cast<uint64_t>((*pThis->m_pGnmShader->m_pShaderBinary) & 0x7FFFFFu)
+                         : 0ULL) +
+                    256ULL;
+                gx_direct_vk::RetireDirectShaderRange(pThis->m_pGnmShader->m_pShaderHeader, gpuUcodeSpan);
+            }
             if (pThis->m_pGnmShader->m_pBinaryAllocator) {
                 void** vtbl = *reinterpret_cast<void***>(pThis->m_pGnmShader->m_pBinaryAllocator);
                 reinterpret_cast<FreeFn>(vtbl[0x70 / 8])(pThis->m_pGnmShader->m_pBinaryAllocator, pThis->m_pGnmShader->m_pShaderBinary);

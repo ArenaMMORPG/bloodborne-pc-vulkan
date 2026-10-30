@@ -455,6 +455,8 @@ int32_t CGShaderBinaryGnm_AllocateAndUploadUcode(
         } else {
             sub_261a1b0_memcpy(gpu_mem, info.ucode_src, info.ucode_size);
         }
+        gx_direct_vk::RegisterDirectShaderBinary(
+            gpu_mem, info.ucode_size, shdr_header, 0u, expected_shader_type);
     }
     *out_shader_struct_ptr = info.shader_struct;
     return 0;
@@ -859,6 +861,12 @@ int32_t CreateStageShaderCommon(
     // Patch 40-bit GPU shader binary address (`>> 8`) into `SPI_SHADER_PGM_LO/HI_*` at `+0x08` / `+0x0c`
     *reinterpret_cast<uint32_t*>(mem + 0x08) = static_cast<uint32_t>(gpu_ucode_addr >> 8);
     *reinterpret_cast<uint32_t*>(mem + 0x0c) = static_cast<uint32_t>(gpu_ucode_addr >> 40);
+    gx_direct_vk::RegisterDirectShaderBinary(
+        reinterpret_cast<const void*>(gpu_ucode_addr),
+        (*reinterpret_cast<const uint32_t*>(mem) & 0x7FFFFFu),
+        container_bytes,
+        container_size,
+        stage_flags);
 
     err = sub_21754e0_BuildShaderBindingHeader(
         out_binding_header,

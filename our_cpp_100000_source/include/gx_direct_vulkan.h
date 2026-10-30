@@ -48,6 +48,15 @@ __attribute__((weak)) void bb_direct_vk_register_immutable_buffer(uint32_t resou
                                                                   uint32_t bind_flags) noexcept;
 __attribute__((weak)) void bb_direct_vk_retire_buffer_range(const void* gpu_addr,
                                                             uint64_t byte_size) noexcept;
+
+// V4.1: Direct 752-shader SPIR-V manifest & lock-free guest shader binary registry
+__attribute__((weak)) void bb_direct_vk_register_shader_binary(const void* gpu_ucode_addr,
+                                                               uint32_t ucode_alloc_bytes,
+                                                               const void* shdr_container,
+                                                               uint32_t container_bytes,
+                                                               uint32_t shader_type) noexcept;
+__attribute__((weak)) void bb_direct_vk_retire_shader_range(const void* gpu_addr,
+                                                            uint64_t byte_size) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -299,6 +308,49 @@ inline void RetireDirectBufferRange(const void* gpu_addr, uint64_t byte_size) no
         return;
     }
     bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
+}
+
+inline bool EnabledV4() noexcept {
+    return (ActiveMask() & kModuleV4_NativeShaders) != 0u;
+}
+
+inline constexpr uint32_t kV4Sub_DirectShaderManifest = 1u << 0; // V4.1: Direct 752-shader SPIR-V manifest & O(1) Stage-A/DrawPrep shader registry
+inline constexpr uint32_t kV4Sub_PrewarmedPipelines   = 1u << 1; // V4.2: Prewarmed Graphics & Compute VkPipelineCache
+
+inline uint32_t ActiveV4SubMask() noexcept {
+    static const uint32_t sub = []() -> uint32_t {
+        const char* env_sub = std::getenv("BB_DIRECT_V4_MASK");
+        if (env_sub && env_sub[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_sub, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return sub;
+}
+
+inline bool EnabledV4Sub(uint32_t bit) noexcept {
+    return EnabledV4() && ((ActiveV4SubMask() & bit) != 0u);
+}
+
+inline void RegisterDirectShaderBinary(const void* gpu_ucode_addr,
+                                       uint32_t ucode_alloc_bytes,
+                                       const void* shdr_container,
+                                       uint32_t container_bytes,
+                                       uint32_t shader_type) noexcept {
+    if (!EnabledV4Sub(kV4Sub_DirectShaderManifest) || !bb_direct_vk_register_shader_binary ||
+        !gpu_ucode_addr) {
+        return;
+    }
+    bb_direct_vk_register_shader_binary(
+        gpu_ucode_addr, ucode_alloc_bytes, shdr_container, container_bytes, shader_type);
+}
+
+inline void RetireDirectShaderRange(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV4Sub(kV4Sub_DirectShaderManifest) || !bb_direct_vk_retire_shader_range ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_retire_shader_range(gpu_addr, byte_size);
 }
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer

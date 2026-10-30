@@ -7,6 +7,7 @@
 // ============================================================================
 #include "bb_golden_engine.h"
 #include "bbport_guest_code_hooks.h"
+#include "render/direct_shaders.h"
 
 #define GX_HOST_PROVIDES_CYG_PROFILE 1
 #define GX_HOST_PROVIDES_CGMEMORY_MEMCPY 1
@@ -36,39 +37,8 @@ std::atomic<std::uint64_t> g_cpp_camera_updates{0};
 BbGoldenEngine::CameraBridgeState g_camera_bridge{};
 } // namespace
 
-struct GXShaderManifestEntry {
-    const char* bundle;
-    const char* name;
-    const char* safe_name;
-    const char* stage;
-    const char* tess_role;
-    std::uint32_t entry_id;
-    std::uint8_t container_type;
-    std::uint64_t shader_hash;
-    std::uint32_t crc32;
-    std::uint32_t container_bytes;
-    std::uint32_t code_bytes;
-    std::uint32_t instructions;
-    std::uint32_t spirv_words;
-    std::uint32_t rsrc1;
-    std::uint32_t rsrc2;
-    std::uint16_t vgprs;
-    std::uint16_t sgprs;
-    std::uint8_t user_sgprs;
-    std::uint8_t image_count;
-    std::uint8_t sampler_count;
-    std::uint8_t buffer_count;
-    std::uint32_t max_cb_dwords;
-    std::uint32_t max_tbl_dwords;
-    const char* primary_cb_path;
-    const char* primary_cb_name;
-    const char* primary_tex_name;
-};
-
 extern "C" {
 std::uint32_t GXShaderLibrary_GetTotalShaderCount() noexcept;
-const GXShaderManifestEntry* GXShaderLibrary_FindByHash(std::uint64_t shader_hash,
-                                                        std::uint32_t crc32) noexcept;
 
 __attribute__((no_instrument_function)) void __cyg_profile_func_enter(void*, void*) noexcept {}
 __attribute__((no_instrument_function)) void __cyg_profile_func_exit(void*, void*) noexcept {}
@@ -429,9 +399,14 @@ void PatchImage(unsigned char* image, u64 size) {
                 GXShaderLibrary_GetTotalShaderCount(),
                 static_cast<unsigned long long>(g_eboot_live_slide),
                 (env_mods && env_mods[0]) ? env_mods : "all");
-    std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s)\n",
+    Vulkan::DirectShaders::InitializeManifestLibrary();
+    std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s, V2_DrawDispatch=%s, "
+                "V3_ResourceViews=%s, V4_NativeShaders=%s)\n",
                 gx_direct_vk::ActiveMask(),
-                gx_direct_vk::EnabledV1() ? "ON" : "OFF");
+                gx_direct_vk::EnabledV1() ? "ON" : "OFF",
+                gx_direct_vk::EnabledV2() ? "ON" : "OFF",
+                gx_direct_vk::EnabledV3() ? "ON" : "OFF",
+                gx_direct_vk::EnabledV4() ? "ON" : "OFF");
     std::fflush(stdout);
 }
 
@@ -452,8 +427,9 @@ CameraBridgeState ReadCameraBridge() noexcept {
 
 bool QueryShaderManifest(std::uint64_t pgm_hash, std::uint32_t crc32, std::uint32_t code_bytes,
                          ShaderManifestInfo* out) noexcept {
-    const GXShaderManifestEntry* e = GXShaderLibrary_FindByHash(pgm_hash, crc32);
-    if (!e || (code_bytes != 0 && e->code_bytes != code_bytes)) {
+    const GXShaderManifestEntry* e =
+        Vulkan::DirectShaders::FindManifestEntry(pgm_hash, crc32, code_bytes);
+    if (!e) {
         return false;
     }
     g_cpp_manifest_hits.fetch_add(1, std::memory_order_relaxed);

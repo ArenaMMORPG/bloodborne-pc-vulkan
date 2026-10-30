@@ -288,7 +288,11 @@ void DrawPreparation::Enqueue(u64 seq, std::shared_ptr<Submission> submission) {
         recent[seq % RecentSlots] = submission;
         intake.push_back(std::move(submission));
     }
-    // A helper deciding to sleep right now misses this: they wake up every millisecond too.
+    // Non-blocking handoff under `mutex` when free (99%+ of the time when helpers are sleeping),
+    // eliminating the 1 ms lost-wakeup window without ever blocking on a SCHED_IDLE helper.
+    if (std::unique_lock lk{mutex, std::try_to_lock}; lk.owns_lock()) {
+        TakeIntakeLocked();
+    }
     cv.notify_all();
 }
 
@@ -419,9 +423,9 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
         std::shared_ptr<Submission> submission;
         {
             std::unique_lock lk{mutex};
-            // Woken by Enqueue, and every millisecond (its notification may come between the
-            // check and the wait: it does not take `mutex`).
-            while (!cv.wait_for(lk, stop, std::chrono::milliseconds(1), [&] {
+            // Woken by Enqueue (which tries `mutex` before notify), with a 150 us fallback when
+            // `try_to_lock` raced with a helper releasing `mutex` into futex_wait.
+            while (!cv.wait_for(lk, stop, std::chrono::microseconds(150), [&] {
                 TakeIntakeLocked();
                 return next_seq < tail_seq ||
                        (!submissions.empty() && submissions.back()->seq >= next_seq);
