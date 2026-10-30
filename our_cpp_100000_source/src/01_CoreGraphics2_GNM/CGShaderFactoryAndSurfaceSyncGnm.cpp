@@ -446,7 +446,15 @@ int32_t CGShaderBinaryGnm_AllocateAndUploadUcode(
     uint32_t cpu_prot = 0;
     if (sub_2bbf538_sceKernelQueryMemoryProtection(gpu_mem, nullptr, nullptr, &cpu_prot) == 0 &&
         (cpu_prot & 0x01u) != 0) {
-        sub_261a1b0_memcpy(gpu_mem, info.ucode_src, info.ucode_size);
+        if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) &&
+            info.ucode_size > 0u) {
+            gx_direct_vk::PrepareDirectBufferWrite(gpu_mem, info.ucode_size);
+            gx_direct_vk::NoteDirectAssetBufferWrite(gpu_mem, info.ucode_size);
+            std::memcpy(gpu_mem, info.ucode_src, info.ucode_size);
+            gx_direct_vk::NoteDirectAssetBufferWrite(gpu_mem, info.ucode_size);
+        } else {
+            sub_261a1b0_memcpy(gpu_mem, info.ucode_src, info.ucode_size);
+        }
     }
     *out_shader_struct_ptr = info.shader_struct;
     return 0;

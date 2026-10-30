@@ -9,6 +9,23 @@
 #include <cstring>
 #include "gx_direct_vulkan.h"
 
+extern "C" {
+uint32_t GXGammaRampAndFlipPresenter_PresentAndFlip(
+    uint8_t* self, uint8_t* depthTargetContainer, uint32_t flipRateMode);
+uint32_t GXGammaRampAndFlipPresenter_ClearOutputs(
+    const void* unusedSelf, uint8_t* outFlag, uint64_t* outValue);
+uint32_t GXGammaRampAndFlipPresenter_ReturnZeroA();
+void* GXGammaRampAndFlipPresenter_CopyGammaRampTable(
+    const uint8_t* self, void* outGammaTable);
+uint32_t GXGammaRampAndFlipPresenter_SetGammaRampTable(
+    uint8_t* self, const float* inGammaRgbTriplets);
+uint32_t GXGammaRampAndFlipPresenter_ReturnZeroB();
+void GXGammaRampAndFlipPresenter_CopyDisplayConfig72(
+    const uint8_t* self, void* outConfig72);
+uint32_t GXGammaRampAndFlipPresenter_ReturnZeroC();
+void GXGammaRampAndFlipPresenter_Destroy(uint8_t* self);
+}
+
 namespace Bloodborne::CoreGraphics2::Gnm {
 
 // Forward declarations of PS4 SDK / GNM / Kernel imports
@@ -154,6 +171,7 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
         return 8;
     }
 
+    gx_direct_vk::PrepareDirectSwapQueryWrite(gpuMem, totalGpuSize);
     std::memset(gpuMem, 0, totalGpuSize);
     uint32_t curOff = 0;
     for (uint32_t i = 0; i < bufCount; ++i) {
@@ -373,6 +391,10 @@ int32_t CGSwapChainHandle_Reset(uint8_t* self, uint32_t sync_interval, void* a2)
     if (sync_interval > 4u) {
         return 8;
     }
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        return static_cast<int32_t>(GXGammaRampAndFlipPresenter_PresentAndFlip(
+            self, *reinterpret_cast<uint8_t**>(self + 0x33d0), sync_interval));
+    }
     return reinterpret_cast<int32_t(*)(void*, void*, uint32_t, void*)>(GX_VMA(0x26d6e50ULL))(
         self, *reinterpret_cast<void**>(self + 0x33d0), sync_interval, a2);
 }
@@ -381,6 +403,10 @@ int32_t CGSwapChainHandle_Reset(uint8_t* self, uint32_t sync_interval, void* a2)
 int32_t CGSwapChainHandle_Copy(void* self, void* a1, void* a2)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm22CGSwapChainHandle_CopyEPmPKm");
 int32_t CGSwapChainHandle_Copy(void* self, void* a1, void* a2) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        return static_cast<int32_t>(GXGammaRampAndFlipPresenter_ClearOutputs(
+            self, static_cast<uint8_t*>(a1), static_cast<uint64_t*>(a2)));
+    }
     return reinterpret_cast<int32_t(*)(void*, void*, void*)>(GX_VMA(0x26d6e30ULL))(self, a1, a2);
 }
 
@@ -388,20 +414,33 @@ int32_t CGSwapChainHandle_Copy(void* self, void* a1, void* a2) {
 int32_t CGSwapChainGnm_GetFullscreenState(void* self, uint8_t enable)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm33CGSwapChainGnm_GetFullscreenStateEPKNS1_14CGSwapChainGnmEPjPPv");
 int32_t CGSwapChainGnm_GetFullscreenState(void* self, uint8_t enable) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        (void)self;
+        (void)enable;
+        return static_cast<int32_t>(GXGammaRampAndFlipPresenter_ReturnZeroA());
+    }
     return reinterpret_cast<int32_t(*)(void*, uint32_t)>(GX_VMA(0x26d6e20ULL))(self, enable);
 }
 
 // VMA: 0x26d5da0 (5 B)
-int32_t CGSwapChainGnm_GetBuffer(void* self, void* a1)
+void* CGSwapChainGnm_GetBuffer(void* self, void* a1)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm24CGSwapChainGnm_GetBufferEPNS1_14CGSwapChainGnmEjPPNS1_15GnmRenderTargetE");
-int32_t CGSwapChainGnm_GetBuffer(void* self, void* a1) {
-    return reinterpret_cast<int32_t(*)(void*, void*)>(GX_VMA(0x26d6d80ULL))(self, a1);
+void* CGSwapChainGnm_GetBuffer(void* self, void* a1) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        return GXGammaRampAndFlipPresenter_CopyGammaRampTable(
+            static_cast<const uint8_t*>(self), a1);
+    }
+    return reinterpret_cast<void*(*)(void*, void*)>(GX_VMA(0x26d6d80ULL))(self, a1);
 }
 
 // VMA: 0x26d5d90 (5 B)
 int32_t CGSwapChainGnm_ResizeBuffers_Stub(void* self, void* a1)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm33CGSwapChainGnm_ResizeBuffers_StubEv");
 int32_t CGSwapChainGnm_ResizeBuffers_Stub(void* self, void* a1) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        return static_cast<int32_t>(GXGammaRampAndFlipPresenter_SetGammaRampTable(
+            static_cast<uint8_t*>(self), static_cast<const float*>(a1)));
+    }
     return reinterpret_cast<int32_t(*)(void*, void*)>(GX_VMA(0x26d6b20ULL))(self, a1);
 }
 
@@ -409,15 +448,23 @@ int32_t CGSwapChainGnm_ResizeBuffers_Stub(void* self, void* a1) {
 int32_t CGSwapChainGnm_GetDesc(uint8_t* self, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm22CGSwapChainGnm_GetDescEPKNS1_14CGSwapChainGnmEPNS1_13SwapChainDescE");
 int32_t CGSwapChainGnm_GetDesc(uint8_t* self, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        return static_cast<int32_t>(GXGammaRampAndFlipPresenter_ReturnZeroB());
+    }
     return reinterpret_cast<int32_t(*)(void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t)>(GX_VMA(0x26d6b10ULL))(
         self, self + 0x33d0, *reinterpret_cast<void**>(self + 0x33d8), a1, a2, a3, a4);
 }
 
 // VMA: 0x26d5d50 (5 B)
-int32_t CGSwapChainGnm_SetFullscreenState_Stub(void* self, void* out_desc)
+void CGSwapChainGnm_SetFullscreenState_Stub(void* self, void* out_desc)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm38CGSwapChainGnm_SetFullscreenState_StubEv");
-int32_t CGSwapChainGnm_SetFullscreenState_Stub(void* self, void* out_desc) {
-    return reinterpret_cast<int32_t(*)(void*, void*)>(GX_VMA(0x26d6af0ULL))(self, out_desc);
+void CGSwapChainGnm_SetFullscreenState_Stub(void* self, void* out_desc) {
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        GXGammaRampAndFlipPresenter_CopyDisplayConfig72(
+            static_cast<const uint8_t*>(self), out_desc);
+        return;
+    }
+    reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x26d6af0ULL))(self, out_desc);
 }
 
 // VMA: 0x26d5d10 (49 B)
@@ -425,8 +472,10 @@ int32_t CGSwapChainGnm_ResizeTarget_Stub(uint8_t* self, void** out_ptr)
     __asm__("_ZN10Bloodborne13CoreGraphics23Gnm32CGSwapChainGnm_ResizeTarget_StubEv");
 int32_t CGSwapChainGnm_ResizeTarget_Stub(uint8_t* self, void** out_ptr) {
     void** p33c8 = reinterpret_cast<void**>(self + 0x33c8);
-    int32_t err = reinterpret_cast<int32_t(*)(void*, void**, void*)>(GX_VMA(0x26d6ae0ULL))(
-        self, p33c8, *reinterpret_cast<void**>(self + 0x33d8));
+    int32_t err = gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)
+                      ? static_cast<int32_t>(GXGammaRampAndFlipPresenter_ReturnZeroC())
+                      : reinterpret_cast<int32_t(*)(void*, void**, void*)>(GX_VMA(0x26d6ae0ULL))(
+                            self, p33c8, *reinterpret_cast<void**>(self + 0x33d8));
     if (err == 0) {
         *out_ptr = *p33c8;
         return 0;
@@ -459,7 +508,11 @@ void CGSwapChainGnm_Destroy(uint8_t* self) {
         reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(subObj);
         salloc->vtbl->Free(salloc, subObj);
     }
-    reinterpret_cast<void(*)(void*)>(GX_VMA(0x26d6a50ULL))(self);
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        GXGammaRampAndFlipPresenter_Destroy(self);
+    } else {
+        reinterpret_cast<void(*)(void*)>(GX_VMA(0x26d6a50ULL))(self);
+    }
 }
 
 // VMA: 0x26d5c40 (63 B)
@@ -539,7 +592,11 @@ int32_t CGDeviceGnm_CreateSwapChain(
         reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(outSubObj);
         cpuAlloc->vtbl->Free(cpuAlloc, outSubObj);
     }
-    reinterpret_cast<void(*)(void*)>(GX_VMA(0x26d6a50ULL))(tempSwap);
+    if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectSwapQuery)) {
+        GXGammaRampAndFlipPresenter_Destroy(tempSwap);
+    } else {
+        reinterpret_cast<void(*)(void*)>(GX_VMA(0x26d6a50ULL))(tempSwap);
+    }
     return 9;
 }
 
@@ -876,6 +933,7 @@ CGQueryLabelPoolGnm* CGQueryLabelPoolGnm_Create(
         cpu_alloc->vtbl->Free(cpu_alloc, pool);
         return nullptr;
     }
+    gx_direct_vk::PrepareDirectSwapQueryWrite(pool->gpu_labels_base, byte_stride * slot_count);
     for (size_t i = 0; i < slot_count; ++i) {
         pool->gpu_labels_base[(i + 1) * (byte_stride >> 3) - 1] = 0;
     }

@@ -265,6 +265,12 @@ void ZpassDoneTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
     rasterizer.OcclusionEvent(event.address, event.pairs);
 }
 
+void DirectVkOcclusionQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    DirectOcclusionEvent event;
+    std::memcpy(&event, data, sizeof(event));
+    rasterizer.DirectOcclusionQuery(event.base_address, event.pairs, event.query_op);
+}
+
 void CopyDataTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
     CopyTask task;
     std::memcpy(&task, data, sizeof(task));

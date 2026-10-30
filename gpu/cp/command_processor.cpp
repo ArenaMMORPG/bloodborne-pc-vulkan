@@ -45,6 +45,7 @@
 #include "render/vk_draw_prep.h"
 #include "render/shader_hle.h"
 #include "buffers/buffer_cache.h"
+#include "buffers/direct_buffers.h"
 #include "render/rasterizer.h"
 #include "textures/direct_textures.h"
 
@@ -591,7 +592,8 @@ void CommandProcessor::Run(std::stop_token stop) {
             if (work != last_decoded) {
                 last_decoded = work;
                 BbTimeline::Note(BbTimeline::DecodeBegin, u64(current_queue), decoded_total);
-                if (rasterizer && VideoCore::DirectTextures::HasPendingEvents()) {
+                if (rasterizer && (VideoCore::DirectTextures::HasPendingEvents() ||
+                                   VideoCore::DirectBuffers::HasPendingEvents())) {
                     if (rasterizer->PipeSignals() ||
                         (rasterizer->PipeOrder() &&
                          !BbToggle::Disabled(BbToggle::PipelinedTasks))) {

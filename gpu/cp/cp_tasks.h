@@ -21,6 +21,13 @@ struct ZpassEvent {
     u32 pairs;
 };
 
+/// V3.3: Direct VkQueryPool occlusion query packet (0 = ClearAndBegin, 1 = End, 2 = ClearOnly).
+struct DirectOcclusionEvent {
+    VAddr base_address;
+    u32 pairs;
+    u32 query_op;
+};
+
 /// COPY_DATA from memory or GDS, or of a value into GDS.
 struct CopyTask {
     VAddr dst;
@@ -51,6 +58,7 @@ void DirectVkResolveColorTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkUploadTextureTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkClearDepthStencilTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
+void DirectVkOcclusionQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 
 /// An end-of-pipe fence now (no draw recording thread).
 void SignalEop(const EventWriteEop& eop, u64 seq);

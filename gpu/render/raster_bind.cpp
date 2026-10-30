@@ -568,8 +568,15 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         if (HasPendingHleCopies() && PendingHleCopiesConflict(range.begin, size)) {
             FlushPendingHleCopies(*this);
         }
-        std::tie(range.buffer, range.offset) = buffer_cache.ObtainBuffer(range.begin, size, false);
-        if (InPlaceReads::Enabled()) {
+        bool is_direct_buf = false;
+        std::tie(range.buffer, range.offset) = direct_buffers.TryResolveRead(range.begin, size);
+        if (range.buffer) {
+            is_direct_buf = true;
+        } else {
+            std::tie(range.buffer, range.offset) =
+                buffer_cache.ObtainBuffer(range.begin, size, false);
+        }
+        if (!is_direct_buf && InPlaceReads::Enabled()) {
             InPlaceReads::Note(range.begin, size, scheduler.CurrentTick(), 0, 2);
         }
         if (const auto* vs = pipeline ? pipeline->GetStages()[u32(Shader::SwStage::Vertex)] : nullptr) {
@@ -662,9 +669,15 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, false)) {
         FlushPendingHleCopies(*this);
     }
-    const auto [buffer, offset] = buffer_cache.ObtainBuffer(address, size, false);
+    bool is_direct_buf = false;
+    auto [buffer, offset] = direct_buffers.TryResolveRead(address, size);
+    if (buffer) {
+        is_direct_buf = true;
+    } else {
+        std::tie(buffer, offset) = buffer_cache.ObtainBuffer(address, size, false);
+    }
     needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
-    if (InPlaceReads::Enabled()) {
+    if (!is_direct_buf && InPlaceReads::Enabled()) {
         InPlaceReads::Note(address, size, scheduler.CurrentTick(), 0, 3);
     }
     // Tracked as a graphics read after the draw (ResetBindings): an upload into a mirrored index
@@ -921,9 +934,21 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
         FlushPendingHleCopies(*this);
     }
-    const auto [buffer, offset] =
-        buffer_cache.ObtainBuffer(address, size, desc.is_written, desc.is_formatted);
-    if (!desc.is_written && InPlaceReads::Enabled()) {
+    if (desc.is_written) {
+        direct_buffers.OnGpuWrite(address, size);
+    }
+    bool is_direct_buf = false;
+    const VideoCore::Buffer* buffer = nullptr;
+    u64 offset = 0;
+    if (!desc.is_written && !desc.is_formatted) {
+        std::tie(buffer, offset) = direct_buffers.TryResolveRead(address, size);
+        is_direct_buf = (buffer != nullptr);
+    }
+    if (!buffer) {
+        std::tie(buffer, offset) =
+            buffer_cache.ObtainBuffer(address, size, desc.is_written, desc.is_formatted);
+    }
+    if (!desc.is_written && !is_direct_buf && InPlaceReads::Enabled()) {
         InPlaceReads::Note(address, size, scheduler.CurrentTick(), stage.pgm_hash, 0);
     }
     TraceShaderBinding(stage, address, size, desc.is_written, buffer_cache, buffer);

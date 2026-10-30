@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "bblayer_write_traps.h"
@@ -13,6 +14,7 @@
 
 #include "buffers/buffer.h"
 #include "buffers/buffer_cache.h"
+#include "textures/texture_cache.h"
 #include "bbgpu/shaders/occlusion_resolve_comp.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
@@ -162,13 +164,14 @@ void OcclusionQueries::Resolve() {
     }
     const u32 count = static_cast<u32>(ended - resolved);
     const u32 first = static_cast<u32>(resolved % NumSlots);
-    std::vector<EventEntry> entries;
+    static thread_local std::vector<EventEntry> entries;
+    entries.clear();
     entries.reserve(std::max<size_t>(pending.size(), 1));
     const u64 tick = scheduler.CurrentTick();
     for (const auto& event : pending) {
         entries.push_back({u32(event.address), u32(event.address >> 32), event.pairs,
                            u32(event.upto - resolved)});
-        if (BbStats::enabled && event.guest_address != 0) {
+        if (event.guest_address != 0) {
             written_at[event.guest_address] = tick;
         }
         if (event.id != 0 && ReadTrace()) {
@@ -184,7 +187,8 @@ void OcclusionQueries::Resolve() {
     const u64 entries_offset =
         stream.Copy(entries.data(), entries_size, instance.StorageMinAlignment());
     // The segments' factors, in the order the shader adds them (from slot `first`, wrapping).
-    std::vector<u32> scales(std::max<u32>(count, 1), 256u);
+    static thread_local std::vector<u32> scales;
+    scales.assign(std::max<u32>(count, 1), 256u);
     for (u32 i = 0; i < count; ++i) {
         scales[i] = slot_scale[(first + i) % NumSlots];
     }
@@ -292,6 +296,64 @@ void OcclusionQueries::Resume(bool inside_render_pass) {
     if (started && !active) {
         BeginSegment(inside_render_pass);
     }
+}
+
+bool OcclusionQueries::TryClearOnCpu(VAddr base_addr, u32 pairs,
+                                     VideoCore::TextureCache& texture_cache) {
+    if (base_addr == 0 || pairs == 0) {
+        return true;
+    }
+    std::scoped_lock lk{mutex};
+    const u64 byte_size = static_cast<u64>(pairs) * 16ULL;
+
+    for (const auto& ev : pending) {
+        if (ev.guest_address == 0) {
+            continue;
+        }
+        const VAddr ev_base = ev.guest_address & ~15ULL;
+        const u64 ev_span = static_cast<u64>(ev.pairs) * 16ULL;
+        if (base_addr < ev_base + ev_span && ev_base < base_addr + byte_size) {
+            return false;
+        }
+    }
+
+    const auto it0 = written_at.find(base_addr);
+    if (it0 != written_at.end() && !scheduler.IsFree(it0->second)) {
+        return false;
+    }
+    const auto it1 = written_at.find(base_addr + 8ULL);
+    if (it1 != written_at.end() && !scheduler.IsFree(it1->second)) {
+        return false;
+    }
+
+    if (BbStats::enabled && it0 != written_at.end()) {
+        ++reused;
+        if (base_addr % 16 == 0 && !ReadTrace()) {
+            constexpr u64 Valid = 1ull << 63;
+            u64 samples = 0;
+            bool valid = true;
+            for (u32 i = 0; i < pairs; ++i) {
+                const u64 begin = *reinterpret_cast<const volatile u64*>(base_addr + i * 16);
+                const u64 end = *reinterpret_cast<const volatile u64*>(base_addr + i * 16 + 8);
+                valid = valid && (begin & Valid) && (end & Valid);
+                samples += (end & ~Valid) - (begin & ~Valid);
+            }
+            ++(!valid ? queries_invalid : samples ? queries_passed : queries_hidden);
+        }
+    }
+    if (it0 != written_at.end()) {
+        written_at.erase(it0);
+    }
+    if (it1 != written_at.end()) {
+        written_at.erase(it1);
+    }
+
+    BbLayer::WriteTraps::Set(base_addr, byte_size, BbLayer::WriteTraps::Mirror, false);
+    texture_cache.DisarmWatchedRange(base_addr, static_cast<size_t>(byte_size), false);
+    std::memset(reinterpret_cast<void*>(base_addr), 0, static_cast<size_t>(byte_size));
+    buffer_cache.NoteLateCommandWrite(base_addr, reinterpret_cast<const void*>(base_addr),
+                                      byte_size);
+    return true;
 }
 
 void OcclusionQueries::Event(VAddr address, u32 pairs) {

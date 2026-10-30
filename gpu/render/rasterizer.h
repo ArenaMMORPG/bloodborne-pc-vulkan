@@ -22,6 +22,7 @@ class CommandProcessor;
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "buffers/buffer_cache.h"
+#include "buffers/direct_buffers.h"
 #include "memory/page_watch.h"
 #include "render/vk_bind_helper.h"
 #include "upscale/vk_camera_motion.h"
@@ -334,6 +335,7 @@ public:
     /// blocks, in stream order (vk_occlusion.h). False when it is left to the caller (the old
     /// memory model).
     bool OcclusionEvent(VAddr address, u32 pairs);
+    void DirectOcclusionQuery(VAddr base_addr, u32 pairs, u32 query_op);
     /// Whether ZPASS_DONE events go to OcclusionEvent (the new memory model).
     static bool OcclusionTranslated();
     /// ZPASS_DONE events translated so far.
@@ -1114,6 +1116,7 @@ private:
         }
         return nullptr;
     }
+    VideoCore::DirectBuffers::Manager direct_buffers{instance, scheduler, runtime};
     std::unique_ptr<ConstantRing> constant_ring;
     std::unique_ptr<class OcclusionQueries> occlusion;
     std::unique_ptr<class ButtonPrompts> prompts; ///< bbport: the key guide icons for the device in use

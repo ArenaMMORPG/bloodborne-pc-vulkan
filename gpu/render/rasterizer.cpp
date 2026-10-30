@@ -55,6 +55,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     }
     BbGuestMemory::Install(instance); // bbport: before the runtime maps direct memory
     memory->SetRasterizer(this);
+    VideoCore::DirectBuffers::SetActiveCaches(&buffer_cache, &texture_cache);
 
     GpuProfiler::Init(instance, scheduler);
     if (DrawPipeWanted()) {
@@ -82,7 +83,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     });
 }
 
-Rasterizer::~Rasterizer() = default;
+Rasterizer::~Rasterizer() {
+    VideoCore::DirectBuffers::SetActiveCaches(nullptr, nullptr);
+}
 
 namespace {
 /// BB_PASS_DUMP=addr,addr (hex guest addresses of render targets) with BB_PASS_DUMP_TRIGGER=<file>
@@ -1355,6 +1358,7 @@ void Rasterizer::Finish() {
 
 void Rasterizer::ProcessDirectTextureEvents() {
     texture_cache.ProcessDirectTextureEvents(memory);
+    direct_buffers.ProcessEvents(memory);
 }
 
 void Rasterizer::OnSubmit() {

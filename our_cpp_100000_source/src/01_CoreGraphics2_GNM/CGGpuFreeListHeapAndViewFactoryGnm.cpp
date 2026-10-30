@@ -265,6 +265,8 @@ CGGpuBlockNode* CGGpuFreeListAllocatorGnm_AllocateAlignedInternal(
         cur->nextFree = nullptr;
         cur->prevFree = nullptr;
         cur->stateOrTaggedFence = 2; // allocated
+        gx_direct_vk::NoteDirectFreshGpuRange(reinterpret_cast<const void*>(cur->gpuAddress),
+                                              finalSize);
         return cur;
     }
     return nullptr;

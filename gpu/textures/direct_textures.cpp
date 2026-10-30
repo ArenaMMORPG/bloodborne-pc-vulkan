@@ -57,6 +57,8 @@ void DrainEvents(std::vector<Event>& out) {
 
 } // namespace VideoCore::DirectTextures
 
+extern "C" void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) noexcept;
+
 extern "C" {
 
 void bb_direct_vk_prepare_texture_write(const void* gpu_addr, uint64_t byte_size) noexcept {
@@ -97,6 +99,7 @@ void bb_direct_vk_retire_gpu_range(const void* gpu_addr, uint64_t byte_size) noe
     ev.addr = addr;
     ev.byte_size = byte_size;
     VideoCore::DirectTextures::PushEvent(ev);
+    bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
 }
 
 void bb_direct_vk_register_asset_texture(uint32_t resource_id,

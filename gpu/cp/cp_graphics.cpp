@@ -441,6 +441,50 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
+                } else if (vk_op == DirectVk::Op::OcclusionQuery) {
+                    const u32 query_op = op_word >> 16;
+                    if (body_words == 4u && query_op <= 2u) {
+                        VAddr base_addr = 0;
+                        std::memcpy(&base_addr, body + 2u, sizeof(VAddr));
+                        base_addr &= 0xFFFFFFFFFFULL;
+                        if (base_addr != 0 && (base_addr & 0xFULL) == 0ULL) {
+                            const u64 clear_bytes = u64(num_counter_pairs) * 16ULL;
+                            if (rasterizer && Vulkan::Rasterizer::OcclusionTranslated()) {
+                                const Tasks::DirectOcclusionEvent occ{base_addr, num_counter_pairs,
+                                                                      query_op};
+                                const bool queued = rasterizer->RunInOrder(
+                                    &Tasks::DirectVkOcclusionQueryTask, &occ, sizeof(occ),
+                                    BbToggle::PipelinedMemoryWrites, false);
+                                if (queued && query_op != 1u) {
+                                    rasterizer->NotePendingGpuWrite(base_addr, clear_bytes);
+                                }
+                            } else if (query_op <= 1u) {
+                                constexpr u64 Valid = 0x8000000000000000ull;
+                                constexpr u64 Step = 0x2FFFFFFull;
+                                if (query_op == 0u) {
+                                    std::memset(reinterpret_cast<void*>(base_addr), 0, clear_bytes);
+                                }
+                                auto* counters = reinterpret_cast<u64*>(
+                                    base_addr + (query_op == 1u ? 8ULL : 0ULL));
+                                for (u32 i = 0; i < num_counter_pairs; ++i, counters += 2) {
+                                    *counters = pixel_counter | Valid;
+                                    if (rasterizer) {
+                                        rasterizer->NoteLateCommandWrite(
+                                            reinterpret_cast<VAddr>(counters), counters,
+                                            sizeof(u64));
+                                    }
+                                }
+                                pixel_counter += Step;
+                            } else {
+                                std::memset(reinterpret_cast<void*>(base_addr), 0, clear_bytes);
+                                if (rasterizer) {
+                                    rasterizer->NoteLateCommandWrite(
+                                        base_addr, reinterpret_cast<const void*>(base_addr),
+                                        clear_bytes);
+                                }
+                            }
+                        }
+                    }
                 } else if (vk_op == DirectVk::Op::CopyBufferBatch) {
                     const u32 count = op_word >> 16;
                     if (count > 0 && count <= 32 && body_words == 2u + count * 6u) {

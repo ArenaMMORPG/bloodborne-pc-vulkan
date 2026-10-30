@@ -209,6 +209,29 @@ bool Rasterizer::OcclusionEvent(VAddr address, u32 pairs) {
     return true;
 }
 
+void Rasterizer::DirectOcclusionQuery(VAddr base_addr, u32 pairs, u32 query_op) {
+    if (pairs == 0 || base_addr == 0) {
+        return;
+    }
+    if (query_op == 1u) {
+        OcclusionEvent(base_addr + 8ULL, pairs);
+        return;
+    }
+    if (!OcclusionTranslated()) {
+        return;
+    }
+    if (!occlusion) {
+        occlusion = std::make_unique<OcclusionQueries>(instance, scheduler, buffer_cache);
+    }
+    const u32 clear_bytes = pairs * 16u;
+    if (!occlusion->TryClearOnCpu(base_addr, pairs, texture_cache)) {
+        FillBuffer(base_addr, clear_bytes, 0u, false);
+    }
+    if (query_op == 0u) {
+        occlusion->Event(base_addr, pairs);
+    }
+}
+
 u64 Rasterizer::OcclusionEvents() const {
     return occlusion ? occlusion->Events() : 0;
 }

@@ -3594,6 +3594,7 @@ extern void OperatorDelete_Global(void* ptr); // 0x2bbe588
 // Releases GPU buffer memory and unbinds any bound constant buffer slots across all 16 active contexts.
 void GXGnmBuffer_ReleaseMemoryAndNotifyContexts(GXHardwareBufferResource* hwBuf) {
     if (hwBuf->allocator != nullptr && hwBuf->gpuBaseAddr != nullptr) {
+        gx_direct_vk::RetireDirectBufferRange(hwBuf->gpuBaseAddr, hwBuf->allocatedSize);
         hwBuf->allocator->vtable->FreeAligned(hwBuf->allocator, hwBuf->gpuBaseAddr);
         hwBuf->gpuBaseAddr = nullptr;
     }
@@ -3678,6 +3679,7 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
 
     if (hasCounterTail != 0) {
         uint8_t* tailEnd = static_cast<uint8_t*>(gpuMem) + allocSize;
+        gx_direct_vk::PrepareDirectBufferWrite(tailEnd - 0x10, 0x10);
         *reinterpret_cast<uint64_t*>(tailEnd - 0x08) = 0ULL;
         *reinterpret_cast<uint64_t*>(tailEnd - 0x10) = 0ULL;
     }
@@ -3726,7 +3728,31 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
 
     if (initialDataPtr != nullptr) {
         if (CGMemoryGnm_IsCpuReadableAddress(gpuMem)) {
-            CGMemoryGnm_FastCopyGpuMemory(gpuMem, *initialDataPtr, desc->byteSize);
+            if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers)) {
+                const uint32_t copySize = desc->byteSize;
+                const uint32_t noteSize = (hasCounterTail == 0 && allocSize > copySize)
+                                              ? allocSize
+                                              : copySize;
+                gx_direct_vk::PrepareDirectBufferWrite(gpuMem, noteSize);
+                gx_direct_vk::NoteDirectAssetBufferWrite(gpuMem, noteSize);
+                if (copySize > 0u) {
+                    std::memcpy(gpuMem, *initialDataPtr, copySize);
+                }
+                if (noteSize > copySize) {
+                    std::memset(static_cast<uint8_t*>(gpuMem) + copySize, 0, noteSize - copySize);
+                }
+                gx_direct_vk::NoteDirectAssetBufferWrite(gpuMem, noteSize);
+                // Immutable buffers (usageType == 1, cpuAccessFlags == 0, no UAV 0x80 / SO 0x10)
+                // — including 100% of combined FLVER model VB+IB buffers — get a dedicated VMA
+                // DEVICE_LOCAL VkBuffer resolved in O(1) on Stage B.
+                if (desc->usageType == 1u && desc->cpuAccessFlags == 0u &&
+                    (desc->bindFlags & 0x90u) == 0u && copySize > 0u) {
+                    gx_direct_vk::RegisterDirectImmutableBuffer(
+                        outBuf->resourceId, gpuMem, copySize, allocSize, desc->bindFlags);
+                }
+            } else {
+                CGMemoryGnm_FastCopyGpuMemory(gpuMem, *initialDataPtr, desc->byteSize);
+            }
         }
     }
     return 0;

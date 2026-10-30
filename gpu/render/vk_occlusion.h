@@ -29,6 +29,7 @@
 
 namespace VideoCore {
 class BufferCache;
+class TextureCache;
 struct Buffer;
 } // namespace VideoCore
 
@@ -45,6 +46,12 @@ public:
     /// A ZPASS_DONE event writing the counters of `pairs` depth blocks at `address` (recording
     /// thread, in stream order).
     void Event(VAddr address, u32 pairs);
+
+    /// V3.3: Clears [base_addr, base_addr + pairs * 16) on the CPU without breaking the active
+    /// Vulkan render pass when no earlier GPU resolve at `base_addr` is still in flight.
+    /// Returns false only if an earlier GPU resolve to `base_addr` has not completed yet.
+    [[nodiscard]] bool TryClearOnCpu(VAddr base_addr, u32 pairs,
+                                     VideoCore::TextureCache& texture_cache);
 
     /// Before a label (an end-of-pipe write the CPU may poll): the events recorded before it are
     /// written first, as on the PS4, where the counters land in stream order ahead of later

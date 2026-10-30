@@ -706,7 +706,9 @@ void GXGnmCommandContext_EndQuery(void* context, void* unused, void* queryObj) {
 
     if (viewCategory == 1) {
         if (queryType == 0) {
-            sub_1077660(gfxCtx, 1, gpuBuf);
+            if (!gx_direct_vk::TryDirectOcclusionQuery(gfxCtx, 1u, gpuBuf)) {
+                sub_1077660(gfxCtx, 1, gpuBuf);
+            }
         }
         CGGfxContextGnm_FlushPendingStagingUploads(gfxCtx);
         return;
@@ -725,7 +727,9 @@ void GXGnmCommandContext_EndQuery(void* context, void* unused, void* queryObj) {
         }
         case 1:
         case 10: {
-            sub_1077660(gfxCtx, 1, gpuBuf);
+            if (!gx_direct_vk::TryDirectOcclusionQuery(gfxCtx, 1u, gpuBuf)) {
+                sub_1077660(gfxCtx, 1, gpuBuf);
+            }
             ctxBase[0xB657] &= 0xE3u;
             break;
         }
@@ -818,7 +822,9 @@ void GXGnmCommandContext_BeginQuery(void* context, void* unused, void* queryObj)
     if (viewCategory == 1) {
         if (queryType == 0) {
             ctxBase[0xB657] = (ctxBase[0xB657] & 0xE3u) | 0x04u;
-            sub_1077660(gfxCtx, 0, gpuBuf);
+            if (!gx_direct_vk::TryDirectOcclusionQuery(gfxCtx, 0u, gpuBuf)) {
+                sub_1077660(gfxCtx, 0, gpuBuf);
+            }
         }
         CGGfxContextGnm_FlushPendingStagingUploads(gfxCtx);
         return;
@@ -842,7 +848,9 @@ void GXGnmCommandContext_BeginQuery(void* context, void* unused, void* queryObj)
         case 1:
         case 10: {
             ctxBase[0xB657] = (ctxBase[0xB657] & 0xE3u) | 0x04u;
-            sub_1077660(gfxCtx, 0, gpuBuf);
+            if (!gx_direct_vk::TryDirectOcclusionQuery(gfxCtx, 0u, gpuBuf)) {
+                sub_1077660(gfxCtx, 0, gpuBuf);
+            }
             break;
         }
         case 2:

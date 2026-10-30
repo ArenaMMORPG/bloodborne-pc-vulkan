@@ -448,6 +448,7 @@ enum class Op : u32 {
     SetRenderTarget = 19u,
     SetDepthRenderTarget = 20u,
     ReleaseLabelsBatch = 21u,
+    OcclusionQuery = 22u,
 };
 struct CopyRegion {
     u64 dst_va;

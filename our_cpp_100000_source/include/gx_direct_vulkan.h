@@ -33,6 +33,21 @@ __attribute__((weak)) void bb_direct_vk_register_asset_texture(uint32_t resource
                                                                uint32_t raw_byte_size,
                                                                uint32_t alloc_byte_size,
                                                                uint32_t is_immutable) noexcept;
+
+// V3.3: Direct DEVICE_LOCAL VkBuffer lifecycle, zero-fault allocator/loader notifications
+__attribute__((weak)) void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr,
+                                                             uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_prepare_buffer_write(const void* gpu_addr,
+                                                             uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_note_asset_buffer_write(const void* gpu_addr,
+                                                                uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
+                                                                  const void* gpu_addr,
+                                                                  uint32_t raw_byte_size,
+                                                                  uint32_t alloc_byte_size,
+                                                                  uint32_t bind_flags) noexcept;
+__attribute__((weak)) void bb_direct_vk_retire_buffer_range(const void* gpu_addr,
+                                                            uint64_t byte_size) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -134,6 +149,8 @@ inline bool EnabledV3() noexcept {
 
 inline constexpr uint32_t kV3Sub_DirectTargets       = 1u << 0; // V3.1: Direct RenderTarget & DepthTarget Registration + O(1) UID binding
 inline constexpr uint32_t kV3Sub_DirectAssetTextures = 1u << 1; // V3.2: Direct .tpf/.gnf Asset Texture Upload to VRAM VkImage & 0-trap lifecycle
+inline constexpr uint32_t kV3Sub_DirectBuffers       = 1u << 2; // V3.3: Direct DEVICE_LOCAL VkBuffer lifecycle (FLVER VB/IB + VRAM promotion)
+inline constexpr uint32_t kV3Sub_DirectSwapQuery     = 1u << 3; // V3.3: Direct Swapchain Present/Gamma & 0-break VkQueryPool OcclusionQuery
 
 inline uint32_t ActiveV3SubMask() noexcept {
     static const uint32_t sub = []() -> uint32_t {
@@ -231,6 +248,59 @@ inline void RegisterDirectAssetTexture(uint32_t resource_id,
         resource_id, tsharp_8dw, raw_byte_size, alloc_byte_size, is_immutable);
 }
 
+inline void NoteDirectFreshGpuRange(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !bb_direct_vk_note_fresh_gpu_range ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_note_fresh_gpu_range(gpu_addr, byte_size);
+}
+
+inline void PrepareDirectBufferWrite(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !bb_direct_vk_prepare_buffer_write ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_prepare_buffer_write(gpu_addr, byte_size);
+}
+
+inline void PrepareDirectSwapQueryWrite(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectSwapQuery) || !bb_direct_vk_prepare_buffer_write ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_prepare_buffer_write(gpu_addr, byte_size);
+}
+
+inline void NoteDirectAssetBufferWrite(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !bb_direct_vk_note_asset_buffer_write ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_note_asset_buffer_write(gpu_addr, byte_size);
+}
+
+inline void RegisterDirectImmutableBuffer(uint32_t resource_id,
+                                          const void* gpu_addr,
+                                          uint32_t raw_byte_size,
+                                          uint32_t alloc_byte_size,
+                                          uint32_t bind_flags) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !bb_direct_vk_register_immutable_buffer ||
+        !gpu_addr || raw_byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_register_immutable_buffer(
+        resource_id, gpu_addr, raw_byte_size, alloc_byte_size, bind_flags);
+}
+
+inline void RetireDirectBufferRange(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !bb_direct_vk_retire_buffer_range ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
+}
+
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer
 inline constexpr uint32_t kNopPayloadTag = 0xBB564B00u; // 'BBVK'
 
@@ -260,6 +330,8 @@ enum class Op : uint32_t {
     SetDepthRenderTarget     = 20u,
     // V2.4: Coalesced End-of-Pipe 64-bit zero label release batch (up to 32 chunk/query labels per packet)
     ReleaseLabelsBatch       = 21u,
+    // V3.3: Direct VkQueryPool OcclusionQuery (replaces 0x1077660 DMA_DATA + WAIT_REG_MEM + 2x EVENT_WRITE)
+    OcclusionQuery           = 22u,
 };
 
 struct CopyRegion {
@@ -1261,5 +1333,36 @@ struct ReleaseLabelBatch {
         addrs[count++] = reinterpret_cast<uint64_t>(status_ptr);
     }
 };
+
+// ============================================================================
+// V3.3: Direct VkQueryPool OcclusionQuery (replaces 0x1077660 writeOcclusionQuery)
+// ============================================================================
+// Packet layout (5 dwords, body_dwords = 4):
+//   [0] = MakeNopHeader(4u)
+//   [1] = kNopPayloadTag
+//   [2] = Op::OcclusionQuery | (query_op << 16)   (0 = ClearAndBegin, 1 = End, 2 = ClearOnly)
+//   [3] = lo32(results_va)
+//   [4] = hi32(results_va)
+inline bool TryDirectOcclusionQuery(void* dcb_raw,
+                                    uint32_t query_op,
+                                    const void* results_gpu_addr) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectSwapQuery) || !dcb_raw) {
+        return false;
+    }
+    const uint64_t addr = reinterpret_cast<uint64_t>(results_gpu_addr);
+    if (addr == 0ULL || (addr & 0xFULL) != 0ULL || query_op > 2u) {
+        return true;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 5u);
+    if (!pkt) {
+        return false;
+    }
+    pkt[0] = MakeNopHeader(4u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::OcclusionQuery) | ((query_op & 0xFFFFu) << 16);
+    pkt[3] = static_cast<uint32_t>(addr);
+    pkt[4] = static_cast<uint32_t>(addr >> 32);
+    return true;
+}
 
 } // namespace gx_direct_vk

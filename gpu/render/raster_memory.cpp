@@ -32,6 +32,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     ASSERT_MSG(address % 4 == 0 && num_bytes % 4 == 0,
                "FillBuffer address and size must be a multiple of 4 bytes");
     if (!is_gds) {
+        direct_buffers.OnGpuWrite(address, num_bytes);
         texture_cache.ClearMeta(address);
         if (!GpuHolds(buffer_cache, address, num_bytes)) {
             BbFreeCheck::Check(address, num_bytes, &value, BbFreeCheck::DmaFill);
@@ -60,6 +61,9 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         ((!dst_gds && PendingHleCopiesConflict(dst, num_bytes, true)) ||
          (!src_gds && PendingHleCopiesConflict(src, num_bytes, false)))) {
         FlushPendingHleCopies(*this);
+    }
+    if (!dst_gds) {
+        direct_buffers.OnGpuWrite(dst, num_bytes);
     }
     // On the CPU when neither side is the GPU's: the source not newer in VRAM (BB_LAYER_MEMORY)
     // nor an image's memory.
@@ -122,6 +126,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
             continue;
         }
+        direct_buffers.OnGpuWrite(reg.dst_va, reg.byte_size);
 
         // Direct VkImage -> VkImage copy when the game copies render-target / proxy texture
         // memory through its 1D compute buffer copy helpers (0x26b2d30 / 0x26b2670).
@@ -224,6 +229,7 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
     if (HasPendingHleCopies() && PendingHleCopiesConflict(dst, num_bytes, true)) {
         FlushPendingHleCopies(*this);
     }
+    direct_buffers.OnGpuWrite(dst, num_bytes);
 
     // 1. Metadata (CMASK / HTILE) fast clear: updates tracked state without touching buffers.
     if (texture_cache.ClearMeta(dst)) {
