@@ -47,7 +47,9 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const Gcn::Ima
         entry.desc = VideoCore::TextureCache::ImageDesc{sharp, res};
         entry.sharp = key;
         entry.flags = flags;
+        entry.found_direct_immutable = false;
         entry.found_generation = ~0ULL;
+        entry.found_uid = 0;
         entry.view_memo = {};
     }
     return entry;
@@ -198,10 +200,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         };
         for (u32 i = 0; i < num_bindings; i++) {
             // bbport: a plain binding (no mip override) of the same T# resolves to the same image
-            // while no image was registered or unregistered.
-            if (mip_fallback_mode == Shader::MipStorageFallbackMode::None &&
-                desc_entry.found_generation == texture_cache.RegistryGeneration() &&
+            // while no image was registered or unregistered (or V3.2: while its DirectImmutable
+            // asset slot remains live).
+            const u64 current_gen = texture_cache.RegistryGeneration();
+            const bool memo_valid =
+                desc_entry.found_generation == current_gen ||
+                (desc_entry.found_direct_immutable &&
+                 texture_cache.IsRegisteredImmutable(desc_entry.found_id, desc_entry.found_uid));
+            if (mip_fallback_mode == Shader::MipStorageFallbackMode::None && memo_valid &&
                 !BbToggle::Disabled(BbToggle::TextureBindingMemo)) {
+                desc_entry.found_generation = current_gen;
                 desc_entry.pinned = bind_epoch;
                 auto& [image_id, _] =
                     image_bindings.emplace_back(desc_entry.found_id, &desc_entry.found_desc);
@@ -230,8 +238,13 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             if (mip_fallback_mode == Shader::MipStorageFallbackMode::None &&
                 generation == texture_cache.RegistryGeneration() &&
                 desc_entry.pinned != bind_epoch) {
+                auto& resolved_img = texture_cache.GetImageUntouched(image_id);
                 desc_entry.found_generation = generation;
                 desc_entry.found_id = image_id;
+                desc_entry.found_uid = resolved_img.image_uid;
+                desc_entry.found_direct_immutable =
+                    True(resolved_img.flags & VideoCore::ImageFlagBits::DirectImmutable) &&
+                    !texture_cache.GetAssociatedDepth(resolved_img);
                 desc_entry.found_desc = desc;
                 desc_entry.view_memo = {};
             }
@@ -420,8 +433,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     image.usage.texture = 1u;
                     image_infos.emplace_back(VK_NULL_HANDLE, proxy->view, proxy->layout);
                     if (set_ok && binding_index < resolved.size()) {
-                        resolved[binding_index] = {image_id, proxy->view, image.backing,
-                                                   desc.view_info.range, true};
+                        resolved[binding_index] = {image_id, true, proxy->view, image.backing,
+                                                   image.image_uid, desc.view_info.range};
                     }
                     ++proxy_samples;
                     continue;
@@ -442,20 +455,31 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             image_infos.emplace_back(VK_NULL_HANDLE, view, layout);
             if (set_ok && binding_index < resolved.size()) {
-                resolved[binding_index] = {image_id, *image_view.image_view, image.backing,
-                                           desc.view_info.range};
+                resolved[binding_index] = {image_id, false, *image_view.image_view, image.backing,
+                                           image.image_uid, desc.view_info.range};
                 set_ok = !is_storage && !binding.force_general && !binding.is_target;
             }
         }
     }
     if (set_ok && image_bindings.size() == stage.images.size()) {
-        // Remember the set: the same T#s resolve the same way while no image is (un)registered.
+        // Remember the set: the same T#s resolve the same way while no image is (un)registered,
+        // or across unrelated streaming registrations when all_direct_immutable holds.
         set_slot->generation = texture_cache.RegistryGeneration();
         set_slot->scene_generation = scene_targets->Generation();
         set_slot->count = static_cast<u32>(stage.images.size());
-        std::copy_n(resolved.begin(), set_slot->count, set_slot->entries.begin());
+        bool all_imm = true;
+        for (u32 k = 0; k < set_slot->count; ++k) {
+            set_slot->entries[k] = resolved[k];
+            if (resolved[k].id &&
+                (resolved[k].proxy ||
+                 !texture_cache.IsRegisteredImmutable(resolved[k].id, resolved[k].image_uid))) {
+                all_imm = false;
+            }
+        }
+        set_slot->all_direct_immutable = all_imm;
     } else if (set_slot) {
         set_slot->key = 0;
+        set_slot->all_direct_immutable = false;
     }
 
     // One descriptor write per image resource: an array of single-level views for dynamic mip
@@ -555,22 +579,63 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     u64 key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64),
                                    reinterpret_cast<u64>(&stage));
     key |= 1; // 0 marks an empty slot
-    auto& set = texture_sets[key % texture_sets.size()];
-    slot = &set;
+    auto* pair = &texture_sets[(key % (texture_sets.size() / 2)) * 2];
     const u64 generation = texture_cache.RegistryGeneration();
-    const bool match = set.key == key && set.stage == &stage && set.count == count &&
-                       set.generation == generation &&
-                       set.scene_generation == scene_targets->Generation() &&
-                       std::equal(set.hashes.begin(), set.hashes.begin() + count,
-                                  prepared->image_hashes);
-    if (!match) {
-        ++texture_set_why[set.key != key ? 0 : set.generation != generation ? 1 : 3];
+    const u64 scene_gen = scene_targets->Generation();
+
+    const auto key_matches = [&](const TextureSet& cand) {
+        return cand.key == key && cand.stage == &stage &&
+               std::equal(cand.hashes.begin(), cand.hashes.begin() + count,
+                          prepared->image_hashes);
+    };
+    TextureSet* matched = nullptr;
+    if (key_matches(pair[0])) {
+        matched = &pair[0];
+    } else if (key_matches(pair[1])) {
+        matched = &pair[1];
+    }
+
+    if (!matched) {
+        TextureSet& victim = pair[0].last_use <= pair[1].last_use ? pair[0] : pair[1];
+        ++texture_set_why[victim.key != 0 ? 0 : 3];
         ++texture_set_misses;
-        set.key = key;
-        set.stage = &stage;
+        victim.key = key;
+        victim.stage = &stage;
+        victim.count = 0;
+        victim.generation = ~0ull;
+        victim.all_direct_immutable = false;
+        victim.last_use = ++texture_set_use_counter;
+        std::copy_n(prepared->image_hashes, count, victim.hashes.begin());
+        slot = &victim;
+        return false;
+    }
+
+    TextureSet& set = *matched;
+    set.last_use = ++texture_set_use_counter;
+    slot = &set;
+
+    bool gen_ok = (set.generation == generation);
+    if (!gen_ok && set.count == count && set.all_direct_immutable) {
+        bool all_live = true;
+        for (u32 i = 0; i < count; ++i) {
+            const auto& entry = set.entries[i];
+            if (entry.id && !texture_cache.IsRegisteredImmutable(entry.id, entry.image_uid)) {
+                all_live = false;
+                break;
+            }
+        }
+        if (all_live) {
+            set.generation = generation;
+            gen_ok = true;
+        }
+    }
+
+    if (set.count != count || !gen_ok || set.scene_generation != scene_gen) {
+        ++texture_set_why[set.count == 0 ? 3 : 1];
+        ++texture_set_misses;
         set.count = 0;
         set.generation = ~0ull;
-        std::copy_n(prepared->image_hashes, count, set.hashes.begin());
+        set.all_direct_immutable = false;
         return false;
     }
     // Every image still has the backing its view belongs to and needs no refresh.

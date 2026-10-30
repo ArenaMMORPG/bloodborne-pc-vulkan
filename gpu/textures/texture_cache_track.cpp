@@ -35,6 +35,10 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     Image& image = slot_images[image_id];
     ASSERT_MSG(True(image.flags & ImageFlagBits::Registered), "image not registered");
     image.flags &= ~ImageFlagBits::Registered;
+    if (const auto it = direct_assets_by_addr.find(image.info.guest_address);
+        it != direct_assets_by_addr.end() && it->second == image_id) {
+        direct_assets_by_addr.erase(it);
+    }
     ++registry_generation;
     lru_cache.Free(image.lru_id);
     const u64 bytes = (u64(image.info.guest_size) + 1023) & ~u64(1023);
@@ -69,7 +73,9 @@ void TextureCache::TrackImage(ImageId image_id) {
     if (!image.IsTracked()) {
         image.track_addr = begin;
         image.track_addr_end = end;
-        page_watch.WatchImage<true>(begin, image.info.guest_size);
+        if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+            page_watch.WatchImage<true>(begin, image.info.guest_size);
+        }
         return;
     }
     if (begin < image.track_addr) {
@@ -89,7 +95,9 @@ void TextureCache::TrackImageHead(ImageId image_id) {
     ASSERT(image.track_addr != 0 && begin < image.track_addr);
     const u64 size = image.track_addr - begin;
     image.track_addr = begin;
-    page_watch.WatchImage<true>(begin, size);
+    if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+        page_watch.WatchImage<true>(begin, size);
+    }
 }
 
 void TextureCache::TrackImageTail(ImageId image_id) {
@@ -101,7 +109,9 @@ void TextureCache::TrackImageTail(ImageId image_id) {
     ASSERT(image.track_addr_end != 0 && image.track_addr_end < end);
     const VAddr from = image.track_addr_end;
     image.track_addr_end = end;
-    page_watch.WatchImage<true>(from, end - from);
+    if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+        page_watch.WatchImage<true>(from, end - from);
+    }
 }
 
 void TextureCache::UntrackImage(ImageId image_id) {
@@ -113,13 +123,16 @@ void TextureCache::UntrackImage(ImageId image_id) {
     const u64 size = image.track_addr_end - image.track_addr;
     image.track_addr = 0;
     image.track_addr_end = 0;
-    if (size != 0) {
+    if (size != 0 && False(image.flags & ImageFlagBits::DirectImmutable)) {
         page_watch.WatchImage<false>(from, size);
     }
 }
 
 void TextureCache::UntrackImageHead(ImageId image_id) {
     Image& image = slot_images[image_id];
+    if (True(image.flags & ImageFlagBits::DirectImmutable)) {
+        return;
+    }
     const VAddr begin = image.info.guest_address;
     if (!image.IsTracked() || begin < image.track_addr) {
         return;
@@ -135,6 +148,9 @@ void TextureCache::UntrackImageHead(ImageId image_id) {
 
 void TextureCache::UntrackImageTail(ImageId image_id) {
     Image& image = slot_images[image_id];
+    if (True(image.flags & ImageFlagBits::DirectImmutable)) {
+        return;
+    }
     const VAddr end = image.info.guest_address + image.info.guest_size;
     if (!image.IsTracked() || image.track_addr_end < end) {
         return;
@@ -196,6 +212,9 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
     const VAddr pages_begin = BbMem::PageStart(addr);
     const VAddr pages_end = BbMem::NextPage(addr + size - 1);
     ForEachImageInRegion(pages_begin, pages_end - pages_begin, [&](ImageId image_id, Image& image) {
+        if (True(image.flags & ImageFlagBits::DirectImmutable)) {
+            return;
+        }
         const VAddr begin = image.info.guest_address;
         const VAddr end = begin + image.info.guest_size;
         if (image.Overlaps(addr, size)) {
@@ -213,6 +232,40 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
             UntrackImageTail(image_id);
         } else {
             // Within these pages but not written: no other page can tell, the hash will.
+            MarkAsMaybeDirty(image_id, image);
+        }
+    });
+}
+
+void TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) {
+    if (addr == 0 || size == 0) {
+        return;
+    }
+    std::scoped_lock lock{mutex};
+    if (!mark_dirty) {
+        ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
+            if (False(image.flags & ImageFlagBits::DirectImmutable) && image.IsTracked()) {
+                UntrackImage(image_id);
+            }
+        });
+        return;
+    }
+    const VAddr pages_begin = BbMem::PageStart(addr);
+    const VAddr pages_end = BbMem::NextPage(addr + size - 1);
+    ForEachImageInRegion(pages_begin, pages_end - pages_begin, [&](ImageId image_id, Image& image) {
+        if (True(image.flags & ImageFlagBits::DirectImmutable) || !image.IsTracked()) {
+            return;
+        }
+        const VAddr begin = image.info.guest_address;
+        const VAddr end = begin + image.info.guest_size;
+        if (image.Overlaps(addr, size)) {
+            image.flags |= ImageFlagBits::CpuDirty;
+            UntrackImage(image_id);
+        } else if (pages_end < end) {
+            UntrackImageHead(image_id);
+        } else if (begin < pages_begin) {
+            UntrackImageTail(image_id);
+        } else {
             MarkAsMaybeDirty(image_id, image);
         }
     });

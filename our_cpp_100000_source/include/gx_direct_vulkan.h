@@ -21,6 +21,18 @@ __attribute__((weak)) uint32_t bb_direct_vk_register_depth_target(
 
 __attribute__((weak)) uint32_t bb_direct_vk_lookup_color_target_uid(const void* gnm_rt_11dw) noexcept;
 __attribute__((weak)) uint32_t bb_direct_vk_lookup_depth_target_uid(const void* gnm_dt_13dw) noexcept;
+
+__attribute__((weak)) void bb_direct_vk_prepare_texture_write(const void* gpu_addr,
+                                                              uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_unwatch_texture_range(const void* gpu_addr,
+                                                              uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_retire_gpu_range(const void* gpu_addr,
+                                                         uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_register_asset_texture(uint32_t resource_id,
+                                                               const void* tsharp_8dw,
+                                                               uint32_t raw_byte_size,
+                                                               uint32_t alloc_byte_size,
+                                                               uint32_t is_immutable) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -120,7 +132,8 @@ inline bool EnabledV3() noexcept {
     return (ActiveMask() & kModuleV3_ResourceViews) != 0u;
 }
 
-inline constexpr uint32_t kV3Sub_DirectTargets = 1u << 0; // V3.1: Direct RenderTarget & DepthTarget Registration + O(1) UID binding
+inline constexpr uint32_t kV3Sub_DirectTargets       = 1u << 0; // V3.1: Direct RenderTarget & DepthTarget Registration + O(1) UID binding
+inline constexpr uint32_t kV3Sub_DirectAssetTextures = 1u << 1; // V3.2: Direct .tpf/.gnf Asset Texture Upload to VRAM VkImage & 0-trap lifecycle
 
 inline uint32_t ActiveV3SubMask() noexcept {
     static const uint32_t sub = []() -> uint32_t {
@@ -173,6 +186,49 @@ inline uint32_t LookupDirectDepthTargetUid(const void* gnm_dt_13dw) noexcept {
         return 0u;
     }
     return bb_direct_vk_lookup_depth_target_uid(gnm_dt_13dw) & 0xFFFu;
+}
+
+inline void SetTSharpBaseAddress(void* tsharp_8dw, const void* gpu_addr) noexcept {
+    auto* qw = static_cast<uint64_t*>(tsharp_8dw);
+    const uint64_t addr256 = (reinterpret_cast<uint64_t>(gpu_addr) >> 8) & 0x3FFFFFFFFFULL;
+    qw[0] = (qw[0] & ~0x3FFFFFFFFFULL) | addr256;
+}
+
+inline void PrepareDirectTextureWrite(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectAssetTextures) || !bb_direct_vk_prepare_texture_write ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_prepare_texture_write(gpu_addr, byte_size);
+}
+
+inline void UnwatchDirectTextureRange(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectAssetTextures) || !bb_direct_vk_unwatch_texture_range ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_unwatch_texture_range(gpu_addr, byte_size);
+}
+
+inline void RetireDirectGpuRange(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectAssetTextures) || !bb_direct_vk_retire_gpu_range ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_retire_gpu_range(gpu_addr, byte_size);
+}
+
+inline void RegisterDirectAssetTexture(uint32_t resource_id,
+                                       const void* tsharp_8dw,
+                                       uint32_t raw_byte_size,
+                                       uint32_t alloc_byte_size,
+                                       uint32_t is_immutable) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectAssetTextures) || !bb_direct_vk_register_asset_texture ||
+        !tsharp_8dw || raw_byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_register_asset_texture(
+        resource_id, tsharp_8dw, raw_byte_size, alloc_byte_size, is_immutable);
 }
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer

@@ -101,7 +101,9 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         const auto& entry =
             prepared ? CachedImageDescEntry(tsharp, image_desc, prepared->image_hashes[image_index])
                      : CachedImageDescEntry(tsharp, image_desc);
-        if (entry.found_generation != generation) {
+        if (entry.found_generation != generation &&
+            !(entry.found_direct_immutable &&
+              texture_cache.IsRegisteredImmutable(entry.found_id, entry.found_uid))) {
             return false;
         }
         VideoCore::ImageId image_id = entry.found_id;

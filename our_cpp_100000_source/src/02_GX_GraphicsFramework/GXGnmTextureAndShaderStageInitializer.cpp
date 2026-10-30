@@ -1158,6 +1158,7 @@ extern "C" void GXGnmTexture3D_ExtractDescriptorFromHardware(
 extern "C" void GXGnmTexture3D_ReleaseMemory(GXGnmTextureHardwareObject* hwTex) {
     GXAllocator* alloc = hwTex->allocator;
     if (alloc && hwTex->gpuBaseAddr) {
+        gx_direct_vk::UnwatchDirectTextureRange(hwTex->gpuBaseAddr, hwTex->allocSize);
         alloc->vptr->Free(alloc, hwTex->gpuBaseAddr);
         hwTex->gpuBaseAddr = nullptr;
     }
@@ -1249,7 +1250,15 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
     }
 
     if (opts && opts->copyRawLinear != 0) {
+        gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
         CGMemoryGnm_Memcpy(gpuMem, initialSubresources[0], rawSize);
+        if ((desc->bindFlags & 0x60u) == 0u) {
+            gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+            const uint32_t isImmutable =
+                (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+            gx_direct_vk::RegisterDirectAssetTexture(
+                hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
+        }
         return 0;
     }
 
@@ -1275,6 +1284,7 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
         return 0;
     }
 
+    gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
     uint8_t tilingParams[0x30];
     const uint8_t* subDescPtr = reinterpret_cast<const uint8_t*>(initialSubresources);
     for (uint32_t mip = 0; mip < numMips; ++mip, subDescPtr += 16) {
@@ -1293,6 +1303,13 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
             return 8;
         }
         BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + mipOffset, mipSize);
+    }
+    if ((desc->bindFlags & 0x60u) == 0u) {
+        gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+        const uint32_t isImmutable =
+            (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+        gx_direct_vk::RegisterDirectAssetTexture(
+            hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
     }
     return 0;
 }
@@ -1321,6 +1338,7 @@ extern "C" void GXGnmTexture2D_ExtractDescriptorFromHardware(
 extern "C" void GXGnmTexture2D_ReleaseMemory(GXGnmTextureHardwareObject* hwTex) {
     GXAllocator* alloc = hwTex->allocator;
     if (alloc && hwTex->gpuBaseAddr) {
+        gx_direct_vk::UnwatchDirectTextureRange(hwTex->gpuBaseAddr, hwTex->allocSize);
         alloc->vptr->Free(alloc, hwTex->gpuBaseAddr);
         hwTex->gpuBaseAddr = nullptr;
     }
@@ -1413,7 +1431,15 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
     }
 
     if (opts && opts->copyRawLinear != 0) {
+        gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
         CGMemoryGnm_Memcpy(gpuMem, initialSubresources[0], rawSize);
+        if ((desc->bindFlags & 0x60u) == 0u && desc->sampleCount <= 1u) {
+            gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+            const uint32_t isImmutable =
+                (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+            gx_direct_vk::RegisterDirectAssetTexture(
+                hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
+        }
         return 0;
     }
 
@@ -1449,6 +1475,7 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
         return 0;
     }
 
+    gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
     uint8_t tilingParams[0x30];
     uint32_t mipStride = lastMip + 1;
     const uint8_t* subBase = reinterpret_cast<const uint8_t*>(initialSubresources);
@@ -1474,6 +1501,13 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
             arrayCount = desc->arraySize;
         }
     }
+    if ((desc->bindFlags & 0x60u) == 0u && desc->sampleCount <= 1u) {
+        gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+        const uint32_t isImmutable =
+            (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+        gx_direct_vk::RegisterDirectAssetTexture(
+            hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
+    }
     return 0;
 }
 
@@ -1498,6 +1532,7 @@ extern "C" void GXGnmTexture1D_ExtractDescriptorFromHardware(
 extern "C" void GXGnmTexture1D_ReleaseMemory(GXGnmTextureHardwareObject* hwTex) {
     GXAllocator* alloc = hwTex->allocator;
     if (alloc && hwTex->gpuBaseAddr) {
+        gx_direct_vk::UnwatchDirectTextureRange(hwTex->gpuBaseAddr, hwTex->allocSize);
         alloc->vptr->Free(alloc, hwTex->gpuBaseAddr);
         hwTex->gpuBaseAddr = nullptr;
     }
@@ -1584,7 +1619,15 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
     }
 
     if (opts && opts->copyRawLinear != 0) {
+        gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
         CGMemoryGnm_Memcpy(gpuMem, initialSubresources[0], rawSize);
+        if ((desc->bindFlags & 0x60u) == 0u) {
+            gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+            const uint32_t isImmutable =
+                (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+            gx_direct_vk::RegisterDirectAssetTexture(
+                hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
+        }
         return 0;
     }
 
@@ -1620,6 +1663,7 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
         return 0;
     }
 
+    gx_direct_vk::PrepareDirectTextureWrite(gpuMem, allocSize);
     uint8_t tilingParams[0x30];
     uint32_t mipStride = lastMip + 1;
     const uint8_t* subBase = reinterpret_cast<const uint8_t*>(initialSubresources);
@@ -1644,6 +1688,13 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
             BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + surfOffset, surfSize);
             arrayCount = desc->arraySize;
         }
+    }
+    if ((desc->bindFlags & 0x60u) == 0u) {
+        gx_direct_vk::SetTSharpBaseAddress(gnmTex, gpuMem);
+        const uint32_t isImmutable =
+            (desc->usageMode == 1u && desc->bindFlags == 8u && desc->cpuAccess == 0u) ? 1u : 0u;
+        gx_direct_vk::RegisterDirectAssetTexture(
+            hwTex->resourceId, gnmTex, rawSize, allocSize, isImmutable);
     }
     return 0;
 }
@@ -3715,6 +3766,7 @@ void GXRefCountedTexture3DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture3DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3727,6 +3779,7 @@ void GXRefCountedTexture3DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture3DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);
@@ -3754,6 +3807,7 @@ void GXRefCountedTexture2DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture2DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3766,6 +3820,7 @@ void GXRefCountedTexture2DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture2DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);
@@ -3793,6 +3848,7 @@ void GXRefCountedTexture1DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture1DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3805,6 +3861,7 @@ void GXRefCountedTexture1DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture1DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
+        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);

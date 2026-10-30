@@ -1353,8 +1353,13 @@ void Rasterizer::Finish() {
     scheduler.Finish();
 }
 
+void Rasterizer::ProcessDirectTextureEvents() {
+    texture_cache.ProcessDirectTextureEvents(memory);
+}
+
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    ProcessDirectTextureEvents();
     if (fault_process_pending) {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();

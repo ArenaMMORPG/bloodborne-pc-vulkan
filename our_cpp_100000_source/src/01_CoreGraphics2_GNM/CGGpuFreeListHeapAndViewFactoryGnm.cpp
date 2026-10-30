@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "gx_direct_vulkan.h"
 
 namespace from {
 namespace CoreGraphics2 {
@@ -293,8 +294,12 @@ void CGGpuFreeListAllocatorGnm_FreeBlockImmediateA(uint8_t* self, CGGpuBlockNode
     IMutex* mutex = reinterpret_cast<IMutex*>(self + 0xd8);
     mutex->vtable->lock(mutex, 0xFFFFFFFFu);
 
+    const uint64_t freedAddr = block->gpuAddress;
+    const uint64_t freedSize = block->nextByAddr->gpuAddress - freedAddr;
+    gx_direct_vk::RetireDirectGpuRange(reinterpret_cast<const void*>(freedAddr), freedSize);
+
     --(*reinterpret_cast<uint64_t*>(self + 0xc8));
-    *reinterpret_cast<uint64_t*>(self + 0xd0) += (block->nextByAddr->gpuAddress - block->gpuAddress);
+    *reinterpret_cast<uint64_t*>(self + 0xd0) += freedSize;
 
     CGGpuBlockNode* sentinel = reinterpret_cast<CGGpuBlockNode*>(self + 0x68);
     uintptr_t poolOffset = (0ULL - reinterpret_cast<uintptr_t>(self)) & 7ULL;
@@ -480,9 +485,12 @@ void CGGpuFreeListAllocatorGnm_ReclaimCompletedDeferredFrees(uint8_t* self, uint
             }
 
             // Block GPU fence completed (== 4): reclaim and coalesce
+            const uint64_t freedAddr = curr->gpuAddress;
+            const uint64_t freedSize = curr->nextByAddr->gpuAddress - freedAddr;
+            gx_direct_vk::RetireDirectGpuRange(reinterpret_cast<const void*>(freedAddr), freedSize);
+
             --(*reinterpret_cast<uint64_t*>(self + 0xc8));
-            *reinterpret_cast<uint64_t*>(self + 0xd0) +=
-                (curr->nextByAddr->gpuAddress - curr->gpuAddress);
+            *reinterpret_cast<uint64_t*>(self + 0xd0) += freedSize;
 
             CGGpuBlockNode* next = curr->nextByAddr;
             while (next->stateOrTaggedFence == 0 && next != sentinel) {

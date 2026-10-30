@@ -34,8 +34,9 @@ enum ImageFlagBits : u32 {
     CpuDirty = 1 << 1,      ///< the guest wrote it
     GpuDirty = 1 << 2,      ///< the GPU wrote its memory as a buffer (reupload from there)
     Dirty = MaybeCpuDirty | CpuDirty | GpuDirty,
-    GpuModified = 1 << 3, ///< the GPU wrote it as an image
-    Registered = 1 << 6,  ///< in the cache's page table
+    GpuModified = 1 << 3,     ///< the GPU wrote it as an image
+    DirectImmutable = 1 << 4, ///< V3.2: immutable .tpf/.gnf asset in DEVICE_LOCAL VRAM (no page traps)
+    Registered = 1 << 6,      ///< in the cache's page table
     Picked = 1 << 7,      ///< seen in the current region walk
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)

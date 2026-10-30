@@ -46,6 +46,7 @@
 #include "render/shader_hle.h"
 #include "buffers/buffer_cache.h"
 #include "render/rasterizer.h"
+#include "textures/direct_textures.h"
 
 namespace BbCp {
 
@@ -590,6 +591,21 @@ void CommandProcessor::Run(std::stop_token stop) {
             if (work != last_decoded) {
                 last_decoded = work;
                 BbTimeline::Note(BbTimeline::DecodeBegin, u64(current_queue), decoded_total);
+                if (rasterizer && VideoCore::DirectTextures::HasPendingEvents()) {
+                    if (rasterizer->PipeSignals() ||
+                        (rasterizer->PipeOrder() &&
+                         !BbToggle::Disabled(BbToggle::PipelinedTasks))) {
+                        static constexpr u8 none = 0;
+                        rasterizer->RunInOrder(
+                            [](Vulkan::Rasterizer& r, const u8*) {
+                                r.ProcessDirectTextureEvents();
+                            },
+                            &none, 0, BbToggle::PipelinedTasks, false);
+                    } else {
+                        rasterizer->DrainDrawPipe();
+                        rasterizer->ProcessDirectTextureEvents();
+                    }
+                }
             }
             Status status;
             {

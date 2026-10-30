@@ -385,6 +385,7 @@ public:
     bool OnWriteFault(VAddr addr, bool assume_locks, u64 guest_rip = 0);
     bool ReadMemory(VAddr addr, u64 size, bool assume_locks = false);
     void ProcessDownloadImages();
+    void ProcessDirectTextureEvents();
     bool IsMapped(VAddr addr, u64 size);
     void MapMemory(VAddr addr, u64 size);
     void RegisterMemory(VAddr addr, u64 size);
@@ -567,22 +568,27 @@ private:
     /// (TextureSetMemo): a hit only redoes the per-draw effects (binding flags, transitions).
     struct TextureSetEntry {
         VideoCore::ImageId id{}; ///< after the depth redirect; null descriptor when invalid
+        bool proxy = false; ///< sampled from the scene proxy (view: SampleProxy on each use)
         vk::ImageView view;
         const void* backing = nullptr;
+        u64 image_uid = 0;
         VideoCore::SubresourceRange range;
-        bool proxy = false; ///< sampled from the scene proxy (view: SampleProxy on each use)
     };
     struct TextureSet {
         u64 key = 0;
         const Shader::Info* stage = nullptr;
         u64 generation = ~0ull;
         u64 scene_generation = 0; ///< SceneTargets::Generation of the proxy views
+        u64 last_use = 0;
         u32 count = 0;
-        static constexpr u32 MaxImages = 32; ///< larger sets are not memoized
+        bool all_direct_immutable = false;
+        static constexpr u32 MaxImages = 24; ///< larger sets fall back to ImageDescCacheEntry
         std::array<u64, MaxImages> hashes{};
         std::array<TextureSetEntry, MaxImages> entries{};
     };
-    std::array<TextureSet, 32768> texture_sets{};
+    /// V3.2: 2-way set-associative (8192 sets x 2 ways = 16384 slots, ~22 MB, fits in L3 cache).
+    std::array<TextureSet, 16384> texture_sets{};
+    u64 texture_set_use_counter = 0;
     u64 texture_set_hits = 0, texture_set_misses = 0;
     std::array<u64, 4> texture_set_why{}; ///< misses: other key, generation, image check, new
     /// Returns true when the stage's images were bound from the memo.
@@ -680,9 +686,11 @@ private:
     struct ImageDescCacheEntry {
         std::array<u64, 4> sharp{};
         u32 flags = ~0u;
+        bool found_direct_immutable = false;
         VideoCore::TextureCache::ImageDesc desc;
         // Memoized FindImage for bindings without mip overrides (TextureBindingMemo).
         u64 found_generation = ~0ULL;
+        u64 found_uid = 0;
         VideoCore::ImageId found_id{};
         VideoCore::TextureCache::ImageDesc found_desc;
         u64 pinned = 0; ///< bind_epoch of the BindTextures call referencing found_desc

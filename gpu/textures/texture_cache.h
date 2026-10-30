@@ -40,6 +40,9 @@ class PageWatch;
 namespace BbVideoOut {
 struct BufferAttributeGroup;
 }
+namespace Core {
+class MemoryManager;
+}
 namespace Vulkan {
 class Instance;
 class Scheduler;
@@ -131,10 +134,21 @@ public:
     }
     [[nodiscard]] Image& GetImage(ImageId id) {
         Image& image = slot_images[id];
-        if (image.lru_touched_tick != gc_tick) [[unlikely]] {
+        if (image.lru_touched_tick > gc_tick || (gc_tick - image.lru_touched_tick) >= 8) [[unlikely]] {
             TouchImage(image);
         }
         return image;
+    }
+    /// V3.2: O(1) validation for DirectImmutable asset textures that survives unrelated
+    /// registry_generation bumps when other .tpf/.gnf textures stream in.
+    [[nodiscard]] bool IsRegisteredImmutable(ImageId id, u64 uid) const noexcept {
+        if (!id || uid == 0 || !slot_images.is_allocated(id)) {
+            return false;
+        }
+        const Image& image = slot_images[id];
+        constexpr u32 Required =
+            u32(ImageFlagBits::Registered) | u32(ImageFlagBits::DirectImmutable);
+        return image.image_uid == uid && (u32(image.flags) & Required) == Required;
     }
     [[nodiscard]] Image& GetImageUntouched(ImageId id) {
         return slot_images[id];
@@ -191,6 +205,12 @@ public:
     void UnmapMemory(VAddr cpu_addr, size_t size);
     /// Writes back the images queued for it (BB_READBACK_LINEAR_IMAGES).
     void ProcessDownloadImages();
+    /// V3.2 Phase A (guest thread): proactively disarms watched image traps in user space before
+    /// memcpy / tiling / block free so guest threads never fault into SIGSEGV -> DrainDrawPipe().
+    void DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty);
+    /// V3.2 Phase B (Stage B stream order): retires freed blocks and uploads .tpf/.gnf assets
+    /// directly into DEVICE_LOCAL VkImages transitioned to eShaderReadOnlyOptimal.
+    void ProcessDirectTextureEvents(Core::MemoryManager* memory);
 
     // Surface metadata (CMASK, FMASK, HTILE) of bound targets.
 
@@ -286,7 +306,7 @@ private:
         constexpr u32 Registered = u32(ImageFlagBits::Registered);
         return (flags & (Dirty | Registered)) == Registered &&
                image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
-               image.lru_touched_tick == gc_tick;
+               image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8;
     }
     u64 CurrentTick() const;
 
@@ -385,6 +405,7 @@ private:
         s32 clear_mask = -1;
     };
     tsl::robin_map<VAddr, MetaInfo> surface_metas;
+    tsl::robin_map<VAddr, ImageId> direct_assets_by_addr; ///< V3.2: O(1) VAddr -> ImageId lookup
 };
 
 } // namespace VideoCore
