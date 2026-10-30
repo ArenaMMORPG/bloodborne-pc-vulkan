@@ -1,0 +1,44 @@
+# Build & runtime outputs
+/out/
+/bin
+/build_gpu/
+/our_cpp_100000_source/build/
+/pgo/
+/dist/
+__pycache__/
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.exe
+
+# Read-only frozen golden snapshot & raw shader binary dumps (stored in Tier 0 / Tier 1)
+/01_GOLDEN_CPP20_2940_READONLY_NEVER_TOUCH/
+/our_cpp_100000_source/shaders/*/
+
+# Nested upstream third-party git clones & bundled local assets/mods
+/gpu/third_party/fsr-vulkan/
+/gpu/third_party/imgui/
+/third_party/LibAtrac9/
+/bundled/
+/mods/
+/shader_catalog/
+/fsr4_shaders/
+/fsr4_411/
+
+# User data, saves, local configs, logs & captures
+/user
+/user/
+/logs/
+bbport.ini
+mods.json
+patches.json
+last_run.log
+vkd3d-proton.cache
+perf.data
+*.orig
+/*.spv
+*.png
+*.mp4
+*.zip
