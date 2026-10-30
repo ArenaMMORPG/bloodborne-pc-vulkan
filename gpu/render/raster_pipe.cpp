@@ -81,6 +81,7 @@ void Rasterizer::DrainDrawPipe(u32 reason, u32 line, const char* function) {
     if (!draw_pipe || !OnStageA()) {
         return;
     }
+    FlushStageAReadCoalescer();
     static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
     if (!stats) {
         draw_pipe->Drain(reason);
@@ -160,15 +161,74 @@ u64 Rasterizer::AdvanceGpuRetiredPacket() {
     return retired;
 }
 
-void Rasterizer::NotePendingRead(VAddr address, u64 size, bool gpu_in_place) {
-    if (draw_pipe && size && OnStageA()) {
-        const u64 next = draw_pipe->NextPacket();
+void Rasterizer::NoteStageACoalescedRead(VAddr address, u64 size, u64 packet, u8 mask) {
+    const size_t slot = static_cast<size_t>(
+        ((address >> 6) ^ (address >> 15) ^ (size * 0x9E3779B97F4A7C15ULL)) &
+        (kStageACoalescerSlots - 1));
+    auto& entry = stage_a_read_coalescer[slot];
+    if (entry.mask == mask && entry.addr == address && entry.size == size) {
+        if (packet > entry.packet) {
+            entry.packet = packet;
+        }
+        return;
+    }
+    if (entry.mask != 0) {
         const bool single = draw_pipe->ResolverCount() == 0;
         const u64 stage_b_retired = draw_pipe->ConsumedPackets();
-        pending_reads.Note(address, size, next, single, stage_b_retired);
-        if (gpu_in_place) {
-            pending_gpu_reads.Note(address, size, next, single, AdvanceGpuRetiredPacket());
+        if (entry.mask & kCoalesceResolve) {
+            pending_resolve.Note(entry.addr, entry.size, entry.packet, true, stage_b_retired);
         }
+        if (entry.mask & kCoalesceStageB) {
+            pending_reads.Note(entry.addr, entry.size, entry.packet, single, stage_b_retired);
+        }
+        if (entry.mask & kCoalesceGpuInPl) {
+            if (packet >= stage_a_last_gpu_retired_pkt + 64) {
+                stage_a_cached_gpu_retired = AdvanceGpuRetiredPacket();
+                stage_a_last_gpu_retired_pkt = packet;
+            }
+            pending_gpu_reads.Note(entry.addr, entry.size, entry.packet, single,
+                                   stage_a_cached_gpu_retired);
+        }
+    }
+    entry.addr = address;
+    entry.size = size;
+    entry.packet = packet;
+    entry.mask = mask;
+    stage_a_coalescer_dirty = true;
+}
+
+void Rasterizer::FlushStageAReadCoalescer() {
+    if (!stage_a_coalescer_dirty || !draw_pipe) {
+        return;
+    }
+    const bool single = draw_pipe->ResolverCount() == 0;
+    const u64 stage_b_retired = draw_pipe->ConsumedPackets();
+    const u64 gpu_retired = AdvanceGpuRetiredPacket();
+    stage_a_cached_gpu_retired = gpu_retired;
+    stage_a_last_gpu_retired_pkt = draw_pipe->NextPacket();
+    for (auto& entry : stage_a_read_coalescer) {
+        const u8 m = entry.mask;
+        if (m == 0) {
+            continue;
+        }
+        if (m & kCoalesceResolve) {
+            pending_resolve.Note(entry.addr, entry.size, entry.packet, true, stage_b_retired);
+        }
+        if (m & kCoalesceStageB) {
+            pending_reads.Note(entry.addr, entry.size, entry.packet, single, stage_b_retired);
+        }
+        if (m & kCoalesceGpuInPl) {
+            pending_gpu_reads.Note(entry.addr, entry.size, entry.packet, single, gpu_retired);
+        }
+        entry.mask = 0;
+    }
+    stage_a_coalescer_dirty = false;
+}
+
+void Rasterizer::NotePendingRead(VAddr address, u64 size, bool gpu_in_place) {
+    if (draw_pipe && size && OnStageA()) {
+        const u8 mask = gpu_in_place ? u8(kCoalesceStageB | kCoalesceGpuInPl) : kCoalesceStageB;
+        NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), mask);
     }
 }
 
@@ -188,6 +248,7 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size) {
     if (!draw_pipe || !OnStageA()) {
         return;
     }
+    FlushStageAReadCoalescer();
     // BB_EXP_CONSTRAM_FINISH=1 (experiment): every dump waits until the GPU has run all earlier work.
     // 2: stage B catches up and submits, no GPU wait; 3: waits for the GPU only (work submitted).
     static const int finish_all = [] {
@@ -378,20 +439,20 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                                         instance.UniformMinAlignment());
     static const bool precise_readbacks =
         EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
-    const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
-    struct RingMemo {
-        VAddr addr = 0;
-        u32 size = 0;
-        u32 offset = 0;
-        u64 hash = 0;
-        u64 frame = ~0ull;
-        u64 ring_pos = 0;
-    };
-    static constexpr size_t kRingMemoSize = 256;
-    thread_local std::array<RingMemo, kRingMemoSize> tls_ring_memo{};
 
     const auto copy = [&](u32 index, const void* source, VAddr address, u64 size) {
         if (!source && !precise_readbacks && size >= 64 && size <= 4096) {
+            struct RingMemo {
+                VAddr addr = 0;
+                u32 size = 0;
+                u32 offset = 0;
+                u64 hash = 0;
+                u64 frame = ~0ull;
+                u64 ring_pos = 0;
+            };
+            static constexpr size_t kRingMemoSize = 256;
+            thread_local std::array<RingMemo, kRingMemoSize> tls_ring_memo{};
+            const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
             const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
             const size_t slot = ((address >> 4) ^ (size << 3) ^ (address >> 16)) & (kRingMemoSize - 1);
             auto& memo = tls_ring_memo[slot];
@@ -504,8 +565,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             size <= VideoCore::BufferCache::STREAM_THRESHOLD && !constants_in_place) {
             out.push_back({index, static_cast<u32>(size), RingPending, address, 0,
                            u32(hle_candidate)});
-            pending_resolve.Note(address, size, draw_pipe->NextPacket(), true,
-                                 draw_pipe->ConsumedPackets());
+            NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), kCoalesceResolve);
             continue;
         }
         const bool copyable = constram_sync ||
@@ -899,6 +959,7 @@ void Rasterizer::RetireSubmission() {
     if (!draw_pipe || !OnStageA()) {
         return;
     }
+    FlushStageAReadCoalescer();
     while (!pipe_keepalive.empty() && draw_pipe->Reached(pipe_keepalive.front().first)) {
         pipe_keepalive.pop_front();
     }

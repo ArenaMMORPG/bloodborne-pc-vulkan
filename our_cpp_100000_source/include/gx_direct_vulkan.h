@@ -76,9 +76,11 @@ inline constexpr uint32_t kV2Sub_YebisDrawDispatch  = 1u << 4; // 0x21d5f80 (Yeb
 inline constexpr uint32_t kV2Sub_SkipShaderPrefetch = 1u << 5; // CGShaderResourceBinderGnm: skip dummy 0x1073f50 DMA_DATA L2 prefetch (0x3022C)
 inline constexpr uint32_t kV2Sub_NativeVsharp       = 1u << 6; // CGShaderResourceBinderGnm: native C++20 V# descriptors, active stages & PS usage
 inline constexpr uint32_t kV2Sub_StageUserData      = 1u << 7; // CGShaderResourceBinderGnm: coalesced bitmasked stage SGPR packet (0 Razor NOPs)
-inline constexpr uint32_t kV2Sub_RasterState        = 1u << 8; // CGRasterizerCacheGnm: coalesced Rasterizer, Viewport 0..15, Scissor 0..15 & Guardband batch
-inline constexpr uint32_t kV2Sub_BlendDsState       = 1u << 9; // CGOutputMergerCacheGnm: coalesced Blend, DepthStencil, StencilRef, DepthBounds & Clear batch
+inline constexpr uint32_t kV2Sub_RasterState        = 1u << 8;  // CGRasterizerCacheGnm: coalesced Rasterizer, Viewport 0..15, Scissor 0..15 & Guardband batch
+inline constexpr uint32_t kV2Sub_BlendDsState       = 1u << 9;  // CGOutputMergerCacheGnm: coalesced Blend, DepthStencil, StencilRef, DepthBounds & Clear batch
 inline constexpr uint32_t kV2Sub_RenderTargets      = 1u << 10; // CGOutputMergerCacheGnm: single-packet RTV/DSV binding with embedded extent hints
+inline constexpr uint32_t kV2Sub_CommandStream      = 1u << 11; // V2.4: CGCommandStreamPlayerGnm direct inlined opcode switch (zero boot.bin table jumps)
+inline constexpr uint32_t kV2Sub_NativeSyncAndDcb   = 1u << 12; // V2.4: Native DrawCommandBuffer::init & coalesced ReleaseLabelsBatch EOP batching
 
 inline uint32_t ActiveV2SubMask() noexcept {
     static const uint32_t sub = []() -> uint32_t {
@@ -122,6 +124,8 @@ enum class Op : uint32_t {
     SetContextRegsPacked     = 18u,
     SetRenderTarget          = 19u,
     SetDepthRenderTarget     = 20u,
+    // V2.4: Coalesced End-of-Pipe 64-bit zero label release batch (up to 32 chunk/query labels per packet)
+    ReleaseLabelsBatch       = 21u,
 };
 
 struct CopyRegion {
@@ -1040,5 +1044,79 @@ inline void EmitSetDepthRenderTarget(void* dcb_raw, const void* dt_raw) noexcept
         pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget);
     }
 }
+
+// ============================================================================
+// V2.4: Native DrawCommandBuffer::init (0x1071270) & Coalesced EOP Label Batch
+// ============================================================================
+
+inline bool DefaultDcbOutOfSpaceCallback(void* /*dcb*/, uint32_t /*dwords*/, void* /*ud*/) noexcept {
+    return false;
+}
+
+// 1-to-1 instruction-accurate C++20 replacement for 0x1071270 (sce::Gnm::DrawCommandBuffer::init)
+inline void InitDrawCommandBuffer(void* dcb_raw, void* buf, uint32_t byte_size,
+                                  void* callback, void* user_data) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    auto* dcb = static_cast<uint8_t*>(dcb_raw);
+    const uint32_t dwords = byte_size >> 2;
+    *reinterpret_cast<void**>(dcb + 0x10) = buf;
+    *reinterpret_cast<void**>(dcb + 0x00) = buf;
+    *reinterpret_cast<uint32_t*>(dcb + 0x38) = dwords;
+    *reinterpret_cast<void**>(dcb + 0x08) =
+        static_cast<uint8_t*>(buf) + (static_cast<size_t>(dwords) << 2);
+    if (callback != nullptr) {
+        *reinterpret_cast<void**>(dcb + 0x18) = callback;
+        *reinterpret_cast<void**>(dcb + 0x20) = user_data;
+    } else {
+        *reinterpret_cast<bool (**)(void*, uint32_t, void*)>(dcb + 0x18) =
+            &DefaultDcbOutOfSpaceCallback;
+        *reinterpret_cast<void**>(dcb + 0x20) = nullptr;
+    }
+}
+
+// Coalesces up to 32 End-of-Pipe 64-bit zero status writes (CGQueryLabelPoolGnm_WriteReleaseLabel,
+// 0x26d3c80 -> 0x26bb6d0 -> 0x10778f0) into a single DirectVk::Op::ReleaseLabelsBatch packet.
+struct ReleaseLabelBatch {
+    static constexpr uint32_t kMaxLabels = 32u;
+    void* dcb = nullptr;
+    uint32_t count = 0u;
+    uint64_t addrs[kMaxLabels]{};
+
+    explicit ReleaseLabelBatch(void* dcb_raw) noexcept : dcb(dcb_raw) {}
+
+    inline void Flush() noexcept {
+        if (count == 0u || !dcb) {
+            count = 0u;
+            return;
+        }
+        // Packet layout: [0]=NOP header (body = 2 + 2*count), [1]=kNopPayloadTag,
+        // [2]=Op::ReleaseLabelsBatch | (count << 16), [3..2+2*count]=uint64_t addresses[count]
+        const uint32_t body_dwords = 2u + count * 2u;
+        uint32_t* pkt = ReserveDcbDwords(dcb, 1u + body_dwords);
+        if (pkt) {
+            pkt[0] = MakeNopHeader(body_dwords);
+            pkt[1] = kNopPayloadTag;
+            pkt[2] = static_cast<uint32_t>(Op::ReleaseLabelsBatch) | (count << 16);
+            std::memcpy(pkt + 3u, addrs, static_cast<size_t>(count) * sizeof(uint64_t));
+        }
+        count = 0u;
+    }
+
+    inline void AddPoolSlot(const void* pool_raw, uint64_t* slot_base) noexcept {
+        if (!pool_raw || !slot_base) {
+            return;
+        }
+        const uint64_t qwords_per_slot =
+            *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(pool_raw) + 0x08);
+        uint64_t* status_ptr = &slot_base[qwords_per_slot - 1u];
+        *status_ptr = 2ULL;
+        if (count == kMaxLabels) {
+            Flush();
+        }
+        addrs[count++] = reinterpret_cast<uint64_t>(status_ptr);
+    }
+};
 
 } // namespace gx_direct_vk

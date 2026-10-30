@@ -412,6 +412,58 @@ void DirectVkClearDepthStencilTask(Vulkan::Rasterizer& rasterizer, const u8* dat
     }
 }
 
+void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    u32 op_word = 0;
+    std::memcpy(&op_word, data, sizeof(u32));
+    const u32 count = op_word >> 16;
+    if (count == 0 || count > 32) {
+        return;
+    }
+    std::array<VAddr, 32> addrs{};
+    std::memcpy(addrs.data(), data + sizeof(u32), count * sizeof(VAddr));
+    BbStats::eop_decoded.fetch_add(count, std::memory_order_relaxed);
+    rasterizer.ProcessDownloadImages();
+
+    const std::span<const VAddr> span{addrs.data(), count};
+    if (Vulkan::Rasterizer::HonestLabels()) {
+        if (rasterizer.WriteZeroLabelsBatchOnGpu(span)) {
+            for (u32 i = 0; i < count; ++i) {
+                Diagnostics::NoteLabel(Diagnostics::LabelStep::GraphicsOnGpu, addrs[i], 0ULL, 8u);
+            }
+            BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
+            return;
+        }
+        for (u32 i = 0; i < count; ++i) {
+            const VAddr addr = addrs[i];
+            const u64 seq = BbFreeCheck::NextFenceSeq();
+            rasterizer.SignalAfterGpu(
+                [addr, seq] {
+                    MaybeDelay(seq);
+                    WriteLabel(reinterpret_cast<void*>(addr), 0ULL, 8u, BbFreeCheck::Eop, seq);
+                    BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
+                },
+                addr, 0ULL);
+        }
+        return;
+    }
+
+    auto write_all = [addrs, count] {
+        for (u32 i = 0; i < count; ++i) {
+            const u64 seq = BbFreeCheck::NextFenceSeq();
+            MaybeDelay(seq);
+            WriteLabel(reinterpret_cast<void*>(addrs[i]), 0ULL, 8u, BbFreeCheck::Eop, seq);
+        }
+        BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
+    };
+    if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
+        rasterizer.SignalAfterHostCopies(std::move(write_all));
+    } else {
+        rasterizer.WaitHostCopies();
+        rasterizer.WaitDeferredSignals();
+        write_all();
+    }
+}
+
 } // namespace Tasks
 
 } // namespace BbCp

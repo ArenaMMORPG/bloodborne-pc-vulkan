@@ -397,8 +397,13 @@ int32_t CGGfxContextGnm_Initialize(
     *reinterpret_cast<uint32_t*>(self + 0xb4ec) = 0;
 
     if (isDeferred != 0) {
-        reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
-            self, nullptr, 0, reinterpret_cast<void*>(GX_VMA(0x26af230ULL)), self);
+        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+            gx_direct_vk::InitDrawCommandBuffer(
+                self, nullptr, 0, reinterpret_cast<void*>(GX_VMA(0x26af230ULL)), self);
+        } else {
+            reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
+                self, nullptr, 0, reinterpret_cast<void*>(GX_VMA(0x26af230ULL)), self);
+        }
         *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x00);
     } else {
         void* dcbBuf = nullptr;
@@ -408,8 +413,13 @@ int32_t CGGfxContextGnm_Initialize(
             return 9;
         }
         uint32_t dcbBytes = static_cast<uint32_t>((poolQwords << 3) - 8);
-        reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
-            self, dcbBuf, dcbBytes, reinterpret_cast<void*>(GX_VMA(0x26af030ULL)), self);
+        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+            gx_direct_vk::InitDrawCommandBuffer(
+                self, dcbBuf, dcbBytes, reinterpret_cast<void*>(GX_VMA(0x26af030ULL)), self);
+        } else {
+            reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
+                self, dcbBuf, dcbBytes, reinterpret_cast<void*>(GX_VMA(0x26af030ULL)), self);
+        }
         *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x00);
         reinterpret_cast<void(*)(void*)>(GX_VMA(0x26bb6c0ULL))(self);
     }
@@ -727,19 +737,34 @@ void CGGfxContextGnm_FlushPendingStagingUploads(uint8_t* self) {
     uint8_t* labelChunk = *reinterpret_cast<uint8_t**>(self + 0xb4d8);
     if (labelChunk) {
         uint64_t cap = *reinterpret_cast<uint32_t*>(self + 0xb4e8);
-        while (labelChunk) {
-            for (uint64_t i = 0;; ++i) {
+        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+            const void* pool = *reinterpret_cast<void**>(self + 0xb4c8);
+            gx_direct_vk::ReleaseLabelBatch batch(self);
+            while (labelChunk) {
                 uint8_t* nextLabelChunk = *reinterpret_cast<uint8_t**>(labelChunk + cap * 8ULL);
                 uint64_t limit = nextLabelChunk ? cap : *reinterpret_cast<uint32_t*>(self + 0xb4ec);
-                if (i >= limit) {
-                    labelChunk = nextLabelChunk;
-                    break;
+                for (uint64_t i = 0; i < limit; ++i) {
+                    batch.AddPoolSlot(pool, *reinterpret_cast<uint64_t**>(labelChunk + i * 8ULL));
                 }
-                reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26d3c80ULL))(
-                    *reinterpret_cast<void**>(self + 0xb4c8),
-                    self,
-                    *reinterpret_cast<void**>(labelChunk + i * 8ULL));
-                *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x10);
+                labelChunk = nextLabelChunk;
+            }
+            batch.Flush();
+            *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x10);
+        } else {
+            while (labelChunk) {
+                for (uint64_t i = 0;; ++i) {
+                    uint8_t* nextLabelChunk = *reinterpret_cast<uint8_t**>(labelChunk + cap * 8ULL);
+                    uint64_t limit = nextLabelChunk ? cap : *reinterpret_cast<uint32_t*>(self + 0xb4ec);
+                    if (i >= limit) {
+                        labelChunk = nextLabelChunk;
+                        break;
+                    }
+                    reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26d3c80ULL))(
+                        *reinterpret_cast<void**>(self + 0xb4c8),
+                        self,
+                        *reinterpret_cast<void**>(labelChunk + i * 8ULL));
+                    *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x10);
+                }
             }
         }
     }
@@ -1108,19 +1133,34 @@ void CGGfxContextGnm_SubmitAllAndReleaseChunks(uint8_t* self) {
     uint8_t* labelChunk = *reinterpret_cast<uint8_t**>(self + 0xb4d8);
     if (labelChunk) {
         uint64_t cap = *reinterpret_cast<uint32_t*>(self + 0xb4e8);
-        while (labelChunk) {
-            for (uint64_t i = 0;; ++i) {
+        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+            const void* pool = *reinterpret_cast<void**>(self + 0xb4c8);
+            gx_direct_vk::ReleaseLabelBatch batch(self);
+            while (labelChunk) {
                 uint8_t* nextLabelChunk = *reinterpret_cast<uint8_t**>(labelChunk + cap * 8ULL);
                 uint64_t limit = nextLabelChunk ? cap : *reinterpret_cast<uint32_t*>(self + 0xb4ec);
-                if (i >= limit) {
-                    labelChunk = nextLabelChunk;
-                    break;
+                for (uint64_t i = 0; i < limit; ++i) {
+                    batch.AddPoolSlot(pool, *reinterpret_cast<uint64_t**>(labelChunk + i * 8ULL));
                 }
-                reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26d3c80ULL))(
-                    *reinterpret_cast<void**>(self + 0xb4c8),
-                    self,
-                    *reinterpret_cast<void**>(labelChunk + i * 8ULL));
-                CGGfxContextGnm_FlushPendingStagingUploads(self);
+                labelChunk = nextLabelChunk;
+            }
+            batch.Flush();
+            CGGfxContextGnm_FlushPendingStagingUploads(self);
+        } else {
+            while (labelChunk) {
+                for (uint64_t i = 0;; ++i) {
+                    uint8_t* nextLabelChunk = *reinterpret_cast<uint8_t**>(labelChunk + cap * 8ULL);
+                    uint64_t limit = nextLabelChunk ? cap : *reinterpret_cast<uint32_t*>(self + 0xb4ec);
+                    if (i >= limit) {
+                        labelChunk = nextLabelChunk;
+                        break;
+                    }
+                    reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26d3c80ULL))(
+                        *reinterpret_cast<void**>(self + 0xb4c8),
+                        self,
+                        *reinterpret_cast<void**>(labelChunk + i * 8ULL));
+                    CGGfxContextGnm_FlushPendingStagingUploads(self);
+                }
             }
         }
     }
@@ -1298,8 +1338,12 @@ void CGGfxContextGnm_SubmitDcbPair(
                      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(dcb1Base))) & ~3u;
     } else {
         uint8_t dummyDcb[0x40]{};
-        reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
-            dummyDcb, nullptr, 0, nullptr, nullptr);
+        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+            gx_direct_vk::InitDrawCommandBuffer(dummyDcb, nullptr, 0, nullptr, nullptr);
+        } else {
+            reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
+                dummyDcb, nullptr, 0, nullptr, nullptr);
+        }
         dcb0Base  = *reinterpret_cast<void**>(dcb1 + 0x00);
         dcb0Bytes = (*reinterpret_cast<uint32_t*>(dcb1 + 0x10) -
                      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(dcb0Base))) & ~3u;
@@ -1400,8 +1444,12 @@ void CGGfxContextGnm_SubmitSingleDcbAndFlip(
     uint8_t* dcb)
 {
     uint8_t dummyDcb[0x40]{};
-    reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
-        dummyDcb, nullptr, 0, nullptr, nullptr);
+    if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+        gx_direct_vk::InitDrawCommandBuffer(dummyDcb, nullptr, 0, nullptr, nullptr);
+    } else {
+        reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
+            dummyDcb, nullptr, 0, nullptr, nullptr);
+    }
 
     void*    dcb0Base  = *reinterpret_cast<void**>(dcb + 0x00);
     uint32_t dcb0Bytes = (*reinterpret_cast<uint32_t*>(dcb + 0x10) -
@@ -1555,9 +1603,15 @@ int32_t CGComputeContextGnm_Initialize(
     }
 
     uint32_t dcbBytes = static_cast<uint32_t>((poolQwords << 3) - 8ULL);
-    reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
-        self, dcbBuf, dcbBytes,
-        reinterpret_cast<void*>(&CGComputeContextGnm_ImmediateDcbFullCallback), self);
+    if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb)) {
+        gx_direct_vk::InitDrawCommandBuffer(
+            self, dcbBuf, dcbBytes,
+            reinterpret_cast<void*>(&CGComputeContextGnm_ImmediateDcbFullCallback), self);
+    } else {
+        reinterpret_cast<void(*)(void*, void*, uint32_t, void*, void*)>(GX_VMA(0x1071270ULL))(
+            self, dcbBuf, dcbBytes,
+            reinterpret_cast<void*>(&CGComputeContextGnm_ImmediateDcbFullCallback), self);
+    }
     reinterpret_cast<void(*)(void*)>(GX_VMA(0x1089c50ULL))(self);
     return 0;
 }

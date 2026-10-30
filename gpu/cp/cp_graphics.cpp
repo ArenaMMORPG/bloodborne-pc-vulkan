@@ -173,8 +173,8 @@ void CommandProcessor::EndGraphics(Work& work) {
         rasterizer->GetDrawPreparation().EndSubmission();
         rasterizer->SubmitForSignals();
     }
-    BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
-    if (BbStats::enabled) {
+    const u64 sub_idx = BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
+    if (BbStats::enabled && (sub_idx & 31ULL) == 0ULL) {
         if (rusage usage{}; getrusage(RUSAGE_THREAD, &usage) == 0) {
             BbStats::gpu_user_us.store(u64(usage.ru_utime.tv_sec) * 1000000 + usage.ru_utime.tv_usec,
                                        std::memory_order_relaxed);
@@ -406,10 +406,34 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                         const auto* prepared =
                             level.prepared ? rasterizer->GetDrawPreparation().NextDraw() : nullptr;
                         if (!PredicationSkips(header)) {
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDrawIndexed", fmt::make_format_args(at),
-                                [&] { rasterizer->Draw(true, args.start_index, prepared); });
+                            if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                                const void* at = packet;
+                                rasterizer->ScopeMarker(
+                                    "gfx:{}:DirectDrawIndexed", fmt::make_format_args(at),
+                                    [&] { rasterizer->Draw(true, args.start_index, prepared); });
+                            } else {
+                                rasterizer->Draw(true, args.start_index, prepared);
+                            }
+                        }
+                    }
+                } else if (vk_op == DirectVk::Op::ReleaseLabelsBatch) {
+                    const u32 count = op_word >> 16;
+                    if (count > 0 && count <= 32 && body_words == 2u + count * 2u) {
+                        std::array<VAddr, 32> addrs{};
+                        std::memcpy(addrs.data(), body + 2u, count * sizeof(VAddr));
+                        if (BbFreeCheck::Enabled()) {
+                            for (u32 i = 0; i < count; ++i) {
+                                BbFreeCheck::NoteFenceDecoded(addrs[i], 0ULL, packet, packet,
+                                                              work.seq);
+                            }
+                        }
+                        if (rasterizer->RunInOrder(&Tasks::DirectVkReleaseLabelsBatchTask,
+                                                   body + 1u, (1u + count * 2u) * sizeof(u32),
+                                                   BbToggle::PipelinedTasks, false)) {
+                            DropReachedFences();
+                            for (u32 i = 0; i < count; ++i) {
+                                NotePending(addrs[i], 0ULL, 8u, true);
+                            }
                         }
                     }
                 } else if (vk_op == DirectVk::Op::CopyBufferBatch) {

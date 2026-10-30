@@ -50,6 +50,10 @@ else()
     list(APPEND BB_GX_COMMON_FLAGS
         -DGX_TARGET_LINUX_NATIVE=1
         -DGX_SYSV_ABI=
+        -fvisibility=hidden
+        -fvisibility-inlines-hidden
+        -fno-semantic-interposition
+        -ftls-model=initial-exec
     )
 endif()
 

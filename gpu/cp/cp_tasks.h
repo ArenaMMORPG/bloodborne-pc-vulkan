@@ -50,6 +50,7 @@ void DirectVkEliminateFastClearTask(Vulkan::Rasterizer& rasterizer, const u8* da
 void DirectVkResolveColorTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkUploadTextureTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkClearDepthStencilTask(Vulkan::Rasterizer& rasterizer, const u8* data);
+void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 
 /// An end-of-pipe fence now (no draw recording thread).
 void SignalEop(const EventWriteEop& eop, u64 seq);

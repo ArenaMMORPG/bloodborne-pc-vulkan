@@ -119,10 +119,15 @@ struct RegionCache {
     std::array<Entry, 8> entries{};
 };
 thread_local RegionCache region_cache;
+const uint64_t* g_memory_generation_ptr = nullptr;
 
 bool CachedMapped(VAddr address, u64 size) {
-    static const uint64_t* const generation_ptr = runtime_memory_generation();
-    const u64 generation = __atomic_load_n(generation_ptr, __ATOMIC_ACQUIRE);
+    const uint64_t* gen_ptr = g_memory_generation_ptr;
+    if (!gen_ptr) [[unlikely]] {
+        gen_ptr = runtime_memory_generation();
+        g_memory_generation_ptr = gen_ptr;
+    }
+    const u64 generation = __atomic_load_n(gen_ptr, __ATOMIC_ACQUIRE);
     if (generation & 1) {
         return false; // being changed
     }

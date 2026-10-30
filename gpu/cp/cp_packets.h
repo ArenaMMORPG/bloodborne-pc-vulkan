@@ -447,6 +447,7 @@ enum class Op : u32 {
     SetContextRegsPacked = 18u,
     SetRenderTarget = 19u,
     SetDepthRenderTarget = 20u,
+    ReleaseLabelsBatch = 21u,
 };
 struct CopyRegion {
     u64 dst_va;

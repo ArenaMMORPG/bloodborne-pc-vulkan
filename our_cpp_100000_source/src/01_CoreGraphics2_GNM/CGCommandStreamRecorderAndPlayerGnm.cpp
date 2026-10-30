@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include "gx_direct_vulkan.h"
 
 namespace from {
 namespace CoreGraphics2 {
@@ -711,6 +712,43 @@ using CommandStreamOpHandler = uint64_t (*)(void* ctx, uint8_t* stateShadow, con
 #undef g_CommandStreamOpDispatchTable
 #define g_CommandStreamOpDispatchTable (reinterpret_cast<CommandStreamOpHandler*>(GX_VMA(0x52b9fb0ULL)))
 
+uint64_t CGCommandStreamPlayerGnm_PlayOp01_SetRasterizerState(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp02_SetPrimitiveTopology(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp03_SetIndexBuffer(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp04_SetVertexBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp05_SetVSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp06_SetVSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp07_SetVSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp08_SetVertexShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp09_SetPSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0A_SetPSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0B_SetPSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0C_SetPixelShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0D_SetGSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0E_SetGSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp0F_SetGSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp10_SetGeometryShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp11_SetHSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp12_SetHSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp13_SetHSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp14_SetHullShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp15_SetDSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp16_SetDSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp17_SetDSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp18_SetDomainShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp19_SetCSConstantBuffers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1A_SetCSTextures(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1B_SetCSSamplers(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1C_SetComputeShader(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1D_Dispatch(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1E_Draw(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp1F_DrawIndexed(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp20_DrawInstanced(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp21_DrawIndexedInstanced(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp22_DrawInstancedIndirect(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp23_DrawIndexedInstancedIndirect(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+uint64_t CGCommandStreamPlayerGnm_PlayOp24_FlushCaches(void* ctx, uint8_t* stateShadow, const uint8_t* cmd);
+
 // 0x026aac90 (92 bytes)
 // Loops over a baked command stream and invokes the handler for each opcode
 // until the terminating `0x00` opcode is reached.
@@ -719,6 +757,56 @@ void CGCommandStreamPlayerGnm_ExecuteStream(
     uint8_t* stateShadow,
     const uint8_t* streamCursor)
 {
+    if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_CommandStream)) {
+        uint8_t opcode = *streamCursor;
+        while (opcode != 0) {
+            uint64_t bytesRead = 0;
+            switch (opcode) {
+            case 0x01: bytesRead = CGCommandStreamPlayerGnm_PlayOp01_SetRasterizerState(ctx, stateShadow, streamCursor); break;
+            case 0x02: bytesRead = CGCommandStreamPlayerGnm_PlayOp02_SetPrimitiveTopology(ctx, stateShadow, streamCursor); break;
+            case 0x03: bytesRead = CGCommandStreamPlayerGnm_PlayOp03_SetIndexBuffer(ctx, stateShadow, streamCursor); break;
+            case 0x04: bytesRead = CGCommandStreamPlayerGnm_PlayOp04_SetVertexBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x05: bytesRead = CGCommandStreamPlayerGnm_PlayOp05_SetVSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x06: bytesRead = CGCommandStreamPlayerGnm_PlayOp06_SetVSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x07: bytesRead = CGCommandStreamPlayerGnm_PlayOp07_SetVSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x08: bytesRead = CGCommandStreamPlayerGnm_PlayOp08_SetVertexShader(ctx, stateShadow, streamCursor); break;
+            case 0x09: bytesRead = CGCommandStreamPlayerGnm_PlayOp09_SetPSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x0A: bytesRead = CGCommandStreamPlayerGnm_PlayOp0A_SetPSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x0B: bytesRead = CGCommandStreamPlayerGnm_PlayOp0B_SetPSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x0C: bytesRead = CGCommandStreamPlayerGnm_PlayOp0C_SetPixelShader(ctx, stateShadow, streamCursor); break;
+            case 0x0D: bytesRead = CGCommandStreamPlayerGnm_PlayOp0D_SetGSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x0E: bytesRead = CGCommandStreamPlayerGnm_PlayOp0E_SetGSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x0F: bytesRead = CGCommandStreamPlayerGnm_PlayOp0F_SetGSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x10: bytesRead = CGCommandStreamPlayerGnm_PlayOp10_SetGeometryShader(ctx, stateShadow, streamCursor); break;
+            case 0x11: bytesRead = CGCommandStreamPlayerGnm_PlayOp11_SetHSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x12: bytesRead = CGCommandStreamPlayerGnm_PlayOp12_SetHSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x13: bytesRead = CGCommandStreamPlayerGnm_PlayOp13_SetHSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x14: bytesRead = CGCommandStreamPlayerGnm_PlayOp14_SetHullShader(ctx, stateShadow, streamCursor); break;
+            case 0x15: bytesRead = CGCommandStreamPlayerGnm_PlayOp15_SetDSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x16: bytesRead = CGCommandStreamPlayerGnm_PlayOp16_SetDSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x17: bytesRead = CGCommandStreamPlayerGnm_PlayOp17_SetDSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x18: bytesRead = CGCommandStreamPlayerGnm_PlayOp18_SetDomainShader(ctx, stateShadow, streamCursor); break;
+            case 0x19: bytesRead = CGCommandStreamPlayerGnm_PlayOp19_SetCSConstantBuffers(ctx, stateShadow, streamCursor); break;
+            case 0x1A: bytesRead = CGCommandStreamPlayerGnm_PlayOp1A_SetCSTextures(ctx, stateShadow, streamCursor); break;
+            case 0x1B: bytesRead = CGCommandStreamPlayerGnm_PlayOp1B_SetCSSamplers(ctx, stateShadow, streamCursor); break;
+            case 0x1C: bytesRead = CGCommandStreamPlayerGnm_PlayOp1C_SetComputeShader(ctx, stateShadow, streamCursor); break;
+            case 0x1D: bytesRead = CGCommandStreamPlayerGnm_PlayOp1D_Dispatch(ctx, stateShadow, streamCursor); break;
+            case 0x1E: bytesRead = CGCommandStreamPlayerGnm_PlayOp1E_Draw(ctx, stateShadow, streamCursor); break;
+            case 0x1F: bytesRead = CGCommandStreamPlayerGnm_PlayOp1F_DrawIndexed(ctx, stateShadow, streamCursor); break;
+            case 0x20: bytesRead = CGCommandStreamPlayerGnm_PlayOp20_DrawInstanced(ctx, stateShadow, streamCursor); break;
+            case 0x21: bytesRead = CGCommandStreamPlayerGnm_PlayOp21_DrawIndexedInstanced(ctx, stateShadow, streamCursor); break;
+            case 0x22: bytesRead = CGCommandStreamPlayerGnm_PlayOp22_DrawInstancedIndirect(ctx, stateShadow, streamCursor); break;
+            case 0x23: bytesRead = CGCommandStreamPlayerGnm_PlayOp23_DrawIndexedInstancedIndirect(ctx, stateShadow, streamCursor); break;
+            case 0x24: bytesRead = CGCommandStreamPlayerGnm_PlayOp24_FlushCaches(ctx, stateShadow, streamCursor); break;
+            default:   bytesRead = g_CommandStreamOpDispatchTable[opcode](ctx, stateShadow, streamCursor); break;
+            }
+            uint64_t alignedAdvance = (bytesRead + 0xFu) & ~static_cast<uint64_t>(0xFu);
+            streamCursor += alignedAdvance;
+            opcode = *streamCursor;
+        }
+        return;
+    }
+
     uint8_t opcode = *streamCursor;
     while (opcode != 0) {
         uint64_t bytesRead = g_CommandStreamOpDispatchTable[opcode](ctx, stateShadow, streamCursor);

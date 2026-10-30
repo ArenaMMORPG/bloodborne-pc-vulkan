@@ -203,9 +203,10 @@ target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-f
 # Loaded with bb-probe at startup (DT_NEEDED, never dlopen): thread_local access without a
 # TLS descriptor call (_dl_tlsdesc_return was ~2% of the draw recording thread).
 if (NOT WIN32)
-    target_compile_options(bbgpu PRIVATE -ftls-model=initial-exec)
-    # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against bb-probe.
-    target_link_options(bbgpu PRIVATE -Wl,--allow-shlib-undefined)
+    target_compile_options(bbgpu PRIVATE -ftls-model=initial-exec -fno-semantic-interposition)
+    # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against bb-probe, while all
+    # functions defined inside libbbgpu.so bind locally without @plt indirection (enabling full LTO inlining).
+    target_link_options(bbgpu PRIVATE -Wl,--allow-shlib-undefined -Wl,-Bsymbolic-functions)
 endif()
 target_link_directories(bbgpu PUBLIC "/home/kekw3/Documents/BloodBorne/AI_WORK_FOR_PORTING/toolchain/sysroot/usr/lib")
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan

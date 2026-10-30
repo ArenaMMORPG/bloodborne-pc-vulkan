@@ -79,6 +79,10 @@ public:
     void DispatchDirect();
     void DispatchIndirect(VAddr address, u32 offset, u32 size);
 
+    [[nodiscard]] bool HostMarkersEnabled() const noexcept {
+        return host_markers_enabled;
+    }
+
     void ScopeMarker(fmt::string_view fmt, fmt::format_args args, auto&& func) {
         if (host_markers_enabled) {
             ScopeMarkerBegin(fmt::vformat(fmt, args));
@@ -325,6 +329,7 @@ public:
     /// it. Registered for WAIT_REG_MEM like the CPU-written ones. False (the caller signals it
     /// from the CPU): not in GPU-visible guest memory, no VK_AMD_buffer_marker, BB_GPU_LABELS=0.
     bool WriteLabelOnGpu(VAddr address, u64 value, u32 num_bytes);
+    bool WriteZeroLabelsBatchOnGpu(std::span<const VAddr> addresses);
     /// bbport: a ZPASS_DONE event (the game's occlusion query) at `address` for `pairs` depth
     /// blocks, in stream order (vk_occlusion.h). False when it is left to the caller (the old
     /// memory model).
@@ -984,6 +989,26 @@ private:
     /// Stage A: packets whose constants a resolve worker copies, by the bytes they read (a
     /// constant RAM dump over them waits for the workers first: WaitForPendingReads).
     PendingReads pending_resolve;
+
+    /// V2.4: Stage-A-exclusive L1D write-combining cache (256 slots = 8 KiB) coalescing repeated
+    /// (address, size, mask) buffer read notes across draws before touching the 6 MiB atomic hash
+    /// tables. Flushed automatically before every WaitForPendingReads / DrainDrawPipe / RetireSubmission.
+    static constexpr u8 kCoalesceResolve = 1u << 0;
+    static constexpr u8 kCoalesceStageB  = 1u << 1;
+    static constexpr u8 kCoalesceGpuInPl = 1u << 2;
+    struct CoalescedReadEntry {
+        VAddr addr = 0;
+        u64 size = 0;
+        u64 packet = 0;
+        u8 mask = 0;
+    };
+    static constexpr size_t kStageACoalescerSlots = 256;
+    std::array<CoalescedReadEntry, kStageACoalescerSlots> stage_a_read_coalescer{};
+    u64 stage_a_cached_gpu_retired = 0;
+    u64 stage_a_last_gpu_retired_pkt = 0;
+    bool stage_a_coalescer_dirty = false;
+    void NoteStageACoalescedRead(VAddr address, u64 size, u64 packet, u8 mask);
+    void FlushStageAReadCoalescer();
     /// Stage B: the scheduler tick each recent packet was recorded in (packet number & mask).
     struct PacketTick {
         std::atomic<u64> packet{0}, tick{0};

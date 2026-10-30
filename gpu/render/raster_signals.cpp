@@ -338,6 +338,75 @@ bool Rasterizer::WriteLabelOnGpu(VAddr address, u64 value, u32 num_bytes) {
     return true;
 }
 
+bool Rasterizer::WriteZeroLabelsBatchOnGpu(std::span<const VAddr> addresses) {
+    if (addresses.empty()) {
+        return true;
+    }
+    static const bool enabled = [this] {
+        const char* env = std::getenv("BB_GPU_LABELS");
+        if (!env && instance.IsAmdGfx8()) {
+            return false;
+        }
+        return !env || env[0] != '0';
+    }();
+    if (!enabled || !VideoCore::GuestInPlace() || !HonestLabels() || BbFreeCheck::Enabled()) {
+        return false;
+    }
+    struct ResolvedLabel {
+        VAddr addr;
+        const VideoCore::Buffer* buf;
+        u64 offset;
+    };
+    boost::container::static_vector<ResolvedLabel, 32> resolved;
+    boost::container::static_vector<std::pair<vk::Buffer, u64>, 32> vk_targets;
+    for (const VAddr addr : addresses) {
+        if ((addr & 7u) != 0u || resolved.size() >= 32) {
+            return false;
+        }
+        const auto target = buffer_cache.GuestChunkSource(addr, 8u);
+        if (!target) {
+            return false;
+        }
+        resolved.push_back(ResolvedLabel{addr, target->first, target->second});
+        vk_targets.emplace_back(target->first->Handle(), target->second);
+    }
+
+    static const bool force_portable = [] {
+        const char* env = std::getenv("BB_GPU_LABELS_PORTABLE");
+        return env && env[0] != '0';
+    }();
+    const bool marker = instance.IsBufferMarkerSupported() && !force_portable;
+    if (occlusion) {
+        occlusion->WriteBeforeLabel();
+    }
+    if (!marker) {
+        scheduler.EndRendering();
+        runtime.FlushBarriers();
+    }
+    scheduler.Record([vk_targets, marker](vk::CommandBuffer cmdbuf) {
+        if (!marker) {
+            RecordPortableGpuZeroLabelsBatch(cmdbuf, vk_targets);
+            return;
+        }
+        for (const auto& [buf, offset] : vk_targets) {
+            cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eBottomOfPipe, buf, offset + 4, 0u);
+            cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eBottomOfPipe, buf, offset, 0u);
+        }
+    });
+    constexpr u64 zero_val = 0ULL;
+    for (const auto& item : resolved) {
+        if (!marker) {
+            runtime.AccessBuffer(item.buf, item.offset, 8u,
+                                 vk::PipelineStageFlagBits2::eTransfer,
+                                 vk::AccessFlagBits2::eTransferWrite);
+        }
+        buffer_cache.NoteLateCommandWrite(item.addr, &zero_val, 8u);
+        SignalAfterGpu([] {}, item.addr, 0ULL);
+    }
+    BbStats::gpu_labels.fetch_add(resolved.size(), std::memory_order_relaxed);
+    return true;
+}
+
 bool Rasterizer::PipeSignals() const {
     static const bool enabled = [] {
         const char* env = std::getenv("BB_PIPE_SIGNALS");
