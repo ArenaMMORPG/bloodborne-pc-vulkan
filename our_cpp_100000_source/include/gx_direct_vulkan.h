@@ -86,6 +86,12 @@ __attribute__((weak)) void bb_direct_vk_note_release_check(uint32_t hr) noexcept
 // V6.1: Zero-fault transient GX cueHeap registration (CPU->GPU staging ring)
 __attribute__((weak)) void bb_direct_vk_register_transient_cue_heap(const void* gpu_addr,
                                                                     uint64_t byte_size) noexcept;
+
+// N2.1: Direct Native VkSampler & VkImageView (SRV/UAV) descriptor registration
+__attribute__((weak)) void bb_direct_vk_register_native_sampler(void* ssharp_4dw) noexcept;
+__attribute__((weak)) void bb_direct_vk_register_native_srv(void* tsharp_8dw,
+                                                            uint32_t resource_id,
+                                                            uint32_t is_immutable) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -603,6 +609,24 @@ inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) n
         return;
     }
     bb_direct_vk_register_transient_cue_heap(gpu_addr, byte_size);
+}
+
+inline void RegisterDirectNativeSampler(void* ssharp_4dw) noexcept {
+    if (!EnabledNativeVk(kN2_NativeTextures) || !bb_direct_vk_register_native_sampler ||
+        !ssharp_4dw) {
+        return;
+    }
+    bb_direct_vk_register_native_sampler(ssharp_4dw);
+}
+
+inline void RegisterDirectNativeSrv(void* tsharp_8dw,
+                                    uint32_t resource_id,
+                                    uint32_t is_immutable) noexcept {
+    if (!EnabledNativeVk(kN2_NativeTextures) || !bb_direct_vk_register_native_srv ||
+        !tsharp_8dw) {
+        return;
+    }
+    bb_direct_vk_register_native_srv(tsharp_8dw, resource_id, is_immutable);
 }
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer

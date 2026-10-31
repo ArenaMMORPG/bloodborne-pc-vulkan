@@ -8,6 +8,7 @@
 #include <filesystem>
 #include "render/raster_internal.h"
 #include "render/shader_hle.h"
+#include "textures/direct_textures.h"
 #include <vk_mem_alloc.h>
 
 namespace Vulkan {
@@ -27,6 +28,10 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       host_markers_enabled{EmulatorSettings.IsVkHostMarkersEnabled()},
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
+    native_srv_cache =
+        std::make_unique<ImageDescCacheEntry[]>(VideoCore::DirectTextures::kMaxNativeSrvs);
+    native_sampler_cache =
+        std::make_unique<NativeSamplerStageBEntry[]>(VideoCore::DirectTextures::kMaxNativeSamplers);
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     // A program (or fetch shader) that does not look like one yet: the game may have copied it
     // into place with the GPU (DMA) in work recorded but not run yet (another game: all-zero

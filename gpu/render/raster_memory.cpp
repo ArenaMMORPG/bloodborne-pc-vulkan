@@ -8,6 +8,7 @@
 // the CPU does it in decode order.
 
 #include "render/raster_internal.h"
+#include "textures/direct_textures.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 #include <xxhash.h>
@@ -1077,8 +1078,13 @@ void Rasterizer::DirectUploadTextureSubresource(const DirectUploadTextureArgs& a
         }
     }
 
+    if (VideoCore::DirectTextures::HasPendingEvents()) {
+        ProcessDirectTextureEvents();
+    }
+
     Gcn::Image gcn_img{};
     std::memcpy(&gcn_img, args.real_tsharp, sizeof(gcn_img));
+    reinterpret_cast<u32*>(&gcn_img)[7] = 0u;
     if (!gcn_img.Valid()) {
         return;
     }
@@ -1097,7 +1103,9 @@ void Rasterizer::DirectUploadTextureSubresource(const DirectUploadTextureArgs& a
         return;
     }
 
-    const u32 mip = std::min(args.reserved0, dst_img.info.resources.levels - 1);
+    const bool is_immutable_asset = (args.reserved0 & 0x80000000u) != 0u;
+    const u32 raw_mip = args.reserved0 & 0x7FFFFFFFu;
+    const u32 mip = std::min(raw_mip, dst_img.info.resources.levels - 1);
     const bool is_3d = dst_img.info.type == Gcn::ImageType::Color3D;
     const u32 layer = is_3d ? 0u : std::min(args.reserved1, dst_img.info.resources.layers - 1);
 
@@ -1146,6 +1154,15 @@ void Rasterizer::DirectUploadTextureSubresource(const DirectUploadTextureArgs& a
     };
     runtime.CopyBufferToImageSubresource(&dst_img, staging.buffer, dst_range, copy);
 
+    dst_img.flags =
+        (dst_img.flags | VideoCore::ImageFlagBits::GpuModified) & ~VideoCore::ImageFlagBits::Dirty;
+    dst_img.gpu_write_tick = scheduler.CurrentTick();
+
+    if (is_immutable_asset) {
+        texture_cache.MarkDirectImmutableAsset(dst_id);
+        return;
+    }
+
     // Seed the 8x8 page-watch hash and mip hash of the backing guest region so a subsequent
     // MaybeCpuDirty write elsewhere in the same page never re-uploads zeroed guest tiled memory
     // over the GPU-uploaded VkImage.
@@ -1169,9 +1186,6 @@ void Rasterizer::DirectUploadTextureSubresource(const DirectUploadTextureArgs& a
             }
         }
     }
-    dst_img.flags =
-        (dst_img.flags | VideoCore::ImageFlagBits::GpuModified) & ~VideoCore::ImageFlagBits::Dirty;
-    dst_img.gpu_write_tick = scheduler.CurrentTick();
 }
 
 void Rasterizer::DirectClearDepthStencil(const DirectClearDepthStencilArgs& args) {

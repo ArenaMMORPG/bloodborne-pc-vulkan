@@ -4,6 +4,7 @@
 
 #include "bbport_button_prompts.h"
 #include "render/raster_internal.h"
+#include "textures/direct_textures.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
@@ -95,8 +96,10 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         if (image_desc.is_written) {
             return false;
         }
-        const auto tsharp =
+        auto tsharp =
             prepared ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
+        u8 srv_gen8 = 0u;
+        const u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();
         if (tsharp.Address() == 0 || data_fmt == Gcn::DataFormat::FormatInvalid ||
@@ -104,9 +107,9 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
             !IsKnownFormat(data_fmt, num_fmt)) {
             continue; // null descriptor
         }
-        const auto& entry =
-            prepared ? CachedImageDescEntry(tsharp, image_desc, prepared->image_hashes[image_index])
-                     : CachedImageDescEntry(tsharp, image_desc);
+        const auto& entry = ResolveImageDescEntry(
+            tsharp, srv_uid, srv_gen8, image_desc,
+            prepared ? &prepared->image_hashes[image_index] : nullptr);
         if (entry.found_generation != generation &&
             !(entry.found_direct_immutable &&
               texture_cache.IsRegisteredImmutable(entry.found_id, entry.found_uid))) {

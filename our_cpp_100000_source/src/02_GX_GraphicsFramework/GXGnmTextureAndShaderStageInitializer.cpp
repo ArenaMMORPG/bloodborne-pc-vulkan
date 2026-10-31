@@ -1309,6 +1309,7 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
     }
 
     if (!skipGpuDma && CGMemoryGnm_IsGarlicAddress(hwTex->gpuBaseAddr)) {
+        gx_direct_vk::UnwatchDirectTextureRange(gpuMem, allocSize);
         void* lockObj = *reinterpret_cast<void**>(deviceCtx + 0x118);
         (*reinterpret_cast<void(**)(void*, uint32_t)>(*reinterpret_cast<uintptr_t*>(lockObj) + 0x18))(lockObj, 0xFFFFFFFFu);
 
@@ -1490,6 +1491,7 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
     }
 
     if (!skipGpuDma && CGMemoryGnm_IsGarlicAddress(hwTex->gpuBaseAddr)) {
+        gx_direct_vk::UnwatchDirectTextureRange(gpuMem, allocSize);
         void* lockObj = *reinterpret_cast<void**>(deviceCtx + 0x118);
         (*reinterpret_cast<void(**)(void*, uint32_t)>(*reinterpret_cast<uintptr_t*>(lockObj) + 0x18))(lockObj, 0xFFFFFFFFu);
 
@@ -1678,6 +1680,7 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
     }
 
     if (!skipGpuDma && CGMemoryGnm_IsGarlicAddress(hwTex->gpuBaseAddr)) {
+        gx_direct_vk::UnwatchDirectTextureRange(gpuMem, allocSize);
         void* lockObj = *reinterpret_cast<void**>(deviceCtx + 0x118);
         (*reinterpret_cast<void(**)(void*, uint32_t)>(*reinterpret_cast<uintptr_t*>(lockObj) + 0x18))(lockObj, 0xFFFFFFFFu);
 

@@ -656,9 +656,11 @@ ImageId TextureCache::GetAssociatedDepth(Image& image) {
     return {};
 }
 
-vk::Sampler TextureCache::GetSampler(const Gcn::Sampler& sampler,
+vk::Sampler TextureCache::GetSampler(const Gcn::Sampler& raw_sampler,
                                      Gcn::BorderColorBuffer border_color_base, bool is_depth,
                                      float extra_lod_bias) {
+    Gcn::Sampler sampler = raw_sampler;
+    reinterpret_cast<u32*>(&sampler)[3] &= ~DirectTextures::kSamplerTagMask;
     struct SamplerMemo {
         Gcn::Sampler sampler{};
         u32 is_depth = ~0u;
@@ -700,6 +702,42 @@ vk::Sampler TextureCache::GetSampler(const Gcn::Sampler& sampler,
     return handle;
 }
 
+void TextureCache::MarkDirectImmutableAsset(ImageId image_id) {
+    if (!image_id || !slot_images.is_allocated(image_id)) {
+        return;
+    }
+    {
+        const Image& fast_img = slot_images[image_id];
+        const u32 flags =
+            __atomic_load_n(reinterpret_cast<const u32*>(&fast_img.flags), __ATOMIC_ACQUIRE);
+        constexpr u32 kReady =
+            u32(ImageFlagBits::Registered) | u32(ImageFlagBits::DirectImmutable);
+        if ((flags & kReady) == kReady && fast_img.track_addr == fast_img.guest_begin &&
+            fast_img.track_addr_end == fast_img.guest_end) {
+            return;
+        }
+    }
+    std::scoped_lock lock{mutex};
+    if (!slot_images.is_allocated(image_id)) {
+        return;
+    }
+    Image& image = slot_images[image_id];
+    if (False(image.flags & ImageFlagBits::Registered)) {
+        return;
+    }
+    if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+        UntrackImage(image_id);
+        image.flags |= ImageFlagBits::DirectImmutable;
+    }
+    image.flags &= ~(ImageFlagBits::Dirty | ImageFlagBits::MaybeCpuDirty);
+    if (image.info.guest_address != 0 && image.info.guest_size != 0) {
+        direct_assets_by_addr[image.info.guest_address] = image_id;
+        buffer_cache.NotePreciseUpload(image.info.guest_address, image.info.guest_size);
+    }
+    TrackImage(image_id);
+    TouchImage(image);
+}
+
 void TextureCache::ProcessDirectTextureEvents(Core::MemoryManager* memory) {
     if (!DirectTextures::HasPendingEvents()) {
         return;
@@ -725,8 +763,8 @@ void TextureCache::ProcessDirectTextureEvents(Core::MemoryManager* memory) {
                                      if (!img.binding.is_bound && !img.binding.is_target) {
                                          stale.push_back(id);
                                      } else {
-                                         img.flags &= ~ImageFlagBits::DirectImmutable;
                                          UntrackImage(id);
+                                         img.flags &= ~ImageFlagBits::DirectImmutable;
                                      }
                                  });
             for (const ImageId id : stale) {
@@ -737,6 +775,7 @@ void TextureCache::ProcessDirectTextureEvents(Core::MemoryManager* memory) {
 
         Gcn::Image tsharp{};
         std::memcpy(&tsharp, ev.tsharp.data(), sizeof(tsharp));
+        reinterpret_cast<u32*>(&tsharp)[7] = 0u;
         if (!tsharp.Valid() || tsharp.Address() == 0 || tsharp.IsMsaa()) {
             continue;
         }
@@ -769,8 +808,8 @@ void TextureCache::ProcessDirectTextureEvents(Core::MemoryManager* memory) {
             if (!img.binding.is_bound && !img.binding.is_target) {
                 overlapping.push_back(id);
             } else {
-                img.flags &= ~ImageFlagBits::DirectImmutable;
                 UntrackImage(id);
+                img.flags &= ~ImageFlagBits::DirectImmutable;
             }
         });
         for (const ImageId id : overlapping) {

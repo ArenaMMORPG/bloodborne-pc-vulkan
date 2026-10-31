@@ -163,6 +163,12 @@ public:
     [[nodiscard]] u64 RegistryGeneration() const noexcept {
         return registry_generation.load(std::memory_order_acquire);
     }
+    [[nodiscard]] u64 GcTick() const noexcept {
+        return gc_tick;
+    }
+    /// N2.1: Marks a GPU-DMA uploaded asset VkImage as DirectImmutable (disarming any page traps,
+    /// registering direct_assets_by_addr, and enabling O(1) lock-free IsUpToDate).
+    void MarkDirectImmutableAsset(ImageId image_id);
     /// A memoized lookup found the image: its access tick (FindImage's), the LRU touch comes
     /// with UpdateImage.
     void MarkFound(ImageId image_id) {

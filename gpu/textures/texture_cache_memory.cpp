@@ -227,6 +227,12 @@ void TextureCache::GarbageCollectImages() {
             return true;
         }
         Image& image = slot_images[image_id];
+        if (True(image.flags & ImageFlagBits::DirectImmutable) &&
+            True(image.flags & ImageFlagBits::GpuModified)) {
+            lru_cache.Touch(image.lru_id, gc_tick);
+            BbStats::gc_kept_images.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         const bool write_back = image.SafeToDownload();
         // Images that cannot go now (tiled GPU-written ones cannot be written back; GPU-written
         // ones only under pressure) neither use up the deletions nor stay first in line: the

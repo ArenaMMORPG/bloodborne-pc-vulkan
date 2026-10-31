@@ -1438,6 +1438,20 @@ static inline uint32_t GXGnmSurface_ComputeMemoryTypeCode(const uint8_t* pSurfac
     return 0x100000u;
 }
 
+static inline void RegisterDirectTextureViewFromInnerSurface(void* pOutView,
+                                                             const uint8_t* pInnerSurf) noexcept {
+    const uint32_t resId = *reinterpret_cast<const uint32_t*>(pInnerSurf + 0x10);
+    const uint8_t dimType = pInnerSurf[0x20];
+    const uint8_t usageMode = pInnerSurf[0x21];
+    const uint8_t cpuAccess = pInnerSurf[0x22];
+    const uint8_t bindFlags = pInnerSurf[0x23];
+    const uint16_t sampleCnt =
+        (dimType == 3u) ? *reinterpret_cast<const uint16_t*>(pInnerSurf + 0x34) : 1u;
+    const uint32_t isImmutable =
+        (usageMode == 1u && bindFlags == 8u && cpuAccess == 0u && sampleCnt <= 1u) ? 1u : 0u;
+    gx_direct_vk::RegisterDirectNativeSrv(pOutView, resId, isImmutable);
+}
+
 // [VMA: 0x217a8b0 - 0x217aa63] (435 B)
 // Initializes a GNM Texture or Buffer Shader Resource View (SRV) from a surface object and view descriptor.
 extern "C" int GXGnmSurfaceView_InitShaderResourceView(
@@ -1464,6 +1478,7 @@ extern "C" int GXGnmSurfaceView_InitShaderResourceView(
             return res;
         }
         sceGnmTextureSetResourceMemoryType(pOutView, memTypeCode >> 16, 0);
+        RegisterDirectTextureViewFromInnerSurface(pOutView, pInnerSurf);
         *reinterpret_cast<uint32_t*>(pOutView + 0x30) = pViewDesc->m_firstSlice10;
         *reinterpret_cast<uint64_t*>(pOutView + 0x28) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_firstElem08);
         *reinterpret_cast<uint64_t*>(pOutView + 0x20) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_format00);
@@ -1604,6 +1619,7 @@ extern "C" int GXGnmSurfaceView_InitUnorderedAccessView(
     }
 
     sceGnmTextureSetResourceMemoryType(pOutView, memTypeCode >> 16, 0);
+    RegisterDirectTextureViewFromInnerSurface(pOutView, pInnerSurf);
     *reinterpret_cast<uint64_t*>(pOutView + 0x30) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_firstSlice10);
     *reinterpret_cast<uint64_t*>(pOutView + 0x28) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_firstElem08);
     *reinterpret_cast<uint64_t*>(pOutView + 0x20) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_format00);
@@ -2602,6 +2618,7 @@ set_lod_range:
     sceGnmSamplerSetAnisotropyThreshold(pOutSamplerObj, extFlags & 0x7u);
     sceGnmSamplerSetPerfMip(pOutSamplerObj, (extFlags >> 3) & 0xFu);
     sceGnmSamplerSetPerfZ(pOutSamplerObj, (extFlags >> 7) & 0xFu);
+    gx_direct_vk::RegisterDirectNativeSampler(pOutSamplerObj);
 
     *reinterpret_cast<float*>(pOutSamplerObj + 0x10)    = *reinterpret_cast<const float*>(pSamplerDesc + 0x10);
     *reinterpret_cast<uint32_t*>(pOutSamplerObj + 0x14) = *reinterpret_cast<const uint32_t*>(pSamplerDesc + 0x14);

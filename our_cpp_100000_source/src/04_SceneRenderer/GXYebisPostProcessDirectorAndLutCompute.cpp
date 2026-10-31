@@ -2673,6 +2673,7 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         alignas(16) uint32_t gnmSamp[4] = {};
         sub_1086dd0(gnmSamp);
         sub_1086e10(gnmSamp, 1);
+        gx_direct_vk::RegisterDirectNativeSampler(gnmSamp);
         sub_108dfe0(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 1, 0, gnmSamp);
         sub_108dfe0(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 1, 2, gnmSamp);
 

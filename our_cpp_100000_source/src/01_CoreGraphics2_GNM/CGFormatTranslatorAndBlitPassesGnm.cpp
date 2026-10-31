@@ -1124,6 +1124,7 @@ void CGGpuBlitAndClearPassesGnm_ResolveMsaaColorTarget(
     GX_CALL(void, 0x1086fc0ULL, (void*, uint32_t), smp, 0u);
     GX_CALL(void, 0x1086e30ULL, (void*, uint32_t, uint32_t), smp, 0u, 0u);
     GX_CALL(void, 0x1087020ULL, (void*, uint32_t, uint32_t), smp, 0u, 0u);
+    gx_direct_vk::RegisterDirectNativeSampler(smp);
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0x9930) = smp[0];
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0x9938) = smp[1];
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0x1978) |= 1ULL;
@@ -2509,9 +2510,19 @@ static bool TryDirectUploadTextureSubresource(
         up_args.extent_w = tx1 - tx0;
         up_args.extent_h = ext_h;
         up_args.extent_d = chunk_d;
+        const uint8_t dim_type = dst_tex[0x20];
+        const uint8_t usage_mode = dst_tex[0x21];
+        const uint8_t cpu_access = dst_tex[0x22];
+        const uint8_t bind_flags = dst_tex[0x23];
+        const uint16_t sample_cnt =
+            (dim_type == 3u) ? *reinterpret_cast<const uint16_t*>(dst_tex + 0x34) : 1u;
+        const bool is_immutable_asset =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures) &&
+            usage_mode == 1u && bind_flags == 8u && cpu_access == 0u && sample_cnt <= 1u;
+
         up_args.buf_row_len = p.box_w * blk_w;
         up_args.buf_img_height = chunk_block_rows * blk_h;
-        up_args.reserved0 = p.mip_level;
+        up_args.reserved0 = p.mip_level | (is_immutable_asset ? 0x80000000u : 0u);
         up_args.reserved1 = p.array_slice;
 
         gx_direct_vk::EmitUploadTextureSubresource(ctx, up_args);

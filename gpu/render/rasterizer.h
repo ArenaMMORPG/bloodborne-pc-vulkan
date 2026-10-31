@@ -588,6 +588,7 @@ private:
         u64 scene_generation = 0; ///< SceneTargets::Generation of the proxy views
         u64 last_use = 0;
         u32 count = 0;
+        u8 native_count = 0;
         bool all_direct_immutable = false;
         static constexpr u32 MaxImages = 24; ///< larger sets fall back to ImageDescCacheEntry
         std::array<u64, MaxImages> hashes{};
@@ -693,6 +694,7 @@ private:
     struct ImageDescCacheEntry {
         std::array<u64, 4> sharp{};
         u32 flags = ~0u;
+        u8 srv_gen8 = 0;
         bool found_direct_immutable = false;
         VideoCore::TextureCache::ImageDesc desc;
         // Memoized FindImage for bindings without mip overrides (TextureBindingMemo).
@@ -707,6 +709,18 @@ private:
         VideoCore::TextureCache::ViewMemo view_memo;
     };
     std::array<ImageDescCacheEntry, 4096> image_desc_cache{};
+    /// N2.1: Direct O(1) 65,536-slot Stage-B SRV/UAV cache indexed by T#.dw[7] uid16 (0 hash evictions).
+    std::unique_ptr<ImageDescCacheEntry[]> native_srv_cache;
+    /// N2.1: Direct O(1) 4,096-slot Stage-B VkSampler cache indexed by S#.dw[3] uid12 (0 mutex/XXH3).
+    struct NativeSamplerStageBEntry {
+        Gcn::Sampler clean_sharp{};
+        u32 bias_bits = 0;
+        Gcn::BorderColorBuffer bc_base{};
+        bool forced_aniso_off = false;
+        std::array<u64, 3> touched_ticks{~0ULL, ~0ULL, ~0ULL}; // [0]=gfx_color, [1]=cs_color, [2]=depth
+        std::array<vk::Sampler, 3> handles{};
+    };
+    std::unique_ptr<NativeSamplerStageBEntry[]> native_sampler_cache;
     u64 desc_use_counter = 0;
     /// Entries replacing pinned cache slots during one BindTextures call.
     boost::container::static_vector<ImageDescCacheEntry, Shader::NUM_IMAGES> image_desc_overflow;
@@ -786,6 +800,9 @@ private:
                                               const Shader::ImageResource& res) {
         return CachedImageDescEntry(sharp, res, ImageDescHash(sharp, res));
     }
+    ImageDescCacheEntry& ResolveImageDescEntry(const Gcn::Image& clean_sharp, u16 srv_uid,
+                                               u8 srv_gen8, const Shader::ImageResource& res,
+                                               const u64* prepared_hash);
     const VideoCore::TextureCache::ImageDesc& CachedImageDesc(const Gcn::Image& sharp,
                                                               const Shader::ImageResource& res) {
         return CachedImageDescEntry(sharp, res).desc;

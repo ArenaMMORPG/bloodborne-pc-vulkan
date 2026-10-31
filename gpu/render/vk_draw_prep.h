@@ -51,6 +51,7 @@ struct PreparedStage {
 inline u64 ImageDescHash(const Gcn::Image& sharp, const Shader::ImageResource& res) {
     std::array<u64, 4> key;
     std::memcpy(key.data(), &sharp, sizeof(key));
+    key[3] &= 0x00000000FFFFFFFFULL; // Ignore N2.1 in-band native SRV tag in dword 7
     const u32 flags = u32(res.is_written) | u32(res.is_depth) << 1 | u32(res.is_array) << 2;
     u64 hash = flags * 0x9E3779B97F4A7C15ull;
     for (const u64 word : key) {
