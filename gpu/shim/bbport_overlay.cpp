@@ -955,7 +955,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         last_frames = cur_frames;
         last_draws = BbStats::draws.load(std::memory_order_relaxed);
         last_dispatches = BbStats::dispatches.load(std::memory_order_relaxed);
-        last_submits = BbStats::submissions.load(std::memory_order_relaxed);
+        last_submits = Vulkan::Scheduler::recorded_submissions.load(std::memory_order_relaxed);
         last_idle_ns = BbStats::gpu_idle_ns.load(std::memory_order_relaxed);
         last_gnm_wait_ns = BbStats::gnm_frame_wait_ns.load(std::memory_order_relaxed);
         last_present_ns = BbStats::present_wait_ns.load(std::memory_order_relaxed);
@@ -967,7 +967,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         last_pipe_drain_cyc = BbSections::pipe_drain_cycles.load(std::memory_order_relaxed);
         last_pipe_busy_cyc = BbSections::pipe_busy_cycles.load(std::memory_order_relaxed);
         last_faults = BbStats::tracker_faults_total.load(std::memory_order_relaxed);
-        last_eop = BbStats::eop_decoded.load(std::memory_order_relaxed);
+        last_eop = BbStats::legacy_eop_decoded.load(std::memory_order_relaxed);
         last_hw_busy_ns = BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
         last_hw_gap_ns = BbStats::hw_gpu_gap_ns.load(std::memory_order_relaxed);
         last_hw_frames = BbStats::hw_gpu_frames.load(std::memory_order_relaxed);
@@ -995,7 +995,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
 
     const std::uint64_t cur_draws = BbStats::draws.load(std::memory_order_relaxed);
     const std::uint64_t cur_dispatches = BbStats::dispatches.load(std::memory_order_relaxed);
-    const std::uint64_t cur_submits = BbStats::submissions.load(std::memory_order_relaxed);
+    const std::uint64_t cur_submits =
+        Vulkan::Scheduler::recorded_submissions.load(std::memory_order_relaxed);
     const std::uint64_t cur_idle_ns = BbStats::gpu_idle_ns.load(std::memory_order_relaxed);
     const std::uint64_t cur_gnm_wait_ns = BbStats::gnm_frame_wait_ns.load(std::memory_order_relaxed);
     const std::uint64_t cur_present_ns = BbStats::present_wait_ns.load(std::memory_order_relaxed);
@@ -1011,7 +1012,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         BbSections::pipe_busy_cycles.load(std::memory_order_relaxed);
     const std::uint64_t cur_faults =
         BbStats::tracker_faults_total.load(std::memory_order_relaxed);
-    const std::uint64_t cur_eop = BbStats::eop_decoded.load(std::memory_order_relaxed);
+    const std::uint64_t cur_eop = BbStats::legacy_eop_decoded.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_busy_ns =
         BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_gap_ns =
@@ -1343,8 +1344,8 @@ void FpsCounter() {
             ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
             : "");
     ImGui::TextDisabled(
-        BbSettings::MenuText("Draws: %.0f | Disp: %.0f | Subm: %.0f | B busy: %.0f%%",
-                             "Draws: %.0f | Disp: %.0f | Subm: %.0f | B занят: %.0f%%"),
+        BbSettings::MenuText("Draws: %.0f | Disp: %.0f | VkSubm: %.1f | B busy: %.0f%%",
+                             "Draws: %.0f | Disp: %.0f | VkSubm: %.1f | B занят: %.0f%%"),
         h.draws_pf, h.dispatches_pf, h.submits_pf, h.b_busy_pct);
     const ImVec4 health_col = (h.faults_ps < 10.0f && h.eop_pf < 5.0f)
                                   ? ImVec4(0.55f, 0.88f, 0.62f, 1.0f)

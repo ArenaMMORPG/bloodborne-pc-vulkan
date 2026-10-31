@@ -110,6 +110,62 @@ public:
         UpdateWatch<false, false>();
     }
 
+    bool NeedsFreshDisarm(u64 offset, u64 size) const {
+        size_t first, last;
+        if (!Pages(s64(offset), s64(size), first, last)) {
+            return false;
+        }
+        return !cpu.AllInRange(first, last) || !writable.AllInRange(first, last) ||
+               gpu.AnyInRange(first, last);
+    }
+
+    /// Proactively disarms PageWatch (mprotect PROT_READ -> PROT_READ|PROT_WRITE) and marks pages
+    /// CPU-dirty when the guest GPU allocator hands out, maps, or retires `[address, address + size)`,
+    /// eliminating SIGSEGV write-fault traps without incrementing write-fault counters.
+    void DisarmFreshRange(VAddr address, u64 size) {
+        size_t first, last;
+        if (!Pages(s64(address - base), s64(size), first, last)) {
+            return;
+        }
+        const VAddr full_begin = (address + PageSize - 1) & ~VAddr(PageSize - 1);
+        const VAddr full_end = (address + size) & ~VAddr(PageSize - 1);
+        size_t full_first = last, full_last = first;
+        if (full_begin < full_end) {
+            Pages(s64(full_begin - base), s64(full_end - full_begin), full_first, full_last);
+        }
+        bool changed = false;
+        if (full_first < full_last) {
+            if (!cpu.AllInRange(full_first, full_last) || gpu.AnyInRange(full_first, full_last)) {
+                cpu.SetRange(full_first, full_last);
+                gpu.UnsetRange(full_first, full_last);
+                changed = true;
+            }
+        }
+        if (first < full_first) {
+            for (size_t p = first; p < std::min(full_first, last); ++p) {
+                if (!gpu.Get(p) && (!cpu.Get(p) || !writable.Get(p))) {
+                    cpu.Set(p);
+                    changed = true;
+                }
+            }
+        }
+        if (full_last < last) {
+            for (size_t p = std::max(full_last, first); p < last; ++p) {
+                if (!gpu.Get(p) && (!cpu.Get(p) || !writable.Get(p))) {
+                    cpu.Set(p);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            cpu_change_epoch.fetch_add(1, std::memory_order_acq_rel);
+        }
+        UpdateWatch<false, false>();
+        if (changed && EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise) {
+            UpdateWatch<false, true>();
+        }
+    }
+
     /// Calls `func(address, size)` for each run of pages of [address, address + size) modified
     /// by `side`; `clear`: they are no longer.
     template <Side side, bool clear>
@@ -127,17 +183,6 @@ public:
         }
         const RegionPages mask(bits, first, last);
         if constexpr (clear) {
-            if constexpr (side == Side::Cpu) {
-                // V7.1: Never arm PageWatch (mprotect PROT_READ) on the transient CPU->GPU
-                // cueHeap staging/dynamic ring; keep pages permanently writable (0 SIGSEGV).
-                if (VideoCore::DirectBuffers::IsTransientCueHeap(
-                        base + first * PageSize, (last - first) * PageSize)) {
-                    for (const auto& [start, end] : mask) {
-                        func(base + start * PageSize, (end - start) * PageSize);
-                    }
-                    return;
-                }
-            }
             bits.UnsetRange(first, last);
             if constexpr (side == Side::Cpu) {
                 KeepHotPagesModified(first, last);
@@ -335,6 +380,20 @@ public:
     void ExtendWriteFault(VAddr window, u64 size) {
         Locked(window, size,
                [](Region& r, VAddr at, u64 bytes) { r.ExtendWriteFault(at, bytes); });
+    }
+    void DisarmFreshRange(VAddr address, u64 size) {
+        if (size == 0) {
+            return;
+        }
+        const bool needs_disarm =
+            ForEachRegion<false>(address, size, [](Region& r, u64 offset, u64 bytes) {
+                return r.NeedsFreshDisarm(offset, bytes);
+            });
+        if (!needs_disarm) {
+            return;
+        }
+        Locked(address, size,
+               [](Region& r, VAddr at, u64 bytes) { r.DisarmFreshRange(at, bytes); });
     }
 
     /// A CPU write to [address, address + size): GPU-modified data there is copied back first

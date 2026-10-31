@@ -237,6 +237,7 @@ public:
     /// blocks lose the asset mark and are bound in place, since what writes them next may be code
     /// the GPU side does not hear of.
     void NoteFreshRange(VAddr addr, u64 size);
+    void DisarmWatchedRange(VAddr addr, u64 size);
     /// bbport, without write tracking: the command processor wrote `data` at addr in decode order.
     /// Where the GPU's data there lives in VRAM (GPU-modified, not in place) the same bytes are
     /// written into it in stream order and true is returned; else the caller invalidates.

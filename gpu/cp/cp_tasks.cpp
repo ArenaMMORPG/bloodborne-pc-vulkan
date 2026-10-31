@@ -130,6 +130,7 @@ void EventWriteEopTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
     std::memcpy(&eop, data, sizeof(eop));
     if (eop.Data() != DataSel::None) {
         BbStats::eop_decoded.fetch_add(1, std::memory_order_relaxed);
+        BbStats::legacy_eop_decoded.fetch_add(1, std::memory_order_relaxed);
     }
     const u64 seq = BbFreeCheck::NextFenceSeq(); // their order in the stream (BB_FREE_CHECK)
     rasterizer.ProcessDownloadImages();

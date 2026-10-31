@@ -618,6 +618,9 @@ void bb_direct_vk_prepare_buffer_write(const void* gpu_addr, uint64_t byte_size)
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     BbLayer::WriteTraps::Set(addr, byte_size, BbLayer::WriteTraps::Mirror, false);
+    if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
+        buf->DisarmWatchedRange(addr, byte_size);
+    }
     if (auto* tex = VideoCore::DirectBuffers::g_active_tex_cache.load(std::memory_order_acquire)) {
         tex->DisarmWatchedRange(addr, static_cast<size_t>(byte_size), /*mark_dirty=*/false);
     }
@@ -659,6 +662,9 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     VideoCore::DirectBuffers::NoteTransientCueHeapFree(addr, byte_size);
+    if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
+        buf->DisarmWatchedRange(addr, byte_size);
+    }
     if (!VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
         return;
     }

@@ -1217,7 +1217,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     // RenderPass breaks + vkCmdCopyBuffer + pipeline barriers, eliminates all SIGSEGV write faults
     // on cueHeap, and deduplicates repeated shadow/G-buffer bindings within the same submission.
     if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
-        size != 0 && size <= 16_MB &&
+        size != 0 && size <= STREAM_THRESHOLD &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
@@ -2953,10 +2953,25 @@ void BufferCache::NoteAssetWrite(VAddr addr, u64 size) {
     assets_pending.store(true, std::memory_order_release);
 }
 
+void BufferCache::DisarmWatchedRange(VAddr addr, u64 size) {
+    if (size == 0 || !WriteTracking() || !memory_tracker) {
+        return;
+    }
+    static const bool v7_disarm =
+        gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_BoundedCueAndQueries);
+    if (v7_disarm) {
+        memory_tracker->DisarmFreshRange(addr, size);
+    }
+}
+
 void BufferCache::NoteFreshRange(VAddr addr, u64 size) {
     BbStats::gpu_range_allocs.fetch_add(1, std::memory_order_relaxed);
     BbStats::gpu_range_alloc_bytes.fetch_add(size, std::memory_order_relaxed);
-    if (!GuestInPlace() || WriteTracking()) {
+    if (WriteTracking()) {
+        DisarmWatchedRange(addr, size);
+        return;
+    }
+    if (!GuestInPlace()) {
         return; // every write is caught, or nothing is bound in place
     }
     // The GPU's old data there is dead: whole pages inside stop being GPU-modified now, so the
