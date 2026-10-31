@@ -371,7 +371,10 @@ void CGGpuFreeListAllocatorGnm_DeferFreeWithEoPLabelA(
     } while (AtomicPtr_CompareExchange(queueHead, block, oldHead) != oldHead);
 
     block->stateOrTaggedFence = 2;
-    GfxOrComputeCtx_WriteReleaseMemEoP(*ctxHandle, 0x28, 0, block, 1, 4, 0, 2);
+    if (!gx_direct_vk::TryEmitSingleReleaseU32Label(
+            *ctxHandle, reinterpret_cast<uint64_t>(block), 4u)) {
+        GfxOrComputeCtx_WriteReleaseMemEoP(*ctxHandle, 0x28, 0, block, 1, 4, 0, 2);
+    }
 }
 
 // 0x026aa620 (124 bytes)
@@ -389,7 +392,10 @@ void CGGpuFreeListAllocatorGnm_DeferFreeWithEoPLabelB(
     } while (AtomicPtr_CompareExchange(queueHead, block, oldHead) != oldHead);
 
     block->stateOrTaggedFence = 2;
-    GfxOrComputeCtx_WriteReleaseMemEoP(*ctxHandle, 0x28, 0, block, 1, 4, 0, 2);
+    if (!gx_direct_vk::TryEmitSingleReleaseU32Label(
+            *ctxHandle, reinterpret_cast<uint64_t>(block), 4u)) {
+        GfxOrComputeCtx_WriteReleaseMemEoP(*ctxHandle, 0x28, 0, block, 1, 4, 0, 2);
+    }
 }
 
 // 0x026aa6a0 (210 bytes)

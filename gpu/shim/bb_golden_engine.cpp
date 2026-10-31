@@ -146,6 +146,7 @@ void BbGoldenEngine_UpgradeResourceCache(void** io_cueHeap, std::uint32_t* io_cu
     }
     *io_cueHeapByteSize = bytes;
     *io_cueHeap = block;
+    gx_direct_vk::RegisterTransientCueHeap(block, bytes);
     std::printf("[bb_vulkan] Golden Engine C++20: upgraded GX resource cache to %u MiB at %p\n",
                 bytes >> 20, block);
 }

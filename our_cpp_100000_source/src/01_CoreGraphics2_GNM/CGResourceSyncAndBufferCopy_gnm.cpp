@@ -991,11 +991,19 @@ int32_t FlushAndPrepareSubmit(GnmxContextCore* ctx, PendingUpdateQueueB* out_sub
     }
 
     if (diff_lo != 0u || expected_end != *reinterpret_cast<uint64_t*>(gfxc + 0x08)) {
+        const bool batch_tail =
+            gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb);
         void* mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
         const uint64_t st1 = reinterpret_cast<QueryChunkStateFn>(GX_VMA(0x026d3d40ULL))(mgr, dcb_cmdptr);
         if (st1 != last_state && st1 != 0) {
             mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
-            reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st1);
+            if (batch_tail) {
+                gx_direct_vk::ReleaseLabelBatch b1(gfxc);
+                b1.AddPoolSlot(mgr, reinterpret_cast<uint64_t*>(st1));
+                b1.Flush();
+            } else {
+                reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st1);
+            }
         }
 
         mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
@@ -1003,7 +1011,13 @@ int32_t FlushAndPrepareSubmit(GnmxContextCore* ctx, PendingUpdateQueueB* out_sub
             mgr, *reinterpret_cast<uint64_t*>(gfxc + 0x00));
         if (st2 != st1) {
             mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
-            reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st2);
+            if (batch_tail) {
+                gx_direct_vk::ReleaseLabelBatch b2(gfxc);
+                b2.AddPoolSlot(mgr, reinterpret_cast<uint64_t*>(st2));
+                b2.Flush();
+            } else {
+                reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st2);
+            }
             mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
             const uint64_t st3 = reinterpret_cast<QueryChunkStateFn>(GX_VMA(0x026d3d40ULL))(
                 mgr, *reinterpret_cast<uint64_t*>(gfxc + 0x00));
@@ -1303,6 +1317,7 @@ void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx) {
                 gfxc[0xb468] |= 0x01u;
             }
 
+            uint64_t prev_ret = 0;
             void* fence_ptr = gfxc;
             for (uint8_t* ch = queue_b->head_chunk; ch != nullptr;) {
                 uint8_t* next_ch = *reinterpret_cast<uint8_t**>(ch + next_off);
@@ -1311,7 +1326,8 @@ void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx) {
                     uint8_t* e = ch + static_cast<uint64_t>(i) * 24ull;
                     auto* node = *reinterpret_cast<GpuRangeNode**>(e + 0x10);
                     auto** heap_vtbl = *reinterpret_cast<void***>(dyn_heap);
-                    reinterpret_cast<RetireNodeVtblFn>(heap_vtbl[6])(dyn_heap, &fence_ptr, node, 0ull);
+                    prev_ret = reinterpret_cast<RetireNodeVtblFn>(heap_vtbl[6])(
+                        dyn_heap, &fence_ptr, node, prev_ret);
                 }
                 ch = next_ch;
             }

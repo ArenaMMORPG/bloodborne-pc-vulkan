@@ -4986,6 +4986,9 @@ uint32_t GXGnmGraphicsContext_InitializeRingsAndCommandBuffers(
         garlicAllocator, initDesc->cueHeapByteSize, 16u);
     BbGoldenEngine_UpgradeResourceCache(&cueHeap, const_cast<uint32_t*>(&initDesc->cueHeapByteSize));
     self->cueHeapMemory = cueHeap;
+    if (cueHeap != nullptr) {
+        gx_direct_vk::RegisterTransientCueHeap(cueHeap, initDesc->cueHeapByteSize);
+    }
     if (cueHeap == nullptr) {
         if (self->ccbRingBuffer != nullptr) {
             CGRingGnm_DestroyRingBuffer(self->ccbRingBuffer);

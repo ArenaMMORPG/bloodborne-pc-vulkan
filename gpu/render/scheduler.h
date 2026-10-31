@@ -334,6 +334,7 @@ public:
     /// Guest memory [address, address + size) a host copy issued now will read (the
     /// source of a deferred upload or rename). WaitHostCopiesFor waits only for these.
     void NoteHostCopySource(u64 address, u64 size);
+    void NoteHostCopySources(std::span<const std::pair<u64, u64>> ranges);
     /// Waits for the host copies when one of them may still read [address, address + size): a
     /// write there (the command processor's WRITE_DATA/DMA) must not change what they copy.
     /// Writes elsewhere do not wait (the hardware's command processor writes do not wait for

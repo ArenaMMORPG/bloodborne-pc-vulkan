@@ -22,6 +22,7 @@
 #include "cp/command_processor.h"
 #include "buffers/buffer.h"
 #include "buffers/buffer_cache.h"
+#include "buffers/direct_buffers.h"
 #include "memory/dirty_tracker.h"
 #include "render/pipeline.h"
 #include "vulkan/instance.h"
@@ -1494,6 +1495,85 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_add
     }
     memory->CopySparseMemory(device_addr, staging.mapped, staging.size);
     staging.Flush();
+    return {staging.buffer, staging.offset};
+}
+
+std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
+    std::span<const TransientHostSlice> slices, u64 total_bytes) {
+    if (slices.empty() || total_bytes == 0) {
+        return {nullptr, 0};
+    }
+    BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
+    const auto staging = staging_pool.Request(total_bytes, MemoryType::HostUncached, 16);
+    if (!staging.buffer || !staging.mapped) {
+        return {nullptr, 0};
+    }
+    const bool precise = EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+    if (!scheduler.IsRecordingDeferred() || BbToggle::Disabled(BbToggle::DeferredUploads)) {
+        for (const auto& s : slices) {
+            u8* dst = staging.mapped + s.staging_rel_offset;
+            if (!precise) {
+                std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
+            } else {
+                memory->CopySparseMemory(s.src_va, dst, s.byte_size);
+            }
+        }
+        staging.Flush();
+        return {staging.buffer, staging.offset};
+    }
+
+    boost::container::small_vector<std::pair<u64, u64>, 32> host_ranges;
+    host_ranges.reserve(slices.size());
+    for (const auto& s : slices) {
+        host_ranges.emplace_back(s.src_va, s.byte_size);
+    }
+
+    if (total_bytes <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+        const auto recorded = scheduler.RecordData(slices);
+        scheduler.RecordHostCopy([recorded, staging, mem = memory, precise] {
+            for (const auto& s : recorded) {
+                u8* dst = staging.mapped + s.staging_rel_offset;
+                if (!precise) {
+                    std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
+                } else {
+                    mem->CopySparseMemory(s.src_va, dst, s.byte_size);
+                }
+            }
+            staging.Flush();
+        });
+        scheduler.NoteHostCopySources(host_ranges);
+        return {staging.buffer, staging.offset};
+    }
+
+    using Group = boost::container::small_vector<TransientHostSlice, 32>;
+    auto group = std::make_shared<Group>();
+    u64 group_bytes = 0;
+    const auto launch = [&] {
+        BbCopy::Async([group, staging, mem = memory, precise] {
+            for (const auto& s : *group) {
+                u8* dst = staging.mapped + s.staging_rel_offset;
+                if (!precise) {
+                    std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
+                } else {
+                    mem->CopySparseMemory(s.src_va, dst, s.byte_size);
+                }
+            }
+            staging.Flush();
+        });
+    };
+    for (const auto& s : slices) {
+        group->push_back(s);
+        group_bytes += s.byte_size;
+        if (group_bytes >= 1_MB) {
+            launch();
+            group = std::make_shared<Group>();
+            group_bytes = 0;
+        }
+    }
+    if (!group->empty()) {
+        launch();
+    }
+    scheduler.NoteHostCopySources(host_ranges);
     return {staging.buffer, staging.offset};
 }
 
@@ -3901,6 +3981,10 @@ void BufferCache::Preupload(u64 budget) {
             const VAddr stop = std::min(end, region + BbMem::RegionSize);
             ++visited;
             preupload_cursor = stop;
+            if (DirectBuffers::IsTransientCueHeap(at, stop - at)) {
+                at = stop;
+                continue;
+            }
             if (memory_tracker->PreuploadCandidate(region, quiet_since, !full)) {
                 const u64 first_block = at >> block_shift;
                 const u64 last_block = (stop - 1) >> block_shift;

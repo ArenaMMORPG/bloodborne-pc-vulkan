@@ -159,6 +159,18 @@ public:
     /// Attempts to obtain a buffer without modifying the cache contents.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBufferForImage(VAddr device_addr, u32 size);
 
+    /// V6.1: Stages a batch of CPU-written transient `cueHeap` slices directly from host RAM into
+    /// a single HostUncached staging allocation (deferred via 1 RecordHostCopy crumb or ~1 MiB
+    /// BbCopy::Async groups), avoiding ObtainBuffer(src_va), avoiding a 512 MiB cueHeap VRAM
+    /// mirror, and never arming mprotect(PROT_READ) page traps on cueHeap.
+    struct TransientHostSlice {
+        VAddr src_va;
+        u32 byte_size;
+        u32 staging_rel_offset;
+    };
+    [[nodiscard]] std::pair<const Buffer*, u64> StageTransientHostBatch(
+        std::span<const TransientHostSlice> slices, u64 total_bytes);
+
     /// bbport BB_GUEST_IN_PLACE: where a command processor write (WRITE_DATA) the GPU performs in
     /// stream order lands: the arena over the game's memory, if the range is bound there in place.
     /// Not counted as a GPU write of the block (those move blocks to VRAM): it is CPU data, as a PC

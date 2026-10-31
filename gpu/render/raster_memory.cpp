@@ -123,6 +123,54 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         return a_off < (b_off + b_sz) && b_off < (a_off + a_sz);
     };
 
+    static thread_local std::vector<VideoCore::BufferCache::TransientHostSlice> transient_slices;
+    static thread_local std::vector<s32> transient_index_by_reg;
+    transient_slices.clear();
+    transient_index_by_reg.assign(regions.size(), -1);
+    const VideoCore::Buffer* transient_buf = nullptr;
+    u64 transient_base_off = 0;
+
+    if (!VideoCore::GuestInPlace()) {
+        u64 total_transient_bytes = 0;
+        for (size_t idx = 0; idx < regions.size(); ++idx) {
+            const auto& reg = regions[idx];
+            if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
+                continue;
+            }
+            if (!VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
+                buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) {
+                continue;
+            }
+            bool written_earlier_in_batch = false;
+            for (size_t prev = 0; prev < idx; ++prev) {
+                const auto& pr = regions[prev];
+                if (pr.dst_va && pr.byte_size != 0 &&
+                    ranges_overlap(reg.src_va, reg.byte_size, pr.dst_va, pr.byte_size)) {
+                    written_earlier_in_batch = true;
+                    break;
+                }
+            }
+            if (written_earlier_in_batch) {
+                continue;
+            }
+            const u64 aligned_off = (total_transient_bytes + 15ULL) & ~15ULL;
+            if (aligned_off + reg.byte_size > std::numeric_limits<u32>::max()) {
+                break;
+            }
+            transient_index_by_reg[idx] = static_cast<s32>(transient_slices.size());
+            transient_slices.push_back(VideoCore::BufferCache::TransientHostSlice{
+                .src_va = reg.src_va,
+                .byte_size = reg.byte_size,
+                .staging_rel_offset = static_cast<u32>(aligned_off),
+            });
+            total_transient_bytes = aligned_off + reg.byte_size;
+        }
+        if (!transient_slices.empty()) {
+            std::tie(transient_buf, transient_base_off) =
+                buffer_cache.StageTransientHostBatch(transient_slices, total_transient_bytes);
+        }
+    }
+
     const auto flush_resolved = [&] {
         if (resolved_copies.empty()) {
             return;
@@ -173,11 +221,33 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         resolved_copies.clear();
     };
 
-    for (const auto& reg : regions) {
+    for (size_t idx = 0; idx < regions.size(); ++idx) {
+        const auto& reg = regions[idx];
         if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
             continue;
         }
         direct_buffers.OnGpuWrite(reg.dst_va, reg.byte_size);
+
+        const s32 transient_idx = transient_index_by_reg[idx];
+        if (transient_buf && transient_idx >= 0) {
+            const auto& slice = transient_slices[static_cast<size_t>(transient_idx)];
+            texture_cache.InvalidateMemoryFromGPU(reg.dst_va, reg.byte_size);
+            buffer_cache.force_writes_in_place = true;
+            const auto [dst_buf, dst_off] =
+                buffer_cache.ObtainBuffer(reg.dst_va, reg.byte_size, true);
+            buffer_cache.force_writes_in_place = false;
+            if (!dst_buf) {
+                continue;
+            }
+            resolved_copies.push_back(ResolvedBufCopy{
+                transient_buf,
+                dst_buf,
+                transient_base_off + slice.staging_rel_offset,
+                dst_off,
+                reg.byte_size,
+            });
+            continue;
+        }
 
         // Direct VkImage -> VkImage copy when the game copies render-target / proxy texture
         // memory through its 1D compute buffer copy helpers (0x26b2d30 / 0x26b2670).

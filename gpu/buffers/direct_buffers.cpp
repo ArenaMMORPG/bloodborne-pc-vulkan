@@ -16,6 +16,7 @@
 #include "render/runtime.h"
 #include "render/scheduler.h"
 #include "textures/texture_cache.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
 
@@ -27,6 +28,8 @@ std::atomic<BufferCache*> g_active_buf_cache{nullptr};
 std::atomic<TextureCache*> g_active_tex_cache{nullptr};
 std::atomic<u32> g_pending_count{0};
 std::atomic<bool> g_ever_registered{false};
+std::atomic<VAddr> g_cue_heap_base{0};
+std::atomic<VAddr> g_cue_heap_end{0};
 std::mutex g_queue_mutex;
 std::vector<Event> g_queue;
 
@@ -134,6 +137,28 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
 
 bool HasPendingEvents() noexcept {
     return g_pending_count.load(std::memory_order_acquire) != 0;
+}
+
+void RegisterTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
+    if (!addr || byte_size == 0) {
+        return;
+    }
+    g_cue_heap_base.store(addr, std::memory_order_relaxed);
+    g_cue_heap_end.store(addr + byte_size, std::memory_order_release);
+}
+
+bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
+    static const bool enabled =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging);
+    if (!enabled || byte_size == 0) {
+        return false;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return false;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    return addr >= base && addr < end && (end - addr) >= byte_size;
 }
 
 void DrainEvents(std::vector<Event>& out) {
@@ -479,6 +504,14 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
     ev.addr = addr;
     ev.byte_size = byte_size;
     VideoCore::DirectBuffers::PushEvent(ev);
+}
+
+void bb_direct_vk_register_transient_cue_heap(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!gpu_addr || byte_size == 0) {
+        return;
+    }
+    VideoCore::DirectBuffers::RegisterTransientCueHeap(reinterpret_cast<VAddr>(gpu_addr),
+                                                       byte_size);
 }
 
 } // extern "C"

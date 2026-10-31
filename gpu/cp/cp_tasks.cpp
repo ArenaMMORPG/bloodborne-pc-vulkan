@@ -439,17 +439,17 @@ void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* da
             BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
             return;
         }
-        for (u32 i = 0; i < count; ++i) {
-            const VAddr addr = addrs[i];
-            const u64 seq = BbFreeCheck::NextFenceSeq();
-            rasterizer.SignalAfterGpu(
-                [addr, seq] {
+        const VAddr tail_addr = addrs[count - 1u];
+        rasterizer.SignalAfterGpu(
+            [addrs, count] {
+                for (u32 i = 0; i < count; ++i) {
+                    const u64 seq = BbFreeCheck::NextFenceSeq();
                     MaybeDelay(seq);
-                    WriteLabel(reinterpret_cast<void*>(addr), 0ULL, 8u, BbFreeCheck::Eop, seq);
-                    BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
-                },
-                addr, 0ULL);
-        }
+                    WriteLabel(reinterpret_cast<void*>(addrs[i]), 0ULL, 8u, BbFreeCheck::Eop, seq);
+                }
+                BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
+            },
+            tail_addr, 0ULL);
         return;
     }
 
@@ -493,17 +493,17 @@ void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8*
             BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
             return;
         }
-        for (u32 i = 0; i < count; ++i) {
-            const VAddr addr = addrs[i];
-            const u64 seq = BbFreeCheck::NextFenceSeq();
-            rasterizer.SignalAfterGpu(
-                [addr, value, seq] {
+        const VAddr tail_addr = addrs[count - 1u];
+        rasterizer.SignalAfterGpu(
+            [addrs, count, value] {
+                for (u32 i = 0; i < count; ++i) {
+                    const u64 seq = BbFreeCheck::NextFenceSeq();
                     MaybeDelay(seq);
-                    WriteLabel(reinterpret_cast<void*>(addr), value, 4u, BbFreeCheck::Eop, seq);
-                    BbStats::eop_written.fetch_add(1, std::memory_order_relaxed);
-                },
-                addr, value);
-        }
+                    WriteLabel(reinterpret_cast<void*>(addrs[i]), value, 4u, BbFreeCheck::Eop, seq);
+                }
+                BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
+            },
+            tail_addr, value);
         return;
     }
 

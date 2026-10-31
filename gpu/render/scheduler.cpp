@@ -392,22 +392,40 @@ void Scheduler::NoteHostCopySource(u64 address, u64 size) {
     if (size == 0) {
         return;
     }
-    const u64 first = address >> HostCopyGranuleShift;
-    const u64 last = (address + size - 1) >> HostCopyGranuleShift;
-    std::scoped_lock lk{host_copy_sources_mutex};
-    const u64 seq = ++host_copy_source_seq;
-    if (last - first >= HostCopyMaxGranules) {
-        host_copy_big_seq = seq;
+    const std::pair<u64, u64> single{address, size};
+    NoteHostCopySources(std::span{&single, 1});
+}
+
+void Scheduler::NoteHostCopySources(std::span<const std::pair<u64, u64>> ranges) {
+    if (ranges.empty()) {
         return;
     }
-    for (u64 g = first; g <= last; ++g) {
-        auto& slot = host_copy_slots[HostCopySlotOf(g, HostCopySlots)];
-        if (slot.seq > host_copy_sources_done && slot.granule != g) {
-            slot.granule = HostCopyWildcard; // two pending granules share it
-        } else if (slot.granule != HostCopyWildcard || slot.seq <= host_copy_sources_done) {
-            slot.granule = g;
+    std::scoped_lock lk{host_copy_sources_mutex};
+    const u64 seq = ++host_copy_source_seq;
+    u64 prev_g = ~0ULL;
+    for (const auto& [address, size] : ranges) {
+        if (size == 0) {
+            continue;
         }
-        slot.seq = seq;
+        const u64 first = address >> HostCopyGranuleShift;
+        const u64 last = (address + size - 1) >> HostCopyGranuleShift;
+        if (last - first >= HostCopyMaxGranules) {
+            host_copy_big_seq = seq;
+            return;
+        }
+        for (u64 g = first; g <= last; ++g) {
+            if (g == prev_g) {
+                continue;
+            }
+            prev_g = g;
+            auto& slot = host_copy_slots[HostCopySlotOf(g, HostCopySlots)];
+            if (slot.seq > host_copy_sources_done && slot.granule != g) {
+                slot.granule = HostCopyWildcard; // two pending granules share it
+            } else if (slot.granule != HostCopyWildcard || slot.seq <= host_copy_sources_done) {
+                slot.granule = g;
+            }
+            slot.seq = seq;
+        }
     }
 }
 

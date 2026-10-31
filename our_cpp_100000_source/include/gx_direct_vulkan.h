@@ -71,18 +71,23 @@ __attribute__((weak)) void bb_direct_vk_note_gpu_allocator(const void* alloc,
 __attribute__((weak)) void bb_direct_vk_yebis_scene_enter() noexcept;
 __attribute__((weak)) void bb_direct_vk_yebis_scene_leave() noexcept;
 __attribute__((weak)) void bb_direct_vk_note_release_check(uint32_t hr) noexcept;
+
+// V6.1: Zero-fault transient GX cueHeap registration (CPU->GPU staging ring)
+__attribute__((weak)) void bb_direct_vk_register_transient_cue_heap(const void* gpu_addr,
+                                                                    uint64_t byte_size) noexcept;
 }
 
 namespace gx_direct_vk {
 
 // Per-module bitmask for A/B runtime verification via BB_DIRECT_VULKAN and BB_DIRECT_VULKAN_MASK:
 //   BB_DIRECT_VULKAN=0            -> disables all Direct Vulkan paths (100% fallback to PS4 GNM)
-//   BB_DIRECT_VULKAN_MASK=0x1     -> enables only selected Direct Vulkan modules (V1..V5)
+//   BB_DIRECT_VULKAN_MASK=0x1     -> enables only selected Direct Vulkan modules (V1..V6)
 inline constexpr uint32_t kModuleV1_BufferCopyFill = 1u << 0; // Native vkCmdCopyBuffer / vkCmdFillBuffer (replaces PS4 g_EmbeddedCS_BufferCopy/ScatterCopy/ClearUint4)
 inline constexpr uint32_t kModuleV2_DrawDispatch   = 1u << 1; // Direct Draw / Dispatch / State stream
 inline constexpr uint32_t kModuleV3_ResourceViews  = 1u << 2; // Direct Texture / Buffer / RT lifecycle
 inline constexpr uint32_t kModuleV4_NativeShaders  = 1u << 3; // Direct 752-shader SPIR-V pipeline cache
 inline constexpr uint32_t kModuleV5_NativePcFx     = 1u << 4; // Native C++ PC effect toggles
+inline constexpr uint32_t kModuleV6_FastPipeline   = 1u << 5; // V6: Zero-fault cueHeap staging & Stage-A/Stage-B/Barrier fast-paths
 
 inline uint32_t ActiveMask() noexcept {
     static const uint32_t mask = []() -> uint32_t {
@@ -478,6 +483,38 @@ struct YebisSceneScope {
     YebisSceneScope(const YebisSceneScope&) = delete;
     YebisSceneScope& operator=(const YebisSceneScope&) = delete;
 };
+
+inline bool EnabledV6() noexcept {
+    return (ActiveMask() & kModuleV6_FastPipeline) != 0u;
+}
+
+inline constexpr uint32_t kV6Sub_ZeroFaultCueStaging = 1u << 0; // V6.1: Direct batched Host->VRAM staging for transient cueHeap (0 mprotect faults, 0 512 MiB mirror)
+inline constexpr uint32_t kV6Sub_StageARingBypass    = 1u << 1; // V6.2: Stage-A CollectRingBindings & PostDraw bypass for non-CeRam draws
+inline constexpr uint32_t kV6Sub_StageBFastBind      = 1u << 2; // V6.3: Stage-B persistent frame-arena buffer memo & direct bind fast-path
+inline constexpr uint32_t kV6Sub_GpuBarrierCoalesce  = 1u << 3; // V6.4: GPU transfer/barrier coalescing & redundant sync elimination
+
+inline uint32_t ActiveV6SubMask() noexcept {
+    static const uint32_t sub = []() -> uint32_t {
+        const char* env_sub = std::getenv("BB_DIRECT_V6_MASK");
+        if (env_sub && env_sub[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_sub, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return sub;
+}
+
+inline bool EnabledV6Sub(uint32_t bit) noexcept {
+    return EnabledV6() && ((ActiveV6SubMask() & bit) != 0u);
+}
+
+inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV6Sub(kV6Sub_ZeroFaultCueStaging) || !bb_direct_vk_register_transient_cue_heap ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_register_transient_cue_heap(gpu_addr, byte_size);
+}
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer
 inline constexpr uint32_t kNopPayloadTag = 0xBB564B00u; // 'BBVK'
@@ -1555,6 +1592,23 @@ struct ReleaseU32LabelBatch {
         addrs[count++] = gpu_addr;
     }
 };
+
+// Emits a single 32-bit End-of-Pipe block status write via Op::ReleaseU32LabelsBatch (0 RenderPass breaks, 0 legacy PM4 EventWriteEopTask).
+inline bool TryEmitSingleReleaseU32Label(void* dcb_raw, uint64_t gpu_addr, uint32_t value = 4u) noexcept {
+    if (!EnabledV5Sub(kV5Sub_DecommissionLegacyPm4) || !dcb_raw || !gpu_addr) {
+        return false;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 6u);
+    if (!pkt) {
+        return false;
+    }
+    pkt[0] = MakeNopHeader(5u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::ReleaseU32LabelsBatch) | (1u << 16);
+    pkt[3] = value;
+    std::memcpy(pkt + 4u, &gpu_addr, sizeof(uint64_t));
+    return true;
+}
 
 // ============================================================================
 // V3.3: Direct VkQueryPool OcclusionQuery (replaces 0x1077660 writeOcclusionQuery)
