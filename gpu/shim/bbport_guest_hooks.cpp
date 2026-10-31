@@ -1924,8 +1924,10 @@ void Install(RangeCallback on_gpu_range_allocated) {
                     "stub bytes\n", detours, stub_used, StubPageSize);
     }
     BbHeapSites::Install();
-    if (const char* env = std::getenv("BB_HEAP_SITES"); env && env[0] == '1') {
-        Patch(ImageBase + ReleaseCheck, ReleaseCheckCode, sizeof(ReleaseCheckCode));
+    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
+        if (const char* env = std::getenv("BB_HEAP_SITES"); env && env[0] == '1') {
+            Patch(ImageBase + ReleaseCheck, ReleaseCheckCode, sizeof(ReleaseCheckCode));
+        }
     }
 }
 void ApplyGameEffects() {

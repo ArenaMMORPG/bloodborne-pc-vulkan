@@ -7,6 +7,7 @@
 // ============================================================================
 #include "bb_golden_engine.h"
 #include "bbport_guest_code_hooks.h"
+#include "bbport_heap_sites.h"
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "render/direct_shaders.h"
@@ -245,6 +246,16 @@ void bb_direct_vk_note_gpu_allocator(
         }
     }
 }
+
+void bb_direct_vk_note_release_check(std::uint32_t hr) noexcept {
+    static const bool kHeapSitesOn = [] {
+        const char* env = std::getenv("BB_HEAP_SITES");
+        return env && env[0] == '1';
+    }();
+    if (kHeapSitesOn) {
+        BbHeapSites::NoteReleaseCheck(hr);
+    }
+}
 } // extern "C"
 
 namespace GXGraphicsFramework {
@@ -372,7 +383,11 @@ bool ShouldInstallEntry(const GXDecompiledFunctionEntry& e, u64 size,
         const char* env = std::getenv("BB_FREE_CHECK");
         return env && env[0] == '1';
     }();
-    if (e.vma == 0xbb5f10ULL || e.vma == 0x28ce7b0ULL || e.vma == 0x28ceec0ULL) {
+    if (e.vma == 0x28ce7b0ULL || e.vma == 0x28ceec0ULL) {
+        return false;
+    }
+    if (e.vma == 0xbb5f10ULL &&
+        !gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
         return false;
     }
     if (e.vma == 0x26aa860ULL &&
@@ -514,7 +529,7 @@ void PatchImage(unsigned char* image, u64 size) {
     Vulkan::DirectShaders::InitializeManifestLibrary();
     std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s, V2_DrawDispatch=%s, "
                 "V3_ResourceViews=%s, V4_NativeShadersAndPrewarmedPSO=%s, V5_NativePcControls=%s "
-                "[v5_mask=0x%02x, gx_cmd_heap=%uKiB, intel_tonemap=%s])\n",
+                "[v5_mask=0x%02x, gx_cmd_heap=%uKiB, intel_tonemap=%s, async_frame_pipe=%s])\n",
                 gx_direct_vk::ActiveMask(),
                 gx_direct_vk::EnabledV1() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV2() ? "ON" : "OFF",
@@ -523,7 +538,8 @@ void PatchImage(unsigned char* image, u64 size) {
                 gx_direct_vk::EnabledV5() ? "ON" : "OFF",
                 gx_direct_vk::ActiveV5SubMask(),
                 bb_direct_vk_gx_command_heap_bytes() >> 10,
-                bb_direct_vk_intel_tonemap_fix() ? "ON" : "OFF");
+                bb_direct_vk_intel_tonemap_fix() ? "ON" : "OFF",
+                gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline) ? "ON" : "OFF");
     std::fflush(stdout);
 }
 

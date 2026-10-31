@@ -66,6 +66,11 @@ __attribute__((weak)) int bb_direct_vk_light_grid_override(uint32_t* out_w, uint
 __attribute__((weak)) void bb_direct_vk_note_gpu_allocator(const void* alloc,
                                                            uint64_t live_ranges,
                                                            uint64_t live_bytes) noexcept;
+
+// V5.2a: Async Full-Frame Pipeline & Thread-Safe Yebis2 Deferred Texture/RT Unregister
+__attribute__((weak)) void bb_direct_vk_yebis_scene_enter() noexcept;
+__attribute__((weak)) void bb_direct_vk_yebis_scene_leave() noexcept;
+__attribute__((weak)) void bb_direct_vk_note_release_check(uint32_t hr) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -368,6 +373,7 @@ inline bool EnabledV5() noexcept {
 
 inline constexpr uint32_t kV5Sub_NativePostFx        = 1u << 0; // V5.1: Live C++20 PostFX toggles (CA/DoF/Bloom in 0x229e990 & 0x21d5f80, zero binary patches)
 inline constexpr uint32_t kV5Sub_NativeHeapsAndFixes = 1u << 1; // V5.1: Native 1 MiB GX command heaps, Intel Tonemap Fix, Light Grid override & GPU heap telemetry
+inline constexpr uint32_t kV5Sub_AsyncFramePipeline  = 1u << 2; // V5.2a: Full-frame CPU/GPU overlap (LockMode::Flip) + thread-safe Yebis2 deferred unregister
 
 // Effect indices matching BbSettings::Effects in gpu/shim/bbport_settings.h
 inline constexpr uint32_t kEffectChromaticAberration = 0u;
@@ -432,6 +438,45 @@ inline void NoteGpuAllocator(const void* alloc,
     }
     bb_direct_vk_note_gpu_allocator(alloc, live_ranges, live_bytes);
 }
+
+inline void NoteReleaseCheck(uint32_t hr) noexcept {
+    if (bb_direct_vk_note_release_check) {
+        bb_direct_vk_note_release_check(hr);
+    }
+}
+
+struct YebisSceneScope {
+    bool active = false;
+
+    explicit YebisSceneScope(bool enter_now = true) noexcept {
+        if (enter_now) {
+            Enter();
+        }
+    }
+
+    void Enter() noexcept {
+        if (!active && EnabledV5Sub(kV5Sub_AsyncFramePipeline) && bb_direct_vk_yebis_scene_enter) {
+            bb_direct_vk_yebis_scene_enter();
+            active = true;
+        }
+    }
+
+    void Leave() noexcept {
+        if (active) {
+            active = false;
+            if (bb_direct_vk_yebis_scene_leave) {
+                bb_direct_vk_yebis_scene_leave();
+            }
+        }
+    }
+
+    ~YebisSceneScope() noexcept {
+        Leave();
+    }
+
+    YebisSceneScope(const YebisSceneScope&) = delete;
+    YebisSceneScope& operator=(const YebisSceneScope&) = delete;
+};
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer
 inline constexpr uint32_t kNopPayloadTag = 0xBB564B00u; // 'BBVK'

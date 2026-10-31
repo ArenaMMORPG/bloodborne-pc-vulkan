@@ -93,7 +93,7 @@ void* sub_293f750(void* ui, const void* labelDesc, void* wstrPtr);              
 void* sub_219db10(void* ui, const void* labelDesc, uint8_t* pReadOnlyByte);      // 0x219db10 (AddReadOnlyByteDisplay)
 
 // Yebis2 Low-Level Library (PPFX / PostProcess Effects Context @ 0xbb26e0..0xbb5f10)
-void sub_bb5f10(void* ppfxCtx, void* gnmTexturePtr);                             // 0xbb5f10 (ReleaseTextureRef)
+int32_t sub_bb5f10(void* ppfxCtx, void* gnmTexturePtr);                          // 0xbb5f10 (ReleaseTextureRef)
 void sub_bb4d70(void* ppfxCtx, int32_t arg);                                     // 0xbb4d70
 void sub_bb4de0(void* ppfxCtx, uint8_t bufferIndex);                             // 0xbb4de0
 void sub_bb26e0(void* ppfxCtx, int32_t arg);                                     // 0xbb26e0
@@ -2043,11 +2043,13 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         sub_26afa00(gnm + 0x010);
     }
 
+    gx_direct_vk::YebisSceneScope yebisSceneGuard{false};
     void* ppfxCtx = *reinterpret_cast<void**>(director + 0x2670);
     if (ppfxCtx != nullptr &&
         *reinterpret_cast<const int32_t*>(param + 0x000) != 0 &&
         director[0x020] == 0)
     {
+        yebisSceneGuard.Enter();
         auto* const inDepthWrap = *reinterpret_cast<uint8_t**>(param + 0x380); // 0xa0(%rsp)
         auto* const velWrap     = *reinterpret_cast<uint8_t**>(param + 0x388); // 0xa8(%rsp)
 
@@ -2757,6 +2759,7 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         if (relDepthWrap != nullptr) {
             sub_bb5f10(curPpfx, *reinterpret_cast<uint8_t**>(relDepthWrap + 0x048) + 0x010);
         }
+        yebisSceneGuard.Leave();
 
         auto* innerDevCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
         auto* gnm         = *reinterpret_cast<uint8_t**>(innerDevCtx + 0x008);

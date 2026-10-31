@@ -46,6 +46,7 @@
 #include "cp/command_processor.h"
 #include "render/presenter.h"
 #include "render/rasterizer.h"
+#include "../../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Frontend {
 class WindowSDL;
@@ -79,13 +80,32 @@ u32 sdk_version = 0;
 
 // ---- Options ---------------------------------------------------------------------------------
 
-enum class LockMode { Decode, Gpu, Ahead };
+enum class LockMode { Decode, Gpu, Ahead, Flip };
 
 LockMode SubmitLock() {
     static const LockMode mode = [] {
         const char* env = std::getenv("BB_SUBMIT_LOCK");
         const std::string_view value = env ? env : "";
-        return value == "gpu" ? LockMode::Gpu : value == "ahead" ? LockMode::Ahead : LockMode::Decode;
+        if (value == "gpu") {
+            return LockMode::Gpu;
+        }
+        if (value == "ahead") {
+            return LockMode::Ahead;
+        }
+        if (value == "flip") {
+            return LockMode::Flip;
+        }
+        if (value == "decode") {
+            return LockMode::Decode;
+        }
+        if (std::getenv("BB_SUBMIT_AHEAD") != nullptr) {
+            return LockMode::Decode;
+        }
+        if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
+            std::printf("Gnm: async full-frame CPU/GPU pipeline active (V5.2a LockMode::Flip)\n");
+            return LockMode::Flip;
+        }
+        return LockMode::Decode;
     }();
     return mode;
 }
@@ -115,8 +135,16 @@ std::mutex submit_mutex;
 /// The hardware state goes before the first submission of each frame.
 bool send_init_state = true;
 
+LockMode EffectiveSubmitLock() {
+    const LockMode mode = SubmitLock();
+    return (mode == LockMode::Flip && pacing.overlap_off) ? LockMode::Decode : mode;
+}
+
 u32 SubmitsAhead() {
-    return pacing.overlap_off ? 0u : SubmitsAheadOption();
+    if (pacing.overlap_off) {
+        return 0u;
+    }
+    return EffectiveSubmitLock() == LockMode::Flip ? 256u : SubmitsAheadOption();
 }
 
 void AddWait(std::chrono::steady_clock::time_point start) {
@@ -153,16 +181,15 @@ void WaitGpuIdle() {
 
 /// After a submission was handed over: the frame's later submissions wait for the previous frame.
 void WaitAfterSubmit() {
-    if (SubmitLock() == LockMode::Ahead || ++pacing.submits_this_frame <= SubmitsAhead()) {
+    if (EffectiveSubmitLock() == LockMode::Ahead || ++pacing.submits_this_frame <= SubmitsAhead()) {
         return;
     }
     WaitPreviousFrame();
 }
 
-/// Once a frame: the game's live heap allocations (wrappers on its malloc count them). The leak
-/// that frames overlapping too far caused added ~1800 a second, so 100000 over the lowest count
-/// seen (or the heap asking the system for more memory) stops the overlap for the session.
-void WatchOverlapLeak() {
+/// Once a frame: monitors steady-state gameplay live heap allocations without false-triggering
+/// on title-screen warmup (lowest=1) or legitimate map-load heap expansions.
+void WatchOverlapLeak(u32 submits_in_frame) {
     // The live allocations are counted in Bloodborne's libc (BbHeapSites): its profile only.
     if (SubmitsAhead() == 0 || !Game::Active()) {
         return;
@@ -171,18 +198,42 @@ void WatchOverlapLeak() {
         BbHeapSites::InstallCounters();
         return;
     }
-    static u64 frames = 0;
-    static long long lowest = 0;
+    static u64 steady_frames = 0;
+    static u64 last_growths = runtime_heap_growths();
+    static long long baseline = 0;
+    static long long prev_window_live = 0;
+    static u32 consecutive_growth_windows = 0;
+
     const long long live = BbHeapSites::LiveAllocations();
-    if (++frames < 600 || live < lowest) {
-        lowest = live; // warming up: area loads
+    const u64 growths = runtime_heap_growths();
+    if (growths != last_growths || submits_in_frame < 16u) {
+        // Loading screen / menu or one-time area heap expansion: re-anchor steady-state baseline.
+        last_growths = growths;
+        steady_frames = 0;
+        baseline = live;
+        prev_window_live = live;
+        consecutive_growth_windows = 0;
         return;
     }
-    if (live - lowest > 100000 || runtime_heap_growths() != 0) {
-        pacing.overlap_off = true;
-        std::printf("Gnm: the game's heap grows (%lld allocations over %lld): frames no longer "
-                    "overlap (BB_SUBMIT_AHEAD 0)\n",
-                    live - lowest, lowest);
+    if (++steady_frames <= 600 || live < baseline) {
+        baseline = live;
+        prev_window_live = live;
+        consecutive_growth_windows = 0;
+        return;
+    }
+    if ((steady_frames - 600) % 300 == 0) {
+        if (live > prev_window_live + 256) {
+            ++consecutive_growth_windows;
+        } else {
+            consecutive_growth_windows = 0;
+        }
+        prev_window_live = live;
+        if (consecutive_growth_windows >= 8 && live - baseline > 150000) {
+            pacing.overlap_off = true;
+            std::printf("Gnm: steady-state heap leak detected (%lld allocations over %lld): frames "
+                        "no longer overlap (BB_SUBMIT_AHEAD 0)\n",
+                        live - baseline, baseline);
+        }
     }
 }
 
@@ -511,6 +562,13 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffers(u32 count, u32* dcbs[], u32* 
     }
     std::scoped_lock lock{submit_mutex};
     WaitBeforeSubmit();
+    const bool flip_lock = SubmitLockOnDecode() && EffectiveSubmitLock() == LockMode::Flip;
+    if (flip_lock) {
+        // All non-flipping submissions (#1..#N-1) of this frame streamed asynchronously into
+        // DrawPrep + Stage A while Stage B + GPU executed the previous frame. Retire the previous
+        // frame here before PatchFlip arms BbIrq::Once(GfxFlip) and before 0x26aa860 reclaims.
+        WaitPreviousFrame();
+    }
     const s32 patched = PatchFlip(dcbs[count - 1], dcb_sizes[count - 1] / 4, vo_handle, buf_idx,
                                   flip_mode, flip_arg);
     if (patched != BbErr::Ok) {
@@ -518,8 +576,10 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffers(u32 count, u32* dcbs[], u32* 
     }
     Submit(count, const_cast<const u32* const*>(dcbs), dcb_sizes,
            const_cast<const u32* const*>(ccbs), ccb_sizes);
-    if (SubmitLockOnDecode()) {
+    if (SubmitLockOnDecode() && !flip_lock) {
         WaitAfterSubmit();
+    } else if (flip_lock) {
+        ++pacing.submits_this_frame;
     }
     return BbErr::Ok;
 }
@@ -540,8 +600,8 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
     if (SubmitLockOnDecode()) {
         // A frame without submissions waits here, as the lock made sceGnmSubmitDone wait.
         WaitPreviousFrame();
-        pacing.submits_this_frame = 0;
-        WatchOverlapLeak();
+        const u32 submits_in_frame = std::exchange(pacing.submits_this_frame, 0u);
+        WatchOverlapLeak(submits_in_frame);
         u64 frame;
         {
             std::scoped_lock pacing_lock{pacing.mutex};

@@ -24,6 +24,7 @@
 #include "imgui_impl_vulkan.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 // DejaVu Sans (Cyrillic), embedded (third_party/fonts, Bitstream Vera license).
 #ifdef _WIN32
@@ -1127,8 +1128,13 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     if (h.gnm_wait_ms >= 1.50f && h.b_busy_pct < 78.0f && h.gpu_present_ms < 0.50f) {
         h.bottleneck_kind = 4;
         h.bottleneck_ms = h.gnm_wait_ms;
-        h.bottleneck_ru = "Очередь CPU↔GPU (GnmWait -> V5.2)";
-        h.bottleneck_en = "CPU+GPU Serialized (GnmWait -> V5.2)";
+        if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
+            h.bottleneck_ru = "Хвост GPU / Flip Fence (Async V5.2a)";
+            h.bottleneck_en = "GPU Tail / Flip Fence (Async V5.2a)";
+        } else {
+            h.bottleneck_ru = "Очередь CPU↔GPU (GnmWait -> V5.2)";
+            h.bottleneck_en = "CPU+GPU Serialized (GnmWait -> V5.2)";
+        }
     } else if (h.gpu_present_ms >= 0.50f && gpu_sync_ms >= stage_b_work_ms) {
         h.bottleneck_kind = 0;
         h.bottleneck_ms = gpu_sync_ms;
@@ -1266,8 +1272,8 @@ void FpsCounter() {
                            now_fps, now_ms, upscaler_str);
     }
     ImGui::TextDisabled(
-        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V5.1%s",
-                             "Сцена: %dx%d -> %dx%d | RHI V1-V5.1%s"),
+        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V5.2a%s",
+                             "Сцена: %dx%d -> %dx%d | RHI V1-V5.2a%s"),
         rw, rh, out.width, out.height,
         BbSettings::ResolutionNeedsRestart()
             ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
@@ -1282,7 +1288,7 @@ void FpsCounter() {
                           ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V5.1)", "Этап (V1-V5.1)"));
+        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V5.2a)", "Этап (V1-V5.2a)"));
         ImGui::TableSetColumnIndex(1);
         ImGui::TextDisabled("%s", BbSettings::MenuText("   Now", "Сейчас"));
         ImGui::TableSetColumnIndex(2);

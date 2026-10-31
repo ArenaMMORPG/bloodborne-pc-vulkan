@@ -1,6 +1,11 @@
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
+#include <mutex>
+#include <pthread.h>
+#include <vector>
+
+#include "gx_direct_vulkan.h"
 
 // ============================================================================
 // Module 05: Yebis 2 PostFX Middleware Core (05_Yebis2_PostFX)
@@ -1063,20 +1068,23 @@ void sub_bb5fe0(void* pCallback) {
 }
 
 // 0xbb5f10 | 194 B | ppfxPlatformContextGnmShim::searchGnmTextureRegistry (and unregister)
-int32_t sub_bb5f10(void* this_ctx, void* pGnmTexture) {
+namespace {
+
+int32_t sub_bb5f10_impl(void* this_ctx, void* pGnmTexture) {
     uint8_t* self = reinterpret_cast<uint8_t*>(this_ctx);
     uint8_t* head = *reinterpret_cast<uint8_t**>(self + 0x20);
     uint8_t* cur = *reinterpret_cast<uint8_t**>(head + 0x08);
     uint8_t* candidate = head;
+    const uintptr_t key = reinterpret_cast<uintptr_t>(pGnmTexture);
     while (cur[0x19] == 0) {
-        if (*reinterpret_cast<void**>(cur + 0x20) < pGnmTexture) {
+        if (*reinterpret_cast<uintptr_t*>(cur + 0x20) < key) {
             cur = *reinterpret_cast<uint8_t**>(cur + 0x10);
         } else {
             candidate = cur;
             cur = *reinterpret_cast<uint8_t**>(cur + 0x00);
         }
     }
-    if (candidate == head || pGnmTexture < *reinterpret_cast<void**>(candidate + 0x20)) {
+    if (candidate == head || key < *reinterpret_cast<uintptr_t*>(candidate + 0x20)) {
         return static_cast<int32_t>(0x80004005u);
     }
     void* pInternalTex = *reinterpret_cast<void**>(candidate + 0x38);
@@ -1088,27 +1096,28 @@ int32_t sub_bb5f10(void* this_ctx, void* pGnmTexture) {
             reinterpret_cast<const char*>(GX_VMA(0x47fe648ULL)));
     }
     int32_t hr = sub_bf0790(g_pSinglePostEffect(), pInternalTex);
+    gx_direct_vk::NoteReleaseCheck(static_cast<uint32_t>(hr));
     if (hr < 0) {
         return hr;
     }
     return sub_2610840(self + 0x18, pGnmTexture);
 }
 
-// 0xbb5e40 | 194 B | ppfxPlatformContextGnmShim::searchGnmRenderTargetRegistry (and unregister)
-int32_t sub_bb5e40(void* this_ctx, void* pGnmRenderTarget) {
+int32_t sub_bb5e40_impl(void* this_ctx, void* pGnmRenderTarget) {
     uint8_t* self = reinterpret_cast<uint8_t*>(this_ctx);
     uint8_t* head = *reinterpret_cast<uint8_t**>(self + 0x38);
     uint8_t* cur = *reinterpret_cast<uint8_t**>(head + 0x08);
     uint8_t* candidate = head;
+    const uintptr_t key = reinterpret_cast<uintptr_t>(pGnmRenderTarget);
     while (cur[0x19] == 0) {
-        if (*reinterpret_cast<void**>(cur + 0x20) < pGnmRenderTarget) {
+        if (*reinterpret_cast<uintptr_t*>(cur + 0x20) < key) {
             cur = *reinterpret_cast<uint8_t**>(cur + 0x10);
         } else {
             candidate = cur;
             cur = *reinterpret_cast<uint8_t**>(cur + 0x00);
         }
     }
-    if (candidate == head || pGnmRenderTarget < *reinterpret_cast<void**>(candidate + 0x20)) {
+    if (candidate == head || key < *reinterpret_cast<uintptr_t*>(candidate + 0x20)) {
         return static_cast<int32_t>(0x80004005u);
     }
     void* pInternalRt = *reinterpret_cast<void**>(candidate + 0x38);
@@ -1124,6 +1133,99 @@ int32_t sub_bb5e40(void* this_ctx, void* pGnmRenderTarget) {
         return hr;
     }
     return sub_2610760(self + 0x18, pGnmRenderTarget);
+}
+
+struct PendingYebisUnreg {
+    bool is_rt;
+    void* ctx;
+    void* resource;
+};
+
+struct YebisRegistrySync {
+    std::mutex mtx;
+    bool scene_active = false;
+    pthread_t owner_thread{};
+    std::vector<PendingYebisUnreg> pending;
+
+    bool IsInBeginEnd() const noexcept {
+        const void* post_fx = g_pSinglePostEffect();
+        return post_fx != nullptr && *static_cast<const uint8_t*>(post_fx) != 0u;
+    }
+
+    void DrainLocked() {
+        if (pending.empty() || IsInBeginEnd()) {
+            return;
+        }
+        std::vector<PendingYebisUnreg> batch;
+        batch.swap(pending);
+        for (const auto& item : batch) {
+            if (IsInBeginEnd()) {
+                pending.push_back(item);
+                continue;
+            }
+            if (item.is_rt) {
+                (void)sub_bb5e40_impl(item.ctx, item.resource);
+            } else {
+                (void)sub_bb5f10_impl(item.ctx, item.resource);
+            }
+        }
+    }
+};
+
+YebisRegistrySync g_yebis_reg_sync;
+
+} // namespace
+
+extern "C" void bb_direct_vk_yebis_scene_enter() noexcept {
+    std::scoped_lock lk{g_yebis_reg_sync.mtx};
+    g_yebis_reg_sync.scene_active = true;
+    g_yebis_reg_sync.owner_thread = pthread_self();
+}
+
+extern "C" void bb_direct_vk_yebis_scene_leave() noexcept {
+    std::scoped_lock lk{g_yebis_reg_sync.mtx};
+    g_yebis_reg_sync.DrainLocked();
+    g_yebis_reg_sync.scene_active = false;
+    g_yebis_reg_sync.owner_thread = pthread_t{};
+}
+
+int32_t sub_bb5f10(void* this_ctx, void* pGnmTexture) {
+    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
+        return sub_bb5f10_impl(this_ctx, pGnmTexture);
+    }
+    std::scoped_lock lk{g_yebis_reg_sync.mtx};
+    const bool other_thread_in_scene =
+        g_yebis_reg_sync.scene_active &&
+        !pthread_equal(pthread_self(), g_yebis_reg_sync.owner_thread);
+    if (other_thread_in_scene || g_yebis_reg_sync.IsInBeginEnd()) {
+        if (g_yebis_reg_sync.pending.capacity() < 256) {
+            g_yebis_reg_sync.pending.reserve(256);
+        }
+        g_yebis_reg_sync.pending.push_back({false, this_ctx, pGnmTexture});
+        return 0;
+    }
+    g_yebis_reg_sync.DrainLocked();
+    return sub_bb5f10_impl(this_ctx, pGnmTexture);
+}
+
+// 0xbb5e40 | 194 B | ppfxPlatformContextGnmShim::searchGnmRenderTargetRegistry (and unregister)
+int32_t sub_bb5e40(void* this_ctx, void* pGnmRenderTarget) {
+    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
+        return sub_bb5e40_impl(this_ctx, pGnmRenderTarget);
+    }
+    std::scoped_lock lk{g_yebis_reg_sync.mtx};
+    const bool other_thread_in_scene =
+        g_yebis_reg_sync.scene_active &&
+        !pthread_equal(pthread_self(), g_yebis_reg_sync.owner_thread);
+    if (other_thread_in_scene || g_yebis_reg_sync.IsInBeginEnd()) {
+        if (g_yebis_reg_sync.pending.capacity() < 256) {
+            g_yebis_reg_sync.pending.reserve(256);
+        }
+        g_yebis_reg_sync.pending.push_back({true, this_ctx, pGnmRenderTarget});
+        return 0;
+    }
+    g_yebis_reg_sync.DrainLocked();
+    return sub_bb5e40_impl(this_ctx, pGnmRenderTarget);
 }
 
 // 0xbb5c90 | 422 B | IPfxContext_Gnm::SetEffectMaskAlphaSource
@@ -1806,6 +1908,11 @@ uint64_t sub_bb4a90(void* /*this_ctx*/, uint64_t a2, uint64_t a3, uint64_t a4, u
 
 // 0xbb48d0 | 436 B | IPfxContext_Gnm::~IPfxContext_Gnm
 void sub_bb48d0(void* this_ctx) {
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        std::erase_if(g_yebis_reg_sync.pending,
+                      [this_ctx](const PendingYebisUnreg& e) { return e.ctx == this_ctx; });
+    }
     uint8_t* self = reinterpret_cast<uint8_t*>(this_ctx);
     *reinterpret_cast<uint64_t*>(self + 0x00) = GX_VMA(0x52b3580ULL);
 
