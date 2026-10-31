@@ -1266,8 +1266,8 @@ void FpsCounter() {
                            now_fps, now_ms, upscaler_str);
     }
     ImGui::TextDisabled(
-        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V4.2%s",
-                             "Сцена: %dx%d -> %dx%d | RHI V1-V4.2%s"),
+        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V5.1%s",
+                             "Сцена: %dx%d -> %dx%d | RHI V1-V5.1%s"),
         rw, rh, out.width, out.height,
         BbSettings::ResolutionNeedsRestart()
             ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
@@ -1282,7 +1282,7 @@ void FpsCounter() {
                           ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V4.2)", "Этап (V1-V4.2)"));
+        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V5.1)", "Этап (V1-V5.1)"));
         ImGui::TableSetColumnIndex(1);
         ImGui::TextDisabled("%s", BbSettings::MenuText("   Now", "Сейчас"));
         ImGui::TableSetColumnIndex(2);

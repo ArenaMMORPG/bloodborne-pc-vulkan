@@ -10,6 +10,8 @@
 #include <cstring>
 #include <cwchar>
 
+#include "gx_direct_vulkan.h"
+
 namespace GX {
 
 // ============================================================================
@@ -2557,7 +2559,7 @@ void GParamManager_UpdateAndStepInterpolation(GParamManager* pThis, float deltaT
         }
     }
 
-    if (pThis->m_bEnableMultiThread128) {
+    if (pThis->m_bEnableMultiThread128 || gx_direct_vk::IntelTonemapFixEnabled()) {
         DLAllocator* pAlloc = pThis->m_pAllocator00;
         uint8_t allocCaps[0x20];
         pAlloc->m_pVTable->GetMemoryCapabilities(allocCaps, pAlloc, 0);

@@ -447,6 +447,10 @@ CGGpuBlockNode* CGGpuFreeListAllocatorGnm_DeferFreeOrChainB(
 // reclaims and coalesces all blocks whose GPU EoP fence has reached `4`, and
 // pushes still-in-flight blocks back onto the lock-free queues.
 void CGGpuFreeListAllocatorGnm_ReclaimCompletedDeferredFrees(uint8_t* self, uint8_t** ctxHandle) {
+    gx_direct_vk::NoteGpuAllocator(
+        self,
+        *reinterpret_cast<const uint64_t*>(self + 0xc8),
+        *reinterpret_cast<const uint64_t*>(self + 0xd0));
     IMutex* mutex = reinterpret_cast<IMutex*>(self + 0xd8);
     mutex->vtable->lock(mutex, 0xFFFFFFFFu);
 

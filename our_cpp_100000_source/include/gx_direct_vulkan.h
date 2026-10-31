@@ -57,6 +57,15 @@ __attribute__((weak)) void bb_direct_vk_register_shader_binary(const void* gpu_u
                                                                uint32_t shader_type) noexcept;
 __attribute__((weak)) void bb_direct_vk_retire_shader_range(const void* gpu_addr,
                                                             uint64_t byte_size) noexcept;
+
+// V5.1: Native C++20 PC PostFX, Resolution, Heap & Hardware Fix Controls
+__attribute__((weak)) int bb_direct_vk_is_effect_enabled(uint32_t effect_index) noexcept;
+__attribute__((weak)) uint32_t bb_direct_vk_gx_command_heap_bytes() noexcept;
+__attribute__((weak)) int bb_direct_vk_intel_tonemap_fix() noexcept;
+__attribute__((weak)) int bb_direct_vk_light_grid_override(uint32_t* out_w, uint32_t* out_h) noexcept;
+__attribute__((weak)) void bb_direct_vk_note_gpu_allocator(const void* alloc,
+                                                           uint64_t live_ranges,
+                                                           uint64_t live_bytes) noexcept;
 }
 
 namespace gx_direct_vk {
@@ -351,6 +360,77 @@ inline void RetireDirectShaderRange(const void* gpu_addr, uint64_t byte_size) no
         return;
     }
     bb_direct_vk_retire_shader_range(gpu_addr, byte_size);
+}
+
+inline bool EnabledV5() noexcept {
+    return (ActiveMask() & kModuleV5_NativePcFx) != 0u;
+}
+
+inline constexpr uint32_t kV5Sub_NativePostFx        = 1u << 0; // V5.1: Live C++20 PostFX toggles (CA/DoF/Bloom in 0x229e990 & 0x21d5f80, zero binary patches)
+inline constexpr uint32_t kV5Sub_NativeHeapsAndFixes = 1u << 1; // V5.1: Native 1 MiB GX command heaps, Intel Tonemap Fix, Light Grid override & GPU heap telemetry
+
+// Effect indices matching BbSettings::Effects in gpu/shim/bbport_settings.h
+inline constexpr uint32_t kEffectChromaticAberration = 0u;
+inline constexpr uint32_t kEffectDof                 = 1u;
+inline constexpr uint32_t kEffectMotionBlur          = 2u;
+inline constexpr uint32_t kEffectSsao                = 3u;
+inline constexpr uint32_t kEffectGameAa              = 4u;
+inline constexpr uint32_t kEffectDynamicShadows      = 5u;
+inline constexpr uint32_t kEffectReflections         = 6u;
+inline constexpr uint32_t kEffectBloom               = 7u;
+
+inline uint32_t ActiveV5SubMask() noexcept {
+    static const uint32_t sub = []() -> uint32_t {
+        const char* env_sub = std::getenv("BB_DIRECT_V5_MASK");
+        if (env_sub && env_sub[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_sub, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return sub;
+}
+
+inline bool EnabledV5Sub(uint32_t bit) noexcept {
+    return EnabledV5() && ((ActiveV5SubMask() & bit) != 0u);
+}
+
+inline bool IsEffectEnabled(uint32_t effect_index) noexcept {
+    if (!EnabledV5Sub(kV5Sub_NativePostFx) || !bb_direct_vk_is_effect_enabled) {
+        return true;
+    }
+    return bb_direct_vk_is_effect_enabled(effect_index) != 0;
+}
+
+inline uint32_t GxCommandHeapBytes() noexcept {
+    if (!EnabledV5Sub(kV5Sub_NativeHeapsAndFixes) || !bb_direct_vk_gx_command_heap_bytes) {
+        return 0x40000u; // Original PS4 256 KiB
+    }
+    const uint32_t bytes = bb_direct_vk_gx_command_heap_bytes();
+    return (bytes >= 0x40000u) ? bytes : 0x40000u;
+}
+
+inline bool IntelTonemapFixEnabled() noexcept {
+    if (!EnabledV5Sub(kV5Sub_NativeHeapsAndFixes) || !bb_direct_vk_intel_tonemap_fix) {
+        return false;
+    }
+    return bb_direct_vk_intel_tonemap_fix() != 0;
+}
+
+inline bool GetLightGridOverride(uint32_t* out_w, uint32_t* out_h) noexcept {
+    if (!EnabledV5Sub(kV5Sub_NativeHeapsAndFixes) || !bb_direct_vk_light_grid_override ||
+        !out_w || !out_h) {
+        return false;
+    }
+    return bb_direct_vk_light_grid_override(out_w, out_h) != 0;
+}
+
+inline void NoteGpuAllocator(const void* alloc,
+                             uint64_t live_ranges,
+                             uint64_t live_bytes) noexcept {
+    if (!EnabledV5Sub(kV5Sub_NativeHeapsAndFixes) || !bb_direct_vk_note_gpu_allocator || !alloc) {
+        return;
+    }
+    bb_direct_vk_note_gpu_allocator(alloc, live_ranges, live_bytes);
 }
 
 // Type-3 Op::Nop (0x10) host-stream tag recognized by BbCp::CommandProcessor -> Vulkan::Rasterizer

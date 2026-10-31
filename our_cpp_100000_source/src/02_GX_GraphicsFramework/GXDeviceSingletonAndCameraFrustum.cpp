@@ -14,6 +14,8 @@
 #include <math.h>
 #include <immintrin.h>
 
+#include "gx_direct_vulkan.h"
+
 namespace GX {
 
 // ============================================================================
@@ -2869,13 +2871,15 @@ bool GXDevice_CreateAndInitializeSingleton(uint8_t* pInitParams) {
     }
 
     const size_t kLinHeapSlots[2] = { 0x370u, 0x378u };
+    const uint32_t linHeapBytes = gx_direct_vk::GxCommandHeapBytes();
     for (size_t off : kLinHeapSlots) {
         uint8_t* pLinHeap = GXDevice_HeapAllocAligned(*ppMainHeap, 0x50u, 8u);
         if (pLinHeap != nullptr) {
             reinterpret_cast<void (*)(void*)>(GX_VMA(0xe45050ULL))(pLinHeap);
         }
         *reinterpret_cast<void**>(pDevice + off) = pLinHeap;
-        reinterpret_cast<void (*)(void*, void*, uint32_t)>(GX_VMA(0xe45200ULL))(pLinHeap, *ppMainHeap, 0x40000u);
+        reinterpret_cast<void (*)(void*, void*, uint32_t)>(GX_VMA(0xe45200ULL))(
+            pLinHeap, *ppMainHeap, linHeapBytes);
     }
 
     for (size_t idx = 0; idx < 2u; ++idx) {

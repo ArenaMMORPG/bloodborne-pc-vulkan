@@ -12,6 +12,8 @@
 #include <initializer_list>
 #include <immintrin.h>
 
+#include "gx_direct_vulkan.h"
+
 extern "C" {
 uint8_t* sub_2ba2b10();
 void sub_20b55b0(const char* file, uint32_t line, const char* fmt, ...);
@@ -574,9 +576,12 @@ void sub_22958d0(void* pSelf, void* pOwner) {
         *reinterpret_cast<uint32_t*>(pTex + 0x58) = 0;
     }
 
+    uint32_t lightGridW = 0x80u;
+    uint32_t lightGridH = 0x80u;
+    gx_direct_vk::GetLightGridOverride(&lightGridW, &lightGridH);
     *reinterpret_cast<uint64_t*>(selfBytes + 0x78a0) = 0;
-    *reinterpret_cast<uint32_t*>(selfBytes + 0x78a8) = 0x80;
-    *reinterpret_cast<uint32_t*>(selfBytes + 0x78ac) = 0x80;
+    *reinterpret_cast<uint32_t*>(selfBytes + 0x78a8) = lightGridW;
+    *reinterpret_cast<uint32_t*>(selfBytes + 0x78ac) = lightGridH;
     selfBytes[0x78b0] = 0;
     selfBytes[0x78b1] = 1;
     selfBytes[0x78b2] = 1;

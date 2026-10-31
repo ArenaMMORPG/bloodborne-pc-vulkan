@@ -8,6 +8,7 @@
 #include "bbport_fx_init_clear.h"
 #include "bbport_effect_flags.h"
 #include "platform/gnm/gnm.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 #include <algorithm>
 #include <array>
@@ -313,18 +314,22 @@ extern "C" int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
 
 void ApplyHotEffects(bool force, u64 fresh = 0) {
     auto& settings = BbSettings::Get();
-    for (auto& code : hot_code) {
-        if (!code.ready) {
-            continue;
+    // V5.1: Chromatic Aberration (0x229e990 + 0x21d5f80), DoF (0x21d5f80), and Bloom (0x21d5f80)
+    // read BbSettings::Get().effects[...] natively in C++20 without mid-function binary patching.
+    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {
+        for (auto& code : hot_code) {
+            if (!code.ready) {
+                continue;
+            }
+            const int want = settings.effects[code.effect].load(std::memory_order_relaxed) ? 1 : 0;
+            if (!force && effects_applied[code.effect].load() == want) {
+                continue;
+            }
+            effects_applied[code.effect].store(want);
+            const bool use_patch = (want != 0) == code.patch_when_on;
+            WriteHotCode(ImageBase + code.offset, use_patch ? code.patch.data() : code.original.data(), code.size,
+                         code.data);
         }
-        const int want = settings.effects[code.effect].load(std::memory_order_relaxed) ? 1 : 0;
-        if (!force && effects_applied[code.effect].load() == want) {
-            continue;
-        }
-        effects_applied[code.effect].store(want);
-        const bool use_patch = (want != 0) == code.patch_when_on;
-        WriteHotCode(ImageBase + code.offset, use_patch ? code.patch.data() : code.original.data(), code.size,
-                     code.data);
     }
     const std::size_t count = std::min(effects_object_count.load(std::memory_order_acquire), MaxEffectObjects);
     std::size_t live_objects = 0;
@@ -409,14 +414,16 @@ bool InstallHotEffects() {
     if (std::memcmp(reinterpret_cast<const void*>(address), tail.data(), tail.size())) {
         return false; // another game version, or the patches changed it
     }
-    // The code effects: the game's own bytes, taken before anything is written.
-    for (auto& code : hot_code) {
-        const u8* at = reinterpret_cast<const u8*>(ImageBase + code.offset);
-        if (std::memcmp(at, code.patch.data(), code.size) == 0) {
-            continue; // the startup patch is in (or the bytes are the same): left as it is
+    // The code effects: the game's own bytes, taken before anything is written (skipped under V5.1 native C++20 PostFX).
+    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {
+        for (auto& code : hot_code) {
+            const u8* at = reinterpret_cast<const u8*>(ImageBase + code.offset);
+            if (std::memcmp(at, code.patch.data(), code.size) == 0) {
+                continue; // the startup patch is in (or the bytes are the same): left as it is
+            }
+            std::memcpy(code.original.data(), at, code.size);
+            code.ready = true;
         }
-        std::memcpy(code.original.data(), at, code.size);
-        code.ready = true;
     }
     Emitter e;
     e.SaveVolatile();
@@ -1812,7 +1819,11 @@ void Install(RangeCallback on_gpu_range_allocated) {
     // BB_HEAP_HOOKS=0 (bisecting): the heap's ranges are not reported.
     const char* heap_env = std::getenv("BB_HEAP_HOOKS");
     const bool heap_hooks = memory_hooks && (!heap_env || heap_env[0] != '0');
-    if (memory_hooks && BbStats::enabled) {
+    const char* free_check_env = std::getenv("BB_FREE_CHECK");
+    const bool native_v5_heaps =
+        gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativeHeapsAndFixes) &&
+        !(free_check_env && free_check_env[0] == '1');
+    if (memory_hooks && BbStats::enabled && !native_v5_heaps) {
         Patch(ImageBase + CollectorEntry, CollectorEntryCode, sizeof(CollectorEntryCode));
     }
     int heap_sites = 0;
@@ -1852,13 +1863,19 @@ void Install(RangeCallback on_gpu_range_allocated) {
         std::printf("Guest hooks: job allocation failure probe %s\n",
                     InstallJobAllocationProbe() ? "on" : "not installed");
         std::printf("Guest hooks: render resource cache size fix %s\n",
-                    InstallResourceCacheSize() ? "on" : "not installed");
+                    gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativeHeapsAndFixes)
+                        ? "native C++20 (V5.1)"
+                        : (InstallResourceCacheSize() ? "on" : "not installed"));
         std::printf("Guest hooks: FX initialization context race fix %s\n",
                     InstallFxInitClear() ? "on" : "off (BB_FX_INIT_CLEAR=0 or unmatched code)");
         std::printf("Guest hooks: blur-kernel sample count clamp %s\n",
                     InstallKernelSampleClamp() ? "on" : "not installed");
         std::printf("Guest hooks: game effects switched live %s\n",
-                    InstallHotEffects() ? "on (no restart)" : "off (startup patches)");
+                    InstallHotEffects()
+                        ? (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)
+                               ? "on (native C++20 PostFX + FD4 options, V5.1)"
+                               : "on (no restart)")
+                        : "off (startup patches)");
         if (InstallFreeCameraProbe()) {
             std::printf("Guest hooks: free camera probe on (the mouse drives it)\n");
         }
@@ -1866,7 +1883,9 @@ void Install(RangeCallback on_gpu_range_allocated) {
         if (const char* env = std::getenv("BB_HUD_ANCHOR"); env && env[0] == '0') hud_anchor_on = false;
         const bool hud_hooks = InstallViewportHook() && InstallHudHook();
         std::printf("Guest hooks: GX command heap guard %s\n",
-                    InstallGxNodeGuard() ? "in (#162)" : "not installed (other code there)");
+                    gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativeHeapsAndFixes)
+                        ? "native C++20 (V5.1)"
+                        : (InstallGxNodeGuard() ? "in (#162)" : "not installed (other code there)"));
         std::printf("Guest hooks: the output's aspect ratio on the fly: the camera at %d of %zu places, "
                     "the HUD's markers at %d of %zu, its groups %s\n", aspect_sites, CameraParamStores.size(),
                     marker_places, MarkerSites.size(), hud_hooks ? "at the edges" : "in the middle (no hook)");

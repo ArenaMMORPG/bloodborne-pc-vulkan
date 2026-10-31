@@ -7,6 +7,8 @@
 // ============================================================================
 #include "bb_golden_engine.h"
 #include "bbport_guest_code_hooks.h"
+#include "bbport_settings.h"
+#include "bbport_toggles.h"
 #include "render/direct_shaders.h"
 
 #define GX_HOST_PROVIDES_CYG_PROFILE 1
@@ -18,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cpuid.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -145,6 +148,103 @@ void BbGoldenEngine_UpgradeResourceCache(void** io_cueHeap, std::uint32_t* io_cu
     std::printf("[bb_vulkan] Golden Engine C++20: upgraded GX resource cache to %u MiB at %p\n",
                 bytes >> 20, block);
 }
+
+// ============================================================================
+// Module V5.1: Native C++20 PC PostFX, Resolution/LightGrid & Heap Controls
+// ============================================================================
+int bb_direct_vk_is_effect_enabled(std::uint32_t effect_index) noexcept {
+    if (effect_index < static_cast<std::uint32_t>(BbSettings::EffectCount)) {
+        return BbSettings::Get().effects[effect_index].load(std::memory_order_relaxed) ? 1 : 0;
+    }
+    return 1;
+}
+
+std::uint32_t bb_direct_vk_gx_command_heap_bytes() noexcept {
+    static const std::uint32_t kHeapBytes = []() noexcept -> std::uint32_t {
+        if (const char* env_kb = std::getenv("BB_GX_COMMAND_HEAP_KB"); env_kb && env_kb[0] != '\0') {
+            const long kb = std::strtol(env_kb, nullptr, 0);
+            if (kb >= 256l && kb <= 16384l) {
+                return static_cast<std::uint32_t>(kb) * 1024u;
+            }
+        }
+        if (const char* env = std::getenv("BB_GX_COMMAND_HEAP"); env && env[0] == '0') {
+            return 0x40000u; // PS4 default 256 KiB
+        }
+        return 0x100000u; // PC native default 1 MiB (Larger GX Per-Frame Command Heap)
+    }();
+    return kHeapBytes;
+}
+
+int bb_direct_vk_intel_tonemap_fix() noexcept {
+    static const int kFix = []() noexcept -> int {
+        if (const char* env = std::getenv("BB_INTEL_TONEMAP_FIX"); env && env[0] != '\0') {
+            if (env[0] == '1') return 1;
+            if (env[0] == '0') return 0;
+        }
+        unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+        if (__get_cpuid(0, &eax, &ebx, &ecx, &edx)) {
+            // "GenuineIntel": EBX="Genu" (0x756e6547), EDX="ineI" (0x49656e69), ECX="ntel" (0x6c65746e)
+            if (ebx == 0x756e6547u && edx == 0x49656e69u && ecx == 0x6c65746eu) {
+                return 1;
+            }
+        }
+        return 0;
+    }();
+    return kFix;
+}
+
+int bb_direct_vk_light_grid_override(std::uint32_t* out_w, std::uint32_t* out_h) noexcept {
+    struct GridOverride {
+        int active;
+        std::uint32_t w;
+        std::uint32_t h;
+    };
+    static const GridOverride kGrid = []() noexcept -> GridOverride {
+        const char* env = std::getenv("BB_LIGHT_GRID_RES");
+        if (!env || env[0] == '\0' || std::strcmp(env, "0") == 0 || std::strcmp(env, "default") == 0) {
+            return {0, 0x80u, 0x80u};
+        }
+        if (std::strcmp(env, "deck") == 0)  return {1, 1280u, 800u};
+        if (std::strcmp(env, "1080p") == 0) return {1, 1920u, 1080u};
+        if (std::strcmp(env, "1440p") == 0) return {1, 2560u, 1440u};
+        if (std::strcmp(env, "4k") == 0 || std::strcmp(env, "2160p") == 0) return {1, 3840u, 2160u};
+        char* end = nullptr;
+        const unsigned long w = std::strtoul(env, &end, 0);
+        unsigned long h = w;
+        if (end && (*end == 'x' || *end == 'X')) {
+            h = std::strtoul(end + 1, nullptr, 0);
+        }
+        if (w < 16ul || h < 16ul) {
+            return {0, 0x80u, 0x80u};
+        }
+        return {1,
+                static_cast<std::uint32_t>(std::clamp(w, 16ul, 4096ul)),
+                static_cast<std::uint32_t>(std::clamp(h, 16ul, 4096ul))};
+    }();
+    if (!kGrid.active) {
+        return 0;
+    }
+    if (out_w) *out_w = kGrid.w;
+    if (out_h) *out_h = kGrid.h;
+    return 1;
+}
+
+void bb_direct_vk_note_gpu_allocator(
+    const void* alloc, std::uint64_t live_ranges, std::uint64_t live_bytes) noexcept {
+    if (!BbStats::enabled || !alloc) {
+        return;
+    }
+    const auto allocator = reinterpret_cast<std::uint64_t>(alloc);
+    for (std::size_t i = 0; i < BbStats::range_allocators.size(); ++i) {
+        std::uint64_t expected = 0;
+        if (BbStats::range_allocators[i].load(std::memory_order_relaxed) == allocator ||
+            BbStats::range_allocators[i].compare_exchange_strong(expected, allocator)) {
+            BbStats::range_live[i].store(live_ranges, std::memory_order_relaxed);
+            BbStats::range_bytes[i].store(live_bytes, std::memory_order_relaxed);
+            break;
+        }
+    }
+}
 } // extern "C"
 
 namespace GXGraphicsFramework {
@@ -267,13 +367,25 @@ bool ShouldInstallEntry(const GXDecompiledFunctionEntry& e, u64 size,
     if (IsUnsafeStubOrCaller(e.vma)) {
         return false;
     }
-    // Skip HLE/allocator/ribbon VMAs
-    if (e.vma == 0xbb5f10ULL || e.vma == 0x26aa860ULL || e.vma == 0x28ce7b0ULL || e.vma == 0x28ceec0ULL) {
+    // Skip HLE/allocator/ribbon VMAs (0x26aa860 runs natively in V5.1 unless BB_FREE_CHECK=1 hooks 0x26aa986)
+    static const bool kFreeCheckOn = [] {
+        const char* env = std::getenv("BB_FREE_CHECK");
+        return env && env[0] == '1';
+    }();
+    if (e.vma == 0xbb5f10ULL || e.vma == 0x28ce7b0ULL || e.vma == 0x28ceec0ULL) {
         return false;
     }
-    // Skip VMAs that host hooks patch mid-function or check return addresses inside
-    if (e.vma == 0x21d5f80ULL || e.vma == 0x22777d0ULL ||
-        e.vma == 0x229e990ULL || e.vma == 0x22c39f0ULL ||
+    if (e.vma == 0x26aa860ULL &&
+        (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativeHeapsAndFixes) || kFreeCheckOn)) {
+        return false;
+    }
+    // V5.1 unlocks Yebis PostFX director (0x21d5f80) and Deferred Lighting/CA pass (0x229e990) natively in C++20
+    if ((e.vma == 0x21d5f80ULL || e.vma == 0x229e990ULL) &&
+        !gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {
+        return false;
+    }
+    // Skip remaining VMAs that host hooks patch mid-function or check return addresses inside
+    if (e.vma == 0x22777d0ULL || e.vma == 0x22c39f0ULL ||
         e.vma == 0x22da690ULL || e.vma == 0x2313870ULL ||
         e.vma == 0x2315d40ULL) {
         return false;
@@ -401,12 +513,17 @@ void PatchImage(unsigned char* image, u64 size) {
                 (env_mods && env_mods[0]) ? env_mods : "all");
     Vulkan::DirectShaders::InitializeManifestLibrary();
     std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s, V2_DrawDispatch=%s, "
-                "V3_ResourceViews=%s, V4_NativeShadersAndPrewarmedPSO=%s)\n",
+                "V3_ResourceViews=%s, V4_NativeShadersAndPrewarmedPSO=%s, V5_NativePcControls=%s "
+                "[v5_mask=0x%02x, gx_cmd_heap=%uKiB, intel_tonemap=%s])\n",
                 gx_direct_vk::ActiveMask(),
                 gx_direct_vk::EnabledV1() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV2() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV3() ? "ON" : "OFF",
-                gx_direct_vk::EnabledV4() ? "ON" : "OFF");
+                gx_direct_vk::EnabledV4() ? "ON" : "OFF",
+                gx_direct_vk::EnabledV5() ? "ON" : "OFF",
+                gx_direct_vk::ActiveV5SubMask(),
+                bb_direct_vk_gx_command_heap_bytes() >> 10,
+                bb_direct_vk_intel_tonemap_fix() ? "ON" : "OFF");
     std::fflush(stdout);
 }
 

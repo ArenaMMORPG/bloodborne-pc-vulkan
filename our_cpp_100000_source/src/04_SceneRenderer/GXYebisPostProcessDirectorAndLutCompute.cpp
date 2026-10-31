@@ -1799,1153 +1799,1577 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
     auto* cmdCtx   = static_cast<uint8_t*>(renderCmdCtx);
     auto* param    = static_cast<uint8_t*>(filterParam);
 
-    const float f1       = BitsToFloat(0x3f800000); // 0x4929790: 1.0f
-    const float fPiDiv6  = BitsToFloat(0x3f060a92); // 0x4929798: pi/6
-    const float f1Div60  = BitsToFloat(0x3c888889); // 0x492979c: 1.0f/60.0f
-    const float fNegMax  = BitsToFloat(0xff7fffff); // 0x49297a0: -FLT_MAX
-    const float fPi      = BitsToFloat(0x40490fdb); // 0x49297a4: pi
-    const float f180     = BitsToFloat(0x43340000); // 0x49297a8: 180.0f
-    const float fDeg2Rad = BitsToFloat(0x3c8efa35); // 0x49297ac: pi/180
-    const float f0_3     = BitsToFloat(0x3e99999a); // 0x49297b0: 0.3f
-    const float f0_9995  = BitsToFloat(0x3f7fe143); // 0x49297b4: 0.99953097f
-    const float f0_001   = BitsToFloat(0x3a83126f); // 0x49297b8: 0.001f
-    const float f0_0001  = BitsToFloat(0x38d1b717); // 0x49297bc: 0.0001f
-    const float fNeg1    = BitsToFloat(0xbf800000); // 0x49297c0: -1.0f
-    const float f16      = BitsToFloat(0x41800000); // 0x49297c8: 16.0f
-    const float fNeg256  = BitsToFloat(0xc3800000); // 0x49297cc: -256.0f
-    const float f1e_7    = BitsToFloat(0x33d6bf95); // 0x49297d0: 1e-7f
-    const float fInv2047 = BitsToFloat(0x3a001002); // 0x49297d4: 1.0f/2047.0f
-
-    if (*reinterpret_cast<void**>(director + 0x2670) == nullptr) {
+    // 0x21d5fbb: early exit if filterParam->m_bEnable (+0x00) == 0
+    if (*reinterpret_cast<const int32_t*>(param + 0x000) == 0) {
         return;
     }
 
-    auto* gnmCtxPtr = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
+    const float f1       = BitsToFloat(0x3f800000u); // 0x4929794: 1.0f
+    const float fPiDiv6  = BitsToFloat(0x3f060a92u); // 0x4929798: pi/6
+    const float f1Div60  = BitsToFloat(0x3c888889u); // 0x492979c: 1.0f/60.0f
+    const float fNegMax  = BitsToFloat(0xff7fffffu); // 0x49297a0: -FLT_MAX
+    const float fPi      = BitsToFloat(0x40490fdbu); // 0x49297a4: pi
+    const float f180     = BitsToFloat(0x43340000u); // 0x49297a8: 180.0f
+    const float fDeg2Rad = BitsToFloat(0x3c8efa35u); // 0x49297ac: pi/180
+    const float f0_3     = BitsToFloat(0x3e99999au); // 0x49297b0: 0.3f
+    const float f0_9995  = BitsToFloat(0x3f7fe143u); // 0x49297b4: 0.99953097f
+    const float f0_001   = BitsToFloat(0x3a83126fu); // 0x49297b8: 0.001f
+    const float f0_0001  = BitsToFloat(0x38d1b717u); // 0x49297bc: 0.0001f
+    const float fNeg1    = BitsToFloat(0xbf800000u); // 0x49297c0: -1.0f
+    const float fNeg0    = BitsToFloat(0x80000000u); // 0x49297c4: -0.0f
+    const float f16      = BitsToFloat(0x41800000u); // 0x49297c8: 16.0f
+    const float fNeg256  = BitsToFloat(0xc3800000u); // 0x49297cc: -256.0f
+    const float f1e_7    = BitsToFloat(0x33d6bf95u); // 0x49297d0: 1e-7f
+    const float fInv2047 = BitsToFloat(0x3a001002u); // 0x49297d4: 1.0f/2047.0f
 
-    // ------------------------------------------------------------------------
-    // Part A: 2D-to-3D Color Grading LUT Compute Pass
-    //         ("LutCopy2DTo3DCs.cpo" / "LutBlend2DTo3DCs.cpo", dispatch 1x1x16)
-    // ------------------------------------------------------------------------
-    if (*reinterpret_cast<int32_t*>(param + 0x2b8) != 0 &&
-        *reinterpret_cast<int32_t*>(param + 0x2b4) != 0 &&
-        param[0x2cc] != 0 &&
-        *reinterpret_cast<void**>(director + 0x2198) != nullptr) {
+    void* const savedPpfxCtx = *reinterpret_cast<void**>(director + 0x2670);   // 0xb0(%rsp)
+    auto* const resBank      = *reinterpret_cast<uint8_t**>(director + 0x010); // 0x140(%rsp)
+    auto*       devCtx       = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);   // %r12
+    uint8_t* const globalParam = g_GlobalYebisFilterParam_55406e0;             // 0x55406e0
 
-        void* uavLut3d = nullptr;
-        auto* lut3dObj = *reinterpret_cast<uint8_t**>(director + 0x2180);
-        if (lut3dObj != nullptr) {
-            uavLut3d = *reinterpret_cast<void**>(lut3dObj + 0x40);
+    auto callTexGetSrv18 = [](void* texObj) -> void* {
+        auto* vt = *reinterpret_cast<uint8_t**>(texObj);
+        auto fn  = *reinterpret_cast<void* (**)(void*)>(vt + 0x18);
+        return fn(texObj);
+    };
+    auto callTexGetWidth48 = [](void* texObj, int32_t mip) -> uint32_t {
+        auto* vt = *reinterpret_cast<uint8_t**>(texObj);
+        auto fn  = *reinterpret_cast<uint32_t (**)(void*, int32_t)>(vt + 0x48);
+        return fn(texObj, mip);
+    };
+    auto callTexGetHeight50 = [](void* texObj, int32_t mip) -> uint32_t {
+        auto* vt = *reinterpret_cast<uint8_t**>(texObj);
+        auto fn  = *reinterpret_cast<uint32_t (**)(void*, int32_t)>(vt + 0x50);
+        return fn(texObj, mip);
+    };
+
+    // ========================================================================
+    // Part A (0x21d5fe2..0x21d666f): 2D-to-3D Color Grading LUT Compute Pass
+    // ========================================================================
+    if (*reinterpret_cast<const int32_t*>(globalParam + 0x2b8) != 0) {
+        void* texA = *reinterpret_cast<void**>(param + 0x358);
+        void* texB = *reinterpret_cast<void**>(param + 0x360);
+        void* srv0 = nullptr;
+        uint32_t texW = 0x10u;
+        uint32_t texH = 0x100u;
+        if (texA != nullptr) {
+            texW = callTexGetWidth48(texA, 0);
+            texH = callTexGetHeight50(texA, 0);
+            srv0 = callTexGetSrv18(texA);
+        }
+        void* srv1 = (texB != nullptr) ? callTexGetSrv18(texB) : nullptr;
+        if (srv0 == nullptr && srv1 == nullptr) {
+            srv1 = *reinterpret_cast<void**>(director + 0x068);
+            srv0 = srv1;
+        } else if (srv1 == nullptr) {
+            srv1 = (texA != nullptr) ? callTexGetSrv18(texA)
+                                     : *reinterpret_cast<void**>(director + 0x068);
+        } else if (srv0 == nullptr) {
+            srv0 = (texB != nullptr) ? callTexGetSrv18(texB)
+                                     : *reinterpret_cast<void**>(director + 0x068);
         }
 
-        auto* stageBinder = gnmCtxPtr + 0xb730;
-        sub_2168a20(gnmCtxPtr, stageBinder, uavLut3d, 0, 0, nullptr, 0, 0);
+        if (director[0x21a9] != 0 || srv0 == nullptr || texW != 0x10u || texH != 0x100u) {
+            srv0 = *reinterpret_cast<void**>(director + 0x068);
+        }
 
-        auto bindSrvSlot = [&](int32_t slot, void* srvDesc) {
-            auto* sb = gnmCtxPtr + 0xb730;
-            int64_t baseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b38)) * 0x5c8;
-            int64_t slotOff = baseOff + static_cast<int64_t>(slot) * 0x10;
-            *reinterpret_cast<void**>(sb + slotOff + 0x3660) = srvDesc;
-            *reinterpret_cast<int32_t*>(sb + slotOff + 0x3668) = -1;
-            uint32_t bit = 1u << (slot & 31);
-            *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3b20) |= bit;
-            *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x20u;
-        };
+        if (srv0 != nullptr) {
+            *reinterpret_cast<uint32_t*>(director + 0x078) = 0x10u;
+            *reinterpret_cast<uint32_t*>(director + 0x07c) = 0x100u;
+            *reinterpret_cast<uint32_t*>(director + 0x080) = 0x100u;
+            *reinterpret_cast<uint32_t*>(director + 0x084) = 0x10u;
 
-        if (param[0x2cd] == 0) {
-            // Single 2D LUT copy -> 3D LUT
-            void* srvA = nullptr;
-            auto* texObjA = *reinterpret_cast<uint8_t**>(director + 0x2188);
-            if (texObjA != nullptr) {
-                srvA = *reinterpret_cast<void**>(texObjA + 0x30);
+            const float blend0 = *reinterpret_cast<const float*>(globalParam + 0x2c8);
+            *reinterpret_cast<float*>(director + 0x0a8) = blend0;
+            *reinterpret_cast<float*>(director + 0x0ac) = *reinterpret_cast<const float*>(globalParam + 0x2c8);
+            *reinterpret_cast<float*>(director + 0x0b0) = *reinterpret_cast<const float*>(globalParam + 0x2c8);
+            *reinterpret_cast<float*>(director + 0x0b4) = *reinterpret_cast<const float*>(globalParam + 0x2c8);
+
+            auto* uav3d = *reinterpret_cast<uint8_t**>(director + 0x070);
+            auto* gnm   = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            sub_2168a20(gnm, gnm + 0xb730, uav3d, 0, 0, director + 0x078, 0, 0);
+
+            *reinterpret_cast<void**>(devCtx + 0x1508)    = uav3d;
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1578) = 0u;
+            const uint32_t prevUavEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x157c);
+            *reinterpret_cast<uint32_t*>(devCtx + 0x157c) = (prevUavEnd > 1u) ? prevUavEnd : 1u;
+
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x10000ULL;
+            if (uav3d != nullptr) {
+                constexpr uint32_t kUavMask0 = 0x200001u;
+                auto* pState = reinterpret_cast<uint32_t*>(uav3d + 0x44);
+                if ((*pState & kUavMask0) != kUavMask0) {
+                    __atomic_fetch_or(pState, kUavMask0, __ATOMIC_SEQ_CST);
+                }
             }
-            bindSrvSlot(0, srvA);
+            *reinterpret_cast<void**>(gnm + 0xda20) = uav3d;
 
-            void* shdrCont = *reinterpret_cast<void**>(director + 0x2198);
+            void* lutCb = *reinterpret_cast<void**>(director + 0x038);
+
+            // Clear graphics shaders VS/PS/GS/HS/DS on devCtx and gnm
+            *reinterpret_cast<uint64_t*>(devCtx + 0x0780) = 0;
+            *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc1b8) = 0;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x0a68) = 0;
+            *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd598) = 0;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x0d50) = 0;
+            *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd0a0) = 0;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1320) = 0;
+            *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc6b0) = 0;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1038) = 0;
+            *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xcba8) = 0;
+
+            auto* devSingleton = static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8);
+            auto* statePool    = *reinterpret_cast<uint8_t**>(devSingleton + 0x250);
+            void* linSampler   = *reinterpret_cast<void**>(statePool + 0x2d0);
+
+            *reinterpret_cast<void**>(devCtx + 0x1580) = linSampler;
+            *reinterpret_cast<void**>(devCtx + 0x1588) = linSampler;
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1600) = 0u;
+            const uint32_t prevSampEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1604);
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1604) = (prevSampEnd > 2u) ? prevSampEnd : 2u;
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x3ULL;
+            *reinterpret_cast<void**>(gnm + 0xd5a0) = linSampler;
+            *reinterpret_cast<void**>(gnm + 0xd5a8) = linSampler;
+
             auto* csEntry = static_cast<uint8_t*>(
-                sub_2274e20(shdrCont, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b02ULL))));
-            void* csProg  = csEntry ? *reinterpret_cast<void**>(csEntry + 0x48) : nullptr;
-            auto* sb = gnmCtxPtr + 0xb730;
-            if (*reinterpret_cast<void**>(sb + 0x3578) != csProg) {
-                *reinterpret_cast<void**>(sb + 0x3578) = csProg;
-                *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x2000u;
+                sub_2274e20(resBank + 0x9a8, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b02ULL))));
+            const float blendCheck = *reinterpret_cast<const float*>(globalParam + 0x2c8);
+            if (blendCheck > 0.0f && f1 > blendCheck) {
+                csEntry = static_cast<uint8_t*>(
+                    sub_2274e20(resBank + 0x9a8, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b2aULL))));
             }
-        } else {
-            // Blended 2D LUT A + B -> 3D LUT
-            void* srvA = nullptr;
-            auto* texObjA = *reinterpret_cast<uint8_t**>(director + 0x2188);
-            if (texObjA != nullptr) {
-                srvA = *reinterpret_cast<void**>(texObjA + 0x30);
+
+            if (csEntry != nullptr) {
+                void* csObj = *reinterpret_cast<void**>(csEntry + 0x010);
+                *reinterpret_cast<void**>(devCtx + 0x1608) = csObj;
+                *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = csObj;
+
+                *reinterpret_cast<void**>(devCtx + 0x1610)    = lutCb;
+                *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0xffffffffu;
+                gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+                *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+                *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0xffffffffu;
+                *reinterpret_cast<void**>(gnm + 0xda98)     = lutCb;
+
+                *reinterpret_cast<void**>(devCtx + 0x1328)    = srv0;
+                *reinterpret_cast<void**>(devCtx + 0x1330)    = srv1;
+                *reinterpret_cast<uint32_t*>(devCtx + 0x1500) = 0u;
+                const uint32_t prevSrvEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1504);
+                *reinterpret_cast<uint32_t*>(devCtx + 0x1504) = (prevSrvEnd > 2u) ? prevSrvEnd : 2u;
+                gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+                *reinterpret_cast<uint64_t*>(gnm + 0x1fa8) |= 0x3ULL;
+                *reinterpret_cast<void**>(gnm + 0xd620) = srv0;
+                *reinterpret_cast<void**>(gnm + 0xd628) = srv1;
+
+                sub_2bbe688(devCtx + 0x1670, 0, 0xb8);
+                *reinterpret_cast<uint64_t*>(devCtx + 0x1680) = 0xeULL;
+                *reinterpret_cast<uint64_t*>(devCtx + 0x1688) = 0x8ULL;
+
+                gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+                sub_26af700(gnm + 0x010);
+                sub_26cbe50(gnm + 0x050, gnm, gnm + 0xb730);
+                if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
+                    gx_direct_vk::EmitDispatchDirect(gnm + 0x010, 1u, 1u, 16u);
+                } else {
+                    sub_1074c50(gnm + 0x010, 1u, 1u, 16u);
+                }
+                sub_26ccf20(gnm + 0x050, gnm, gnm + 0xb730);
+                sub_26af700(gnm + 0x010);
             }
-            bindSrvSlot(0, srvA);
 
-            void* srvB = nullptr;
-            auto* texObjB = *reinterpret_cast<uint8_t**>(director + 0x2190);
-            if (texObjB != nullptr) {
-                srvB = *reinterpret_cast<void**>(texObjB + 0x30);
-            }
-            bindSrvSlot(1, srvB);
+            // Unbind CS CB0, CS SRV0..1, CS shader, and flush dirty state
+            *reinterpret_cast<void**>(devCtx + 0x1610)    = nullptr;
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0xffffffffu;
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+            *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0xffffffffu;
+            *reinterpret_cast<void**>(gnm + 0xda98)     = nullptr;
 
-            // Allocate 16-byte constant buffer for blend weight (param + 0x2c8)
-            void* cbGpuAddr = nullptr;
-            auto* cbAlloc = *reinterpret_cast<DLAllocator**>(gnmCtxPtr + 0x38);
-            if (cbAlloc && cbAlloc->vtable && cbAlloc->vtable->allocate_58) {
-                cbGpuAddr = cbAlloc->vtable->allocate_58(cbAlloc, 0x10, 0x10);
-            }
-            if (cbGpuAddr != nullptr) {
-                uint32_t blendBits = *reinterpret_cast<uint32_t*>(param + 0x2c8);
-                uint32_t cbData[4] = {blendBits, blendBits, blendBits, blendBits};
-                sub_2bbe578(cbGpuAddr, cbData, 0x10);
-            }
-            auto* sb = gnmCtxPtr + 0xb730;
-            int64_t baseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b38)) * 0x5c8;
-            *reinterpret_cast<void**>(sb + baseOff + 0x3a60) = cbGpuAddr;
-            *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3a68) = 0x10u;
-            *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3b2c) |= 1u;
-            *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x20u;
+            *reinterpret_cast<void**>(devCtx + 0x1328)    = nullptr;
+            *reinterpret_cast<void**>(devCtx + 0x1330)    = nullptr;
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1500) = 0u;
+            const uint32_t prevSrvEnd2 = *reinterpret_cast<const uint32_t*>(devCtx + 0x1504);
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1504) = (prevSrvEnd2 > 2u) ? prevSrvEnd2 : 2u;
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fa8) |= 0x3ULL;
+            *reinterpret_cast<void**>(gnm + 0xd628) = nullptr;
+            *reinterpret_cast<void**>(gnm + 0xd620) = nullptr;
 
-            void* shdrCont = *reinterpret_cast<void**>(director + 0x2198);
-            auto* csEntry = static_cast<uint8_t*>(
-                sub_2274e20(shdrCont, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b2aULL))));
-            void* csProg  = csEntry ? *reinterpret_cast<void**>(csEntry + 0x48) : nullptr;
-            sb = gnmCtxPtr + 0xb730;
-            if (*reinterpret_cast<void**>(sb + 0x3578) != csProg) {
-                *reinterpret_cast<void**>(sb + 0x3578) = csProg;
-                *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x2000u;
-            }
-        }
+            *reinterpret_cast<void**>(devCtx + 0x1608) = nullptr;
+            *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = nullptr;
 
-        // Dispatch Compute (1, 1, 16)
-        auto* dispHelper = gnmCtxPtr + 0x50;
-        auto* gfxc       = gnmCtxPtr + 0x10;
-        if (dispHelper[0x50] == 0) {
-            sub_26af700(gfxc);
-            dispHelper[0x50] = 1;
-        }
-        sub_26cbe50(dispHelper, gnmCtxPtr, gnmCtxPtr + 0xb730);
-        if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
-            gx_direct_vk::EmitDispatchDirect(gnmCtxPtr + 0x10, 1u, 1u, 16u);
-        } else {
-            sub_1074c50(gnmCtxPtr + 0x10, 1u, 1u, 16u);
-        }
-        sub_26ccf20(dispHelper, gnmCtxPtr, gnmCtxPtr + 0xb730);
-
-        // Clear UAV slot 0
-        sub_2168a20(gnmCtxPtr, gnmCtxPtr + 0xb730, nullptr, 0, 0, nullptr, 0, 0);
-
-        // Clear SRV slot 0 (and slot 1 if blended)
-        bindSrvSlot(0, nullptr);
-        if (param[0x2cd] != 0) {
-            bindSrvSlot(1, nullptr);
+            sub_219fcf0(devCtx);
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Part B: Render Target Binding, Viewport Sync & Yebis2 Parameter Setup
-    // ------------------------------------------------------------------------
-    if (cmdCtx[0x208] != 0) {
-        sub_219fcf0(cmdCtx);
+    // ========================================================================
+    // Part B (0x21d666f..0x21d8093): Bind Yebis RT & Configure Yebis2 PPFX
+    // ========================================================================
+    {
+        auto* curDevCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_e46f40(curDevCtx + 0x1728, *reinterpret_cast<void**>(param + 0x390), 0, 1);
+        *reinterpret_cast<void**>(curDevCtx + 0x1ec0) = sub_e47840(curDevCtx + 0x1728);
+        sub_21a1a00(curDevCtx);
+
+        void* inColorSrv = *reinterpret_cast<void**>(param + 0x370);
+        *reinterpret_cast<void**>(devCtx + 0x0788)    = inColorSrv;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = 0u;
+        const uint32_t prevPsSrvEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (prevPsSrvEnd > 1u) ? prevPsSrvEnd : 1u;
+        auto* gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = inColorSrv;
+
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        alignas(32) uint8_t zeroClearDesc[0x48] = {};
+        sub_26d3070(gnm + 0xb558, gnm, zeroClearDesc);
+        sub_26b9850(gnm + 0xb478, gnm + 0x010);
+        sub_26cd190(gnm + 0x0050, gnm);
+        sub_26af700(gnm + 0x0010);
+        sub_26bba10(gnm + 0xb518);
+        sub_26d3300(gnm + 0xb528);
+        sub_26d2d20(gnm + 0xb558);
+        sub_2bbe688(gnm + 0xb730, 0, 0x23a8);
+
+        auto* outRtWrap = *reinterpret_cast<uint8_t**>(param + 0x390);
+        sub_108c520(g_ActiveYebisGpuCtx_56c3cb8, 0, outRtWrap + 0x010);
+
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        if (sub_26b9a50(gnm + 0xb478)) {
+            sub_26b9a40(gnm + 0xb478);
+        }
+        sub_26afa00(gnm + 0x010);
     }
-
-    auto* srcSurfWrap0 = *reinterpret_cast<uint8_t**>(param + 0x370);
-    void* rtDesc0 = srcSurfWrap0 ? *reinterpret_cast<void**>(srcSurfWrap0 + 0x20) : nullptr;
-    sub_e46f40(cmdCtx + 0x08, rtDesc0, 0, 0);
-    sub_e47290(cmdCtx + 0x08, 0);
-
-    auto* rtViewObj = static_cast<uint8_t*>(sub_e47840(cmdCtx + 0x08));
-    auto* rtTexObj  = *reinterpret_cast<DLRefCountedObj**>(rtViewObj + 0x08);
-    uint32_t rtW = rtTexObj->vtable->getWidth_48(rtTexObj, 0);
-    uint32_t rtH = rtTexObj->vtable->getHeight_50(rtTexObj, 0);
-
-    auto* vpState = reinterpret_cast<int32_t*>(cmdCtx + 0x168);
-    if (vpState[0] != 0 || vpState[1] != 0 ||
-        static_cast<uint32_t>(vpState[2]) != rtW ||
-        static_cast<uint32_t>(vpState[3]) != rtH ||
-        *reinterpret_cast<float*>(cmdCtx + 0x178) != 0.0f ||
-        *reinterpret_cast<float*>(cmdCtx + 0x17c) != f1) {
-        vpState[0] = 0;
-        vpState[1] = 0;
-        vpState[2] = static_cast<int32_t>(rtW);
-        vpState[3] = static_cast<int32_t>(rtH);
-        *reinterpret_cast<uint32_t*>(cmdCtx + 0x178) = 0;
-        *reinterpret_cast<float*>(cmdCtx + 0x17c)    = f1;
-        cmdCtx[0x209] = 1;
-    }
-
-    auto* scState = reinterpret_cast<int32_t*>(cmdCtx + 0x180);
-    if (scState[0] != 0 || scState[1] != 0 ||
-        static_cast<uint32_t>(scState[2]) != rtW ||
-        static_cast<uint32_t>(scState[3]) != rtH) {
-        scState[0] = 0;
-        scState[1] = 0;
-        scState[2] = static_cast<int32_t>(rtW);
-        scState[3] = static_cast<int32_t>(rtH);
-        cmdCtx[0x20a] = 1;
-    }
-
-    sub_21a1a00(cmdCtx);
-    sub_21a1c50(cmdCtx);
-
-    gnmCtxPtr = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-    auto* rtStateObj = gnmCtxPtr + 0xb558;
-    if (rtStateObj[0x74] != 0) {
-        uint8_t clearDesc[16] = {};
-        clearDesc[0] = 1;
-        sub_26d3070(rtStateObj, gnmCtxPtr, clearDesc);
-    }
-
-    auto* syncStateObj = gnmCtxPtr + 0xb478;
-    if (*reinterpret_cast<uint32_t*>(syncStateObj + 0x0c) != 0 ||
-        *reinterpret_cast<uint32_t*>(syncStateObj + 0x20) != 0) {
-        sub_26b9850(syncStateObj, gnmCtxPtr + 0x10);
-    }
-
-    auto* pipeStateObj = gnmCtxPtr + 0x50;
-    if (pipeStateObj[0x50] != 0) {
-        sub_26afa00(gnmCtxPtr + 0x10);
-        pipeStateObj[0x50] = 0;
-    }
-    sub_26cd190(pipeStateObj, gnmCtxPtr);
-
-    void* gfxc = gnmCtxPtr + 0x10;
-    uint64_t flipIdx = g_YebisBufferFlipIndex_56a6d20;
-    uint8_t* activeGpuCtx = g_YebisDoubleBufArea_56a6d20 + flipIdx * 0xe7b8 + 0x08;
-    g_ActiveYebisGpuCtx_56c3cb8  = activeGpuCtx;
-    g_ActiveYebisGfxc0_56c3cc0   = gfxc;
-    g_ActiveYebisGfxc1_56c3cc8   = gfxc;
-    uint64_t cmdBase = *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(gfxc) + 0x08);
-    g_ActiveYebisCmdBase0_56c3cd0 = cmdBase;
-    g_ActiveYebisCmdBase1_56c3cd8 = cmdBase;
-
-    sub_10946d0(activeGpuCtx);
-    sub_26bba10(gnmCtxPtr + 0xb518);
-    sub_26d3300(gnmCtxPtr + 0xb528);
-    sub_26d2d20(gnmCtxPtr + 0xb558);
-
-    auto* outRtWrap = *reinterpret_cast<uint8_t**>(param + 0x370);
-    auto* outRtDesc = *reinterpret_cast<uint8_t**>(outRtWrap + 0x20);
-    sub_108c520(g_ActiveYebisGpuCtx_56c3cb8, 0, outRtDesc + 0x10);
-
-    syncStateObj = gnmCtxPtr + 0xb478;
-    if (!sub_26b9a50(syncStateObj)) {
-        sub_26b9a40(syncStateObj);
-    }
-
-    auto* inColorWrap = *reinterpret_cast<uint8_t**>(param + 0x368);
-    auto* inColorTex  = *reinterpret_cast<DLRefCountedObj**>(inColorWrap + 0x10);
-    uint32_t inColorW = inColorTex->vtable->getWidth_48(inColorTex, 0);
-    uint32_t inColorH = inColorTex->vtable->getHeight_50(inColorTex, 0);
-    auto* inColorGnm  = *reinterpret_cast<uint8_t**>(inColorWrap + 0x48) + 0x10;
-    uint32_t inColorFmt = sub_1089960(inColorGnm);
-
-    auto* inDepthWrap = *reinterpret_cast<uint8_t**>(param + 0x378);
-    auto* inDepthTex  = *reinterpret_cast<DLRefCountedObj**>(inDepthWrap + 0x10);
-    uint32_t inDepthW = inDepthTex->vtable->getWidth_48(inDepthTex, 0);
-    uint32_t inDepthH = inDepthTex->vtable->getHeight_50(inDepthTex, 0);
-    auto* inDepthGnm  = *reinterpret_cast<uint8_t**>(inDepthWrap + 0x28) + 0x10;
-    uint32_t inDepthFmt = sub_1089960(inDepthGnm);
 
     void* ppfxCtx = *reinterpret_cast<void**>(director + 0x2670);
-    bool didYebisRender = false;
+    if (ppfxCtx != nullptr &&
+        *reinterpret_cast<const int32_t*>(param + 0x000) != 0 &&
+        director[0x020] == 0)
+    {
+        auto* const inDepthWrap = *reinterpret_cast<uint8_t**>(param + 0x380); // 0xa0(%rsp)
+        auto* const velWrap     = *reinterpret_cast<uint8_t**>(param + 0x388); // 0xa8(%rsp)
 
-    if (ppfxCtx != nullptr && *reinterpret_cast<int32_t*>(param + 0x000) != 0 && director[0x20] == 0) {
-        didYebisRender = true;
-        director[0x20] = 1;
-
+        director[0x020] = 1;
         sub_bb4d70(ppfxCtx, 0);
         sub_bb4de0(ppfxCtx, g_YebisBufferFlipIndex_56a6d20);
 
         auto* sceneView = *reinterpret_cast<uint8_t**>(cmdCtx + 0x210);
-        uint32_t viewMode = *reinterpret_cast<uint32_t*>(sceneView + 0x70);
+        const uint32_t viewMode = *reinterpret_cast<const uint32_t*>(sceneView + 0x070);
         if (viewMode >= 2u) {
             sub_bb26e0(ppfxCtx, 0);
             sceneView = *reinterpret_cast<uint8_t**>(cmdCtx + 0x210);
         }
 
-        uint32_t resetHistoryFlags = *reinterpret_cast<uint32_t*>(director + 0x271c);
-        *reinterpret_cast<uint32_t*>(director + 0x271c) = 0;
+        const uint32_t resetFlags = *reinterpret_cast<const uint32_t*>(director + 0x271c);
+        *reinterpret_cast<uint32_t*>(director + 0x271c) = 0u;
 
-        alignas(16) float prevViewMtx[16];
-        if ((resetHistoryFlags & 1u) != 0) {
-            std::memcpy(prevViewMtx, sceneView, 64);
+        __m128 curRow0 = _mm_loadu_ps(reinterpret_cast<const float*>(sceneView + 0x00));
+        __m128 curRow1 = _mm_loadu_ps(reinterpret_cast<const float*>(sceneView + 0x10));
+        __m128 curRow2 = _mm_loadu_ps(reinterpret_cast<const float*>(sceneView + 0x20));
+        __m128 curRow3 = _mm_loadu_ps(reinterpret_cast<const float*>(sceneView + 0x30));
+
+        const float* prevSrc1 = nullptr;
+        const float* prevSrc2 = nullptr;
+        const float* prevSrc3 = nullptr;
+        __m128 prevRow0;
+        if ((resetFlags & 1u) != 0u) {
+            prevRow0 = curRow0;
+            prevSrc1 = reinterpret_cast<const float*>(sceneView + 0x10);
+            prevSrc2 = reinterpret_cast<const float*>(sceneView + 0x20);
+            prevSrc3 = reinterpret_cast<const float*>(sceneView + 0x30);
         } else {
-            std::memcpy(prevViewMtx, param + 0x440, 64);
+            prevRow0 = _mm_loadu_ps(reinterpret_cast<const float*>(param + 0x440));
+            prevSrc1 = reinterpret_cast<const float*>(param + 0x450);
+            prevSrc2 = reinterpret_cast<const float*>(param + 0x460);
+            prevSrc3 = reinterpret_cast<const float*>(param + 0x470);
         }
 
+        __m128 prevRow1;
+        __m128 prevRow2;
+        __m128 prevRow3;
         if (g_DbgCameraBlurFlag_56c3d40) {
-            float s = sub_2bbe518(0, 0, fPiDiv6);
-            float c = sub_2bbe518(1, 0, fPiDiv6);
-            __m128 rotRow0 = _mm_setr_ps(c, 0.0f, -s, 0.0f);
-            __m128 rotRow1 = _mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f);
-            __m128 rotRow2 = _mm_setr_ps(s, 0.0f, c, 0.0f);
-            __m128 rotRow3 = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
-            for (int r = 0; r < 3; ++r) {
-                __m128 v = _mm_loadu_ps( reinterpret_cast<const float*>(sceneView) + r * 4 );
-                __m128 x = _mm_shuffle_ps(v, v, 0x00);
-                __m128 y = _mm_shuffle_ps(v, v, 0x55);
-                __m128 z = _mm_shuffle_ps(v, v, 0xAA);
-                __m128 w = _mm_shuffle_ps(v, v, 0xFF);
-                __m128 res = _mm_add_ps(
-                    _mm_add_ps(_mm_mul_ps(x, rotRow0), _mm_mul_ps(z, rotRow2)),
-                    _mm_add_ps(_mm_mul_ps(y, rotRow1), _mm_mul_ps(w, rotRow3)));
-                _mm_storeu_ps(prevViewMtx + r * 4, res);
-            }
-            std::memcpy(prevViewMtx + 12, sceneView + 0x30, 16);
+            const float sinA = sub_2bbe518(0, 0, fPiDiv6);
+            const float cosA = sub_2bbe518(1, 0, fPiDiv6);
+            const __m128 vZero  = _mm_setzero_ps();
+            const __m128 vSin   = _mm_move_ss(vZero, _mm_set_ss(sinA));
+            const __m128 vCos   = _mm_move_ss(vZero, _mm_set_ss(cosA));
+            const __m128 rotZ   = _mm_shuffle_ps(vSin, vCos, 0xCC); // [sin, 0, cos, 0]
+            const __m128 negX   = _mm_setr_ps(-1.0f, 1.0f, 1.0f, 1.0f); // 0x4920da0
+            const __m128 rotX   = _mm_castsi128_ps(
+                _mm_shuffle_epi32(_mm_castps_si128(_mm_mul_ps(rotZ, negX)), 0xC6)); // [cos, 0, -sin, 0]
+            const __m128 unitY  = _mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f); // 0x4920db0
+            const __m128 unitW  = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f); // 0x4920dc0
+
+            auto rotRowY = [&](__m128 r) noexcept -> __m128 {
+                const __m128 rx = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(r), 0x00));
+                const __m128 ry = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(r), 0x55));
+                const __m128 rz = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(r), 0xAA));
+                const __m128 rw = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(r), 0xFF));
+                return _mm_add_ps(_mm_add_ps(_mm_mul_ps(rx, rotX), _mm_mul_ps(rz, rotZ)),
+                                  _mm_add_ps(_mm_mul_ps(ry, unitY), _mm_mul_ps(rw, unitW)));
+            };
+            prevRow0 = rotRowY(curRow0);
+            prevRow1 = rotRowY(curRow1);
+            prevRow2 = rotRowY(curRow2);
+            prevRow3 = curRow3;
+        } else {
+            prevRow3 = _mm_loadu_ps(prevSrc3);
+            prevRow2 = _mm_loadu_ps(prevSrc2);
+            prevRow1 = _mm_loadu_ps(prevSrc1);
         }
 
+        // 0x21d6acb..0x21d6b2a: Camera FOV / Near / Far / Aspect
         sub_bb2710(ppfxCtx,
-                   *reinterpret_cast<float*>(sceneView + 0x54),
-                   *reinterpret_cast<float*>(sceneView + 0x58),
-                   *reinterpret_cast<float*>(sceneView + 0x50),
+                   *reinterpret_cast<const float*>(sceneView + 0x054),
+                   *reinterpret_cast<const float*>(sceneView + 0x058),
+                   *reinterpret_cast<const float*>(sceneView + 0x050),
                    f1Div60,
-                   *reinterpret_cast<float*>(param + 0x094));
-
+                   *reinterpret_cast<const float*>(param + 0x094));
         sub_bb2720(ppfxCtx,
-                   *reinterpret_cast<float*>(sceneView + 0x54),
-                   *reinterpret_cast<float*>(sceneView + 0x58),
-                   *reinterpret_cast<float*>(sceneView + 0x50));
-
+                   *reinterpret_cast<const float*>(sceneView + 0x054),
+                   *reinterpret_cast<const float*>(sceneView + 0x058),
+                   *reinterpret_cast<const float*>(sceneView + 0x050));
         sub_bb2740(ppfxCtx,
-                   *reinterpret_cast<float*>(param + 0x494),
-                   *reinterpret_cast<float*>(param + 0x498),
-                   *reinterpret_cast<float*>(param + 0x490));
+                   *reinterpret_cast<const float*>(param + 0x494),
+                   *reinterpret_cast<const float*>(param + 0x498),
+                   *reinterpret_cast<const float*>(param + 0x490));
 
-        alignas(16) float invProjMtx[16];
-        InvertMatrix4x4Simd(invProjMtx, reinterpret_cast<const float*>(sceneView));
-        sub_bb27d0(ppfxCtx, invProjMtx, 1);
+        // 0x21d6b2f..0x21d6fa0: Inverse Current & Previous Projection Matrices
+        alignas(16) float invMtxBuf[16];
+        InvertMatrix4x4Simd(invMtxBuf, reinterpret_cast<const float*>(sceneView + 0x00));
+        sub_bb27d0(ppfxCtx, invMtxBuf, 1);
 
-        alignas(16) float invPrevProjMtx[16];
-        InvertMatrix4x4Simd(invPrevProjMtx, reinterpret_cast<const float*>(param + 0x440));
-        sub_bb27f0(ppfxCtx, invPrevProjMtx, 1);
+        InvertMatrix4x4Simd(invMtxBuf, reinterpret_cast<const float*>(param + 0x440));
+        sub_bb27f0(ppfxCtx, invMtxBuf, 1);
 
         sub_bb3fb0(ppfxCtx, director[0x2668]);
 
-        if (*reinterpret_cast<int32_t*>(param + 0x008) != 0) {
-            sub_bb5080(ppfxCtx, 0, inDepthGnm, inDepthW, inDepthH, inDepthFmt, f1, 0.0f, 1);
-        } else {
-            sub_bb5080(ppfxCtx, 0, nullptr, 0, 0, 0, f1, 0.0f, 1);
+        // 0x21d6fb5..0x21d7027: Depth Buffer Binding
+        if (inDepthWrap != nullptr) {
+            auto* inDepthGnm = *reinterpret_cast<uint8_t**>(inDepthWrap + 0x048) + 0x010;
+            const uint32_t depthW = callTexGetWidth48(inDepthWrap, 0);
+            const uint32_t depthH = callTexGetHeight50(inDepthWrap, 0);
+            const uint32_t depthFmt = sub_1089960(inDepthGnm);
+            sub_bb5080(ppfxCtx,
+                       0,
+                       inDepthGnm,
+                       depthW,
+                       depthH,
+                       depthFmt,
+                       f1,
+                       0.0f,
+                       *reinterpret_cast<const int32_t*>(param + 0x150));
         }
 
-        sub_bb5080(ppfxCtx, 1, inColorGnm, inColorW, inColorH, inColorFmt, f1, 0.0f, -1);
-
-        auto* outSurfTex = *reinterpret_cast<DLRefCountedObj**>(outRtWrap + 0x10);
-        uint32_t outW = outSurfTex->vtable->getWidth_48(outSurfTex, 0);
-        uint32_t outH = outSurfTex->vtable->getHeight_50(outSurfTex, 0);
-        auto* outSurfGnm = *reinterpret_cast<uint8_t**>(outRtWrap + 0x20) + 0x10;
-        uint32_t outFmt = sub_1089960(outSurfGnm);
-        sub_bb5080(ppfxCtx, 2, outSurfGnm, outW, outH, outFmt, f1, 0.0f, -1);
-
-        // Auto-exposure & ToneMap
-        uint8_t enableAutoExp = (*reinterpret_cast<int32_t*>(param + 0x050) != 0) ? 1u : 0u;
+        // 0x21d702a..0x21d7173: Auto-Exposure & Tone Mapping
+        const uint8_t enableAutoExp =
+            (viewMode <= 1u && *reinterpret_cast<const int32_t*>(param + 0x050) != 0) ? 1u : 0u;
         sub_bb31c0(ppfxCtx, 0, enableAutoExp);
 
-        float exposureVal = *reinterpret_cast<float*>(param + 0x098);
-        if (*reinterpret_cast<int32_t*>(param + 0x050) != 0) {
-            float adapted = sub_bb3250(ppfxCtx, 0);
-            exposureVal *= adapted;
+        float exposureVal = *reinterpret_cast<const float*>(param + 0x098);
+        if (*reinterpret_cast<const int32_t*>(param + 0x050) != 0 && viewMode <= 1u) {
+            exposureVal = sub_bb3250(ppfxCtx, 0);
+            *reinterpret_cast<float*>(globalParam + 0x098) = exposureVal;
+            sub_bb32f0(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x054),
+                       *reinterpret_cast<const float*>(param + 0x058));
+            sub_bb32e0(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x05c),
+                       *reinterpret_cast<const float*>(param + 0x060));
+            sub_bb3300(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x064),
+                       *reinterpret_cast<const float*>(param + 0x068),
+                       *reinterpret_cast<const float*>(param + 0x06c),
+                       *reinterpret_cast<const float*>(param + 0x070));
+            sub_bb3310(ppfxCtx, -1, 1, *reinterpret_cast<const float*>(param + 0x074));
+            sub_bb3320(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x078),
+                       *reinterpret_cast<const float*>(param + 0x07c),
+                       *reinterpret_cast<const float*>(param + 0x080),
+                       *reinterpret_cast<const float*>(param + 0x084),
+                       *reinterpret_cast<const float*>(param + 0x088),
+                       *reinterpret_cast<const float*>(param + 0x08c),
+                       *reinterpret_cast<const float*>(param + 0x090));
         }
-        if ((resetHistoryFlags & 2u) != 0) {
-            exposureVal *= *reinterpret_cast<float*>(director + 0x2720);
-        }
-
-        sub_bb32f0(ppfxCtx, 0,
-                   *reinterpret_cast<float*>(param + 0x054),
-                   *reinterpret_cast<float*>(param + 0x058));
-        sub_bb32e0(ppfxCtx, 0,
-                   *reinterpret_cast<float*>(param + 0x05c),
-                   *reinterpret_cast<float*>(param + 0x060));
-        sub_bb3300(ppfxCtx, 0,
-                   *reinterpret_cast<float*>(param + 0x064),
-                   *reinterpret_cast<float*>(param + 0x068),
-                   *reinterpret_cast<float*>(param + 0x06c),
-                   *reinterpret_cast<float*>(param + 0x070));
-        sub_bb3310(ppfxCtx, 0, 1, *reinterpret_cast<float*>(param + 0x074));
-        sub_bb3320(ppfxCtx, 0,
-                   *reinterpret_cast<float*>(param + 0x078),
-                   *reinterpret_cast<float*>(param + 0x07c),
-                   *reinterpret_cast<float*>(param + 0x080),
-                   *reinterpret_cast<float*>(param + 0x084),
-                   *reinterpret_cast<float*>(param + 0x088),
-                   *reinterpret_cast<float*>(param + 0x08c),
-                   *reinterpret_cast<float*>(param + 0x090));
 
         sub_bb3550(ppfxCtx,
-                   *reinterpret_cast<int32_t*>(param + 0x0a0),
+                   *reinterpret_cast<const int32_t*>(param + 0x0a0),
                    exposureVal,
-                   *reinterpret_cast<float*>(param + 0x09c),
-                   *reinterpret_cast<float*>(param + 0x0a4),
+                   *reinterpret_cast<const float*>(param + 0x09c),
+                   *reinterpret_cast<const float*>(param + 0x0a4),
                    fNegMax);
-        sub_bb3560(ppfxCtx, *reinterpret_cast<float*>(param + 0x0a8));
+        sub_bb3560(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0a8));
 
-        // Chromatic Aberration
-        bool enableCA = (*reinterpret_cast<int32_t*>(param + 0x038) != 0) &&
-                        (*reinterpret_cast<int32_t*>(param + 0x0ac) != 0);
-        sub_bb37a0(ppfxCtx, enableCA ? 1u : 0u);
-        sub_bb37d0(ppfxCtx,
-                   *reinterpret_cast<int32_t*>(param + 0x0b0),
-                   reinterpret_cast<const float*>(param + 0x0b4),
-                   reinterpret_cast<const float*>(param + 0x0bc));
+        // 0x21d7178..0x21d71ea: Chromatic Aberration (configured via param + 0xac from sub_229e990)
+        const bool caEnabled = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectChromaticAberration) &&
+                               (*reinterpret_cast<const int32_t*>(param + 0x0ac) != 0);
+        sub_bb37a0(ppfxCtx, caEnabled ? 1u : 0u);
+        const float latDisp[2] = {
+            *reinterpret_cast<const float*>(param + 0x0b4),
+            *reinterpret_cast<const float*>(param + 0x0b8)
+        };
+        const float uniDisp[2] = {
+            *reinterpret_cast<const float*>(param + 0x0bc),
+            *reinterpret_cast<const float*>(param + 0x0c0)
+        };
+        sub_bb37d0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x0b0), latDisp, uniDisp);
 
-        // Color Correction (H / S / V / Contrast)
-        sub_bb4300(ppfxCtx, 0);
-        float hueRad = (*reinterpret_cast<float*>(param + 0x0c4) * fPi) / f180;
-        sub_bb4360(ppfxCtx, 0, 0, hueRad);
-        sub_bb4390(ppfxCtx, 0, *reinterpret_cast<float*>(param + 0x0c8));
-        sub_bb43b0(ppfxCtx, 0, *reinterpret_cast<float*>(param + 0x0cc));
-        sub_bb43e0(ppfxCtx, 0, *reinterpret_cast<float*>(param + 0x248));
+        // 0x21d71ef..0x21d72a1: HSV & Contrast Color Correction
+        sub_bb4300(ppfxCtx, -2);
+        const float hueDeg = *reinterpret_cast<const float*>(param + 0x0c4);
+        if (hueDeg != 0.0f) {
+            sub_bb4360(ppfxCtx,
+                       *reinterpret_cast<const int32_t*>(param + 0x250),
+                       1,
+                       (hueDeg * fPi) / f180);
+        }
+        const float satVal = *reinterpret_cast<const float*>(param + 0x0c8);
+        if (satVal != f1) {
+            sub_bb4390(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x250), satVal);
+        }
+        const float valScale = *reinterpret_cast<const float*>(param + 0x0cc);
+        if (valScale != f1) {
+            sub_bb43b0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x250), valScale);
+        }
+        const float contrastVal = *reinterpret_cast<const float*>(param + 0x248);
+        if (contrastVal != f1) {
+            sub_bb43e0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x250), contrastVal);
+        }
 
-        // Vignetting
-        sub_bb3670(ppfxCtx,
-                   *reinterpret_cast<float*>(param + 0x0d0),
-                   *reinterpret_cast<float*>(param + 0x0d4));
+        // 0x21d72a1..0x21d72c6: Vignette
+        float vigPower = *reinterpret_cast<const float*>(param + 0x0d0);
+        const float vigFovDep = *reinterpret_cast<const float*>(param + 0x0d4);
+        if (0.0f > vigPower) {
+            vigPower = fNegMax;
+        }
+        sub_bb3670(ppfxCtx, vigPower, vigFovDep);
 
-        // Glare / Bloom
-        sub_bb2840(ppfxCtx, 1,
-                   *reinterpret_cast<float*>(param + 0x0dc),
-                   *reinterpret_cast<float*>(param + 0x0e0),
-                   *reinterpret_cast<float*>(param + 0x244));
+        // 0x21d72cb..0x21d75bc: Glare / Bloom & Anamorphic Lens Flare (V5.1 Native Bloom Toggle)
+        sub_bb2840(ppfxCtx,
+                   1,
+                   *reinterpret_cast<const float*>(param + 0x0dc),
+                   *reinterpret_cast<const float*>(param + 0x0e0),
+                   *reinterpret_cast<const float*>(param + 0x244));
 
-        int32_t glareShape = *reinterpret_cast<int32_t*>(param + 0x0d8);
+        const int32_t glareShape = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom)
+                                       ? *reinterpret_cast<const int32_t*>(param + 0x0d8)
+                                       : 0;
         if (glareShape == 14) {
-            struct CustomGlareDesc {
-                float glareLum;           // +0x00 (0x308)
-                float bloomLum;           // +0x04 (0x30c)
-                float bloomDisp;          // +0x08 (0x310)
-                uint32_t bloomBaseLevel;  // +0x0c (0x314)
-                float ghostLum;           // +0x10 (0x318)
-                float ghostHaloLum;       // +0x14 (0x31c)
-                float ghostDist;          // +0x18 (0x320)
-                uint8_t ghostSharpness;   // +0x1c (0x324 != 0)
-                uint8_t pad1D[3];
-                float starLum;            // +0x20 (0x328)
-                uint32_t starStreaks;     // +0x24 (0x32c)
-                float starLen;            // +0x28 (0x330)
-                float starSecLen;         // +0x2c (0x334)
-                uint8_t starRot;          // +0x30 (0x338 != 0)
-                uint8_t pad31[3];
-                float starIncAngleRad;    // +0x34 (0x33c * pi/180)
-                float starDisp;           // +0x38 (0x340)
-                uint8_t starForceDisp;    // +0x3c (0x344 != 0)
-                uint8_t pad3D[3];
-                float afterimageLum;      // +0x40 (0x348)
-                float afterimageLen;      // +0x44 (0x34c)
-                uint64_t reserved48;      // +0x48 (0)
-            } customGlare{};
-
-            customGlare.glareLum        = *reinterpret_cast<float*>(param + 0x308);
-            customGlare.bloomLum        = *reinterpret_cast<float*>(param + 0x30c);
-            customGlare.bloomDisp       = *reinterpret_cast<float*>(param + 0x310);
-            customGlare.bloomBaseLevel  = *reinterpret_cast<uint32_t*>(param + 0x314);
-            customGlare.ghostLum        = *reinterpret_cast<float*>(param + 0x318);
-            customGlare.ghostHaloLum    = *reinterpret_cast<float*>(param + 0x31c);
-            customGlare.ghostDist       = *reinterpret_cast<float*>(param + 0x320);
-            customGlare.ghostSharpness  = (*reinterpret_cast<int32_t*>(param + 0x324) != 0) ? 1u : 0u;
-            customGlare.starLum         = *reinterpret_cast<float*>(param + 0x328);
-            customGlare.starStreaks     = *reinterpret_cast<uint32_t*>(param + 0x32c);
-            customGlare.starLen         = *reinterpret_cast<float*>(param + 0x330);
-            customGlare.starSecLen      = *reinterpret_cast<float*>(param + 0x334);
-            customGlare.starRot         = (*reinterpret_cast<int32_t*>(param + 0x338) != 0) ? 1u : 0u;
-            customGlare.starIncAngleRad = *reinterpret_cast<float*>(param + 0x33c) * fDeg2Rad;
-            customGlare.starDisp        = *reinterpret_cast<float*>(param + 0x340);
-            customGlare.starForceDisp   = (*reinterpret_cast<int32_t*>(param + 0x344) != 0) ? 1u : 0u;
-            customGlare.afterimageLum   = *reinterpret_cast<float*>(param + 0x348);
-            customGlare.afterimageLen   = *reinterpret_cast<float*>(param + 0x34c);
-            customGlare.reserved48      = 0;
-
-            sub_bb2860(ppfxCtx, &customGlare);
+            alignas(32) uint8_t customGlare[0x48] = {};
+            *reinterpret_cast<float*>(customGlare + 0x00)    = *reinterpret_cast<const float*>(param + 0x308);
+            *reinterpret_cast<float*>(customGlare + 0x04)    = *reinterpret_cast<const float*>(param + 0x30c);
+            *reinterpret_cast<float*>(customGlare + 0x08)    = *reinterpret_cast<const float*>(param + 0x310);
+            *reinterpret_cast<uint32_t*>(customGlare + 0x0c) = *reinterpret_cast<const uint32_t*>(param + 0x314);
+            *reinterpret_cast<float*>(customGlare + 0x10)    = *reinterpret_cast<const float*>(param + 0x318);
+            *reinterpret_cast<float*>(customGlare + 0x14)    = *reinterpret_cast<const float*>(param + 0x31c);
+            *reinterpret_cast<float*>(customGlare + 0x18)    = *reinterpret_cast<const float*>(param + 0x320);
+            customGlare[0x1c] = (*reinterpret_cast<const int32_t*>(param + 0x324) != 0) ? 1u : 0u;
+            *reinterpret_cast<float*>(customGlare + 0x20)    = *reinterpret_cast<const float*>(param + 0x328);
+            *reinterpret_cast<uint32_t*>(customGlare + 0x24) = *reinterpret_cast<const uint32_t*>(param + 0x32c);
+            *reinterpret_cast<float*>(customGlare + 0x28)    = *reinterpret_cast<const float*>(param + 0x330);
+            *reinterpret_cast<float*>(customGlare + 0x2c)    = *reinterpret_cast<const float*>(param + 0x334);
+            customGlare[0x30] = (*reinterpret_cast<const int32_t*>(param + 0x338) != 0) ? 1u : 0u;
+            *reinterpret_cast<float*>(customGlare + 0x34)    = *reinterpret_cast<const float*>(param + 0x33c) * fDeg2Rad;
+            *reinterpret_cast<float*>(customGlare + 0x38)    = *reinterpret_cast<const float*>(param + 0x340);
+            customGlare[0x3c] = (*reinterpret_cast<const int32_t*>(param + 0x344) != 0) ? 1u : 0u;
+            *reinterpret_cast<float*>(customGlare + 0x40)    = *reinterpret_cast<const float*>(param + 0x348);
+            *reinterpret_cast<float*>(customGlare + 0x44)    = *reinterpret_cast<const float*>(param + 0x34c);
+            sub_bb2860(ppfxCtx, customGlare);
         } else {
             sub_bb2850(ppfxCtx, glareShape);
         }
 
-        sub_bb40e0(ppfxCtx, *reinterpret_cast<int32_t*>(param + 0x0e4));
-        sub_bb3c10(ppfxCtx, *reinterpret_cast<float*>(param + 0x0e8));
-        sub_bb4130(ppfxCtx, *reinterpret_cast<float*>(param + 0x0ec));
-        sub_bb4100(ppfxCtx, *reinterpret_cast<float*>(param + 0x0f0));
-        sub_bb40f0(ppfxCtx, *reinterpret_cast<float*>(param + 0x0f4));
-        sub_bb4120(ppfxCtx, *reinterpret_cast<float*>(param + 0x304));
-        sub_bb4110(ppfxCtx, *reinterpret_cast<float*>(param + 0x0f8));
-        sub_bb3c30(ppfxCtx, *reinterpret_cast<float*>(param + 0x0fc));
-        sub_bb41a0(ppfxCtx, *reinterpret_cast<float*>(param + 0x100));
-
-        // Anamorphic Lens Flare
-        sub_bb4160(ppfxCtx, (*reinterpret_cast<int32_t*>(param + 0x104) != 0) ? 1u : 0u);
+        sub_bb40e0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x0e4));
+        sub_bb3c10(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0e8));
+        sub_bb4130(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0ec));
+        sub_bb4100(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0f0));
+        sub_bb40f0(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0f4));
+        sub_bb4120(ppfxCtx, *reinterpret_cast<const float*>(param + 0x304));
+        sub_bb4110(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0f8));
+        sub_bb3c30(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0fc));
+        sub_bb41a0(ppfxCtx, *reinterpret_cast<const float*>(param + 0x100));
+        sub_bb4160(ppfxCtx, (*reinterpret_cast<const int32_t*>(param + 0x104) != 0) ? 1u : 0u);
         sub_bb4180(ppfxCtx,
-                   *reinterpret_cast<float*>(param + 0x108),
-                   *reinterpret_cast<float*>(param + 0x10c));
+                   *reinterpret_cast<const float*>(param + 0x108),
+                   *reinterpret_cast<const float*>(param + 0x10c));
 
-        auto* globalParam = static_cast<uint8_t*>(g_GlobalYebisParamPtr_53e4660);
-        if (director[0x2710] != 0) {
-            std::memcpy(globalParam + 0x110, director + 0x26c0, 16);
-            std::memcpy(globalParam + 0x120, director + 0x26e0, 16);
+        const auto* flareSrc = reinterpret_cast<const float*>(director + 0x26c0);
+        const auto* ghostSrc = reinterpret_cast<const float*>(director + 0x26e0);
+        const float flareColor[4] = {
+            flareSrc[0] * flareSrc[3], flareSrc[1] * flareSrc[3], flareSrc[2] * flareSrc[3], flareSrc[3]
+        };
+        const float ghostColor[4] = {
+            ghostSrc[0] * ghostSrc[3], ghostSrc[1] * ghostSrc[3], ghostSrc[2] * ghostSrc[3], ghostSrc[3]
+        };
+        sub_bb4190(ppfxCtx, flareColor, ghostColor);
+
+        // 0x21d75bc..0x21d7a7f: Light Shafts & Sun Screen-Space Projection
+        sub_bb28a0(ppfxCtx, 0);
+        sub_bb28d0(ppfxCtx, 0, (*reinterpret_cast<const int32_t*>(param + 0x130) != 0) ? 1u : 0u);
+
+        alignas(16) float viewProjMtx[16];
+        sub_21aaa90(viewProjMtx, sceneView);
+
+        const float pitchRad = *reinterpret_cast<const float*>(globalParam + 0x160) * fDeg2Rad;
+        const float sinP = sub_2bbe518(0, 0, pitchRad);
+        const float cosP = sub_2bbe518(1, 0, pitchRad);
+        const __m128 vZero  = _mm_setzero_ps();
+        const __m128 vSinP  = _mm_move_ss(vZero, _mm_set_ss(sinP));
+        const __m128 vCosP  = _mm_move_ss(vZero, _mm_set_ss(cosP));
+        const __m128 pVec   = _mm_mul_ps(_mm_shuffle_ps(vCosP, vSinP, 0xC3),
+                                         _mm_setr_ps(1.0f, 1.0f, -1.0f, 1.0f)); // 0x4920de0: [0, cosP, -sinP, 0]
+
+        const float yawRad = (*reinterpret_cast<const float*>(globalParam + 0x164) * fDeg2Rad) + fPi;
+        const float sinY = sub_2bbe518(0, 0, yawRad);
+        const float cosY = sub_2bbe518(1, 0, yawRad);
+        const __m128 vSinY = _mm_move_ss(vZero, _mm_set_ss(sinY));
+        const __m128 vCosY = _mm_move_ss(vZero, _mm_set_ss(cosY));
+        const __m128 yRotZ = _mm_shuffle_ps(vSinY, vCosY, 0xCC); // [sinY, 0, cosY, 0]
+        const __m128 yRotX = _mm_castsi128_ps(
+            _mm_shuffle_epi32(_mm_castps_si128(_mm_mul_ps(yRotZ, _mm_setr_ps(-1.0f, 1.0f, 1.0f, 1.0f))), 0xC6));
+        const __m128 unitY = _mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f);
+        const __m128 unitW = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
+
+        const __m128 pX = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(pVec), 0x00));
+        const __m128 pZ = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(pVec), 0xAA));
+        const __m128 pY = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(pVec), 0x55));
+        const __m128 pW = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(pVec), 0xFF));
+        const __m128 sunDir3 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(pX, yRotX), _mm_mul_ps(pY, yRotZ)),
+                                          _mm_add_ps(_mm_mul_ps(pZ, unitY), _mm_mul_ps(pW, unitW)));
+
+        const float negDist = -(*reinterpret_cast<const float*>(param + 0x24c));
+        const __m128 sunPos4 = _mm_add_ps(_mm_mul_ps(sunDir3, _mm_set1_ps(negDist)), unitW);
+        _mm_storeu_ps(reinterpret_cast<float*>(director + 0x21b0), sunPos4);
+
+        const __m128 vp0 = _mm_load_ps(viewProjMtx + 0);
+        const __m128 vp1 = _mm_load_ps(viewProjMtx + 4);
+        const __m128 vp2 = _mm_load_ps(viewProjMtx + 8);
+        const __m128 vp3 = _mm_load_ps(viewProjMtx + 12);
+        const __m128 clipSun = _mm_add_ps(
+            _mm_add_ps(_mm_mul_ps(vp0, _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(sunPos4), 0x00))),
+                       _mm_mul_ps(vp1, _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(sunPos4), 0x55)))),
+            _mm_add_ps(_mm_mul_ps(vp2, _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(sunPos4), 0xAA))),
+                       _mm_mul_ps(vp3, _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(sunPos4), 0xFF)))));
+        const __m128 invClipW = _mm_div_ps(_mm_set1_ps(1.0f),
+                                           _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(clipSun), 0xFF)));
+        const __m128 projSun = _mm_add_ps(
+            _mm_mul_ps(_mm_mul_ps(clipSun, invClipW), _mm_setr_ps(0.5f, -0.5f, 1.0f, 0.0f)), // 0x4920e00
+            _mm_setr_ps(0.5f, 0.5f, 0.0f, 0.0f));                                            // 0x4920e10
+
+        // Exact 2-iteration Newton-Raphson vector3 normalize + dot(curRow2.xyz, normSun.xyz) + 0.3f
+        alignas(16) float sunArr[4];
+        alignas(16) float row2Arr[4];
+        alignas(16) float projArr[4];
+        _mm_store_ps(sunArr, sunPos4);
+        _mm_store_ps(row2Arr, curRow2);
+        _mm_store_ps(projArr, projSun);
+
+        const float lenSq = sunArr[0] * sunArr[0] + sunArr[1] * sunArr[1] + sunArr[2] * sunArr[2];
+        float fadeFactor = 0.0f;
+        if (lenSq > 0.0f) {
+            const float invLen = 1.0f / std::sqrt(lenSq);
+            const float dotVal = (sunArr[0] * invLen) * row2Arr[0] +
+                                 (sunArr[1] * invLen) * row2Arr[1] +
+                                 (sunArr[2] * invLen) * row2Arr[2] + f0_3;
+            if (!(0.0f > dotVal)) {
+                fadeFactor = (dotVal < f1) ? dotVal : f1;
+            }
+        }
+
+        sub_bb2940(ppfxCtx, 0, projArr[0], projArr[1]);
+
+        const auto* lsSrc = reinterpret_cast<const float*>(director + 0x2680);
+        const float lsScale = lsSrc[3] * fadeFactor;
+        const float lsColor[4] = {
+            lsSrc[0] * lsScale, lsSrc[1] * lsScale, lsSrc[2] * lsScale, 0.0f
+        };
+        float lsAtt = 0.0f;
+        if (!(0.0f > projArr[2])) {
+            lsAtt = (projArr[2] < f0_9995) ? projArr[2] : f0_9995;
+        }
+        sub_bb2900(ppfxCtx,
+                   0,
+                   lsColor,
+                   *reinterpret_cast<const int32_t*>(param + 0x150),
+                   *reinterpret_cast<const float*>(param + 0x144),
+                   *reinterpret_cast<const float*>(param + 0x148),
+                   lsAtt,
+                   *reinterpret_cast<const float*>(param + 0x154),
+                   *reinterpret_cast<const float*>(param + 0x158),
+                   *reinterpret_cast<const float*>(param + 0x15c));
+
+        const auto* ringSrc = reinterpret_cast<const float*>(director + 0x26a0);
+        const float ringScale = ringSrc[3] * fadeFactor;
+        const float ringColor[4] = {
+            ringSrc[0] * ringScale, ringSrc[1] * ringScale, ringSrc[2] * ringScale, 0.0f
+        };
+        sub_bb2920(ppfxCtx,
+                   0,
+                   ringColor,
+                   *reinterpret_cast<const float*>(param + 0x168),
+                   *reinterpret_cast<const float*>(param + 0x16c),
+                   *reinterpret_cast<const float*>(param + 0x170),
+                   *reinterpret_cast<const float*>(param + 0x174));
+
+        // 0x21d7a7f..0x21d7ca0: Depth of Field (V5.1 Native DoF Toggle + Ultrawide Aspect)
+        const bool dofAllowed = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectDof) &&
+                                (*reinterpret_cast<const int32_t*>(param + 0x1ac) != 0);
+        sub_bb2960(ppfxCtx, (inDepthWrap != nullptr && dofAllowed) ? 1u : 0u);
+
+        float focusDist = 0.0f;
+        if (*reinterpret_cast<const int32_t*>(param + 0x188) != 0) {
+            sub_bb3350(ppfxCtx, -1, 1);
+            sub_bb34b0(ppfxCtx,
+                       -1,
+                       (*reinterpret_cast<const int32_t*>(param + 0x18c) != 0) ? 1u : 0u,
+                       *reinterpret_cast<const float*>(param + 0x190),
+                       *reinterpret_cast<const float*>(param + 0x194));
+            sub_bb3490(ppfxCtx, -1, 1, *reinterpret_cast<const float*>(param + 0x198));
+            sub_bb3470(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x19c),
+                       *reinterpret_cast<const float*>(param + 0x1a0));
+            sub_bb3480(ppfxCtx,
+                       -1,
+                       *reinterpret_cast<const float*>(param + 0x1a4),
+                       *reinterpret_cast<const float*>(param + 0x1a8));
+            focusDist = sub_bb33e0(ppfxCtx, -1);
+            *reinterpret_cast<float*>(globalParam + 0x1b0) = focusDist;
         } else {
-            std::memcpy(director + 0x26c0, globalParam + 0x110, 16);
-            std::memcpy(director + 0x26e0, globalParam + 0x120, 16);
-        }
-        sub_bb4190(ppfxCtx,
-                   reinterpret_cast<const float*>(param + 0x110),
-                   reinterpret_cast<const float*>(param + 0x120));
-
-        // LightShaft
-        if (*reinterpret_cast<int32_t*>(param + 0x034) != 0) {
-            sub_bb28a0(ppfxCtx, 0);
-            bool lsOpen = false;
-            auto* lsWeak = *reinterpret_cast<uint8_t**>(director + 0x2728);
-            if (lsWeak != nullptr) {
-                uint32_t f = *reinterpret_cast<uint32_t*>(lsWeak + 0x08);
-                if ((f & 0x7fffu) != 0 && (f & 0x40000000u) != 0) {
-                    lsOpen = (lsWeak[0xc0] != 0);
-                }
-            }
-            bool enableLs = lsOpen || (*reinterpret_cast<int32_t*>(param + 0x130) != 0);
-            sub_bb28d0(ppfxCtx, 0, enableLs ? 1u : 0u);
-
-            float radX = (*reinterpret_cast<float*>(param + 0x160) * fPi) / f180;
-            float radY = (*reinterpret_cast<float*>(param + 0x164) * fPi) / f180;
-            float sinX = sub_2bbe518(0, 0, radX);
-            float cosX = sub_2bbe518(1, 0, radX);
-            float sinY = sub_2bbe518(0, 0, radY);
-            float cosY = sub_2bbe518(1, 0, radY);
-
-            // Transform light shaft direction into clip/screen space
-            float dirX = -sinY * cosX;
-            float dirY = sinX;
-            float dirZ = cosY * cosX;
-
-            alignas(16) float viewProj[16];
-            sub_21aaa90(viewProj, sceneView);
-
-            const float* camPos = reinterpret_cast<const float*>(sceneView + 0x30);
-            float worldX = camPos[0] - dirX;
-            float worldY = camPos[1] - dirY;
-            float worldZ = camPos[2] - dirZ;
-
-            float clipX = worldX * viewProj[0] + worldY * viewProj[4] + worldZ * viewProj[8]  + viewProj[12];
-            float clipY = worldX * viewProj[1] + worldY * viewProj[5] + worldZ * viewProj[9]  + viewProj[13];
-            float clipW = worldX * viewProj[3] + worldY * viewProj[7] + worldZ * viewProj[11] + viewProj[15];
-
-            float screenX = (clipX / clipW) * 0.5f + 0.5f;
-            float screenY = (clipY / clipW) * -0.5f + 0.5f;
-            float attScale = (clipW >= 0.0f) ? f1 : 0.0f;
-
-            sub_bb2940(ppfxCtx, 0, screenX, screenY);
-
-            globalParam = static_cast<uint8_t*>(g_GlobalYebisParamPtr_53e4660);
-            if (director[0x2710] != 0) {
-                std::memcpy(globalParam + 0x134, director + 0x2680, 16);
-                std::memcpy(globalParam + 0x178, director + 0x26a0, 16);
-            } else {
-                std::memcpy(director + 0x2680, globalParam + 0x134, 16);
-                std::memcpy(director + 0x26a0, globalParam + 0x178, 16);
-            }
-
-            float lsColor[4];
-            lsColor[0] = *reinterpret_cast<float*>(param + 0x134) * attScale;
-            lsColor[1] = *reinterpret_cast<float*>(param + 0x138) * attScale;
-            lsColor[2] = *reinterpret_cast<float*>(param + 0x13c) * attScale;
-            lsColor[3] = *reinterpret_cast<float*>(param + 0x140);
-
-            alignas(16) float projParams[16];
-            sub_21aa290(projParams, sceneView);
-            float zNear = projParams[1];
-            float zFar  = projParams[2];
-            float maskDepth = *reinterpret_cast<float*>(param + 0x24c);
-            float normDepth = f0_9995;
-            if (maskDepth <= zFar) {
-                normDepth = ((maskDepth - zNear) * zFar) / ((zFar - zNear) * maskDepth);
-            }
-
-            sub_bb2900(ppfxCtx, 0, lsColor, 1,
-                       *reinterpret_cast<float*>(param + 0x144),
-                       *reinterpret_cast<float*>(param + 0x148),
-                       normDepth,
-                       *reinterpret_cast<float*>(param + 0x154) * f0_3,
-                       *reinterpret_cast<float*>(param + 0x158),
-                       *reinterpret_cast<float*>(param + 0x15c));
-
-            float ringColor[4];
-            ringColor[0] = *reinterpret_cast<float*>(param + 0x178) * attScale;
-            ringColor[1] = *reinterpret_cast<float*>(param + 0x17c) * attScale;
-            ringColor[2] = *reinterpret_cast<float*>(param + 0x180) * attScale;
-            ringColor[3] = *reinterpret_cast<float*>(param + 0x184);
-
-            sub_bb2920(ppfxCtx, 0, ringColor,
-                       *reinterpret_cast<float*>(param + 0x168),
-                       *reinterpret_cast<float*>(param + 0x16c),
-                       *reinterpret_cast<float*>(param + 0x170),
-                       *reinterpret_cast<float*>(param + 0x174));
+            focusDist = *reinterpret_cast<const float*>(param + 0x1b0);
+            sub_bb3340(ppfxCtx, -1, focusDist);
         }
 
-        // Depth of Field & AutoFocus
-        if (*reinterpret_cast<int32_t*>(param + 0x04c) > 0) {
-            sub_bb2960(ppfxCtx, (*reinterpret_cast<int32_t*>(param + 0x1ac) != 0) ? 1u : 0u);
-            sub_bb3350(ppfxCtx, 0, *reinterpret_cast<int32_t*>(param + 0x188));
-            sub_bb34b0(ppfxCtx, 0,
-                       (*reinterpret_cast<int32_t*>(param + 0x18c) != 0) ? 1u : 0u,
-                       *reinterpret_cast<float*>(param + 0x190),
-                       *reinterpret_cast<float*>(param + 0x194));
-            sub_bb3490(ppfxCtx, 0, 1, *reinterpret_cast<float*>(param + 0x198));
-            sub_bb3470(ppfxCtx, 0,
-                       *reinterpret_cast<float*>(param + 0x19c),
-                       *reinterpret_cast<float*>(param + 0x1a0));
-            sub_bb3480(ppfxCtx, 0,
-                       *reinterpret_cast<float*>(param + 0x1a4),
-                       *reinterpret_cast<float*>(param + 0x1a8));
+        sub_bb3f80(ppfxCtx, *reinterpret_cast<const float*>(param + 0x1d8));
+        sub_bb34a0(ppfxCtx,
+                   *reinterpret_cast<const int32_t*>(param + 0x1cc),
+                   *reinterpret_cast<const float*>(param + 0x1c4),
+                   *reinterpret_cast<const float*>(param + 0x1c8) * fDeg2Rad);
 
-            if (*reinterpret_cast<int32_t*>(param + 0x188) != 0) {
-                float afDist = sub_bb33e0(ppfxCtx, 0);
-                *reinterpret_cast<float*>(param + 0x1b0) = afDist;
-            } else {
-                sub_bb3340(ppfxCtx, 0, *reinterpret_cast<float*>(param + 0x1b0));
+        if (dofAllowed) {
+            const float ccdDiagM = *reinterpret_cast<const float*>(param + 0x1c0) * f0_001;
+            float aspect = *reinterpret_cast<const float*>(sceneView + 0x064);
+            if (aspect == 0.0f) {
+                const uint32_t vpW = *reinterpret_cast<const uint32_t*>(sceneView + 0x05c);
+                const uint32_t vpH = *reinterpret_cast<const uint32_t*>(sceneView + 0x060);
+                aspect = static_cast<float>(static_cast<int64_t>(vpW)) /
+                         static_cast<float>(static_cast<int64_t>(vpH));
             }
+            const float sensorHeightM = ccdDiagM / std::sqrt(aspect * aspect + f1);
 
-            sub_bb3f80(ppfxCtx, *reinterpret_cast<float*>(param + 0x1d8));
-            float rotOffsetRad = (*reinterpret_cast<float*>(param + 0x1c8) * fPi) / f180;
-            sub_bb34a0(ppfxCtx,
-                       *reinterpret_cast<int32_t*>(param + 0x1cc),
-                       *reinterpret_cast<float*>(param + 0x1c4),
-                       rotOffsetRad);
             sub_bb3fd0(ppfxCtx,
-                       *reinterpret_cast<int32_t*>(param + 0x1d0),
-                       *reinterpret_cast<int32_t*>(param + 0x1d4));
-
-            float adaptiveFactor = (param[0x1b8] != 0) ? f1 : 0.0f;
-            float baseFovRad     = (*reinterpret_cast<float*>(param + 0x1bc) * fPi) / f180;
-            float ccdDiagMm      = *reinterpret_cast<float*>(param + 0x1c0);
-
-            auto* vpMgr = static_cast<uint8_t*>(g_ViewportManagerSingleton_5540dc0);
-            int32_t vpW = vpMgr ? *reinterpret_cast<int32_t*>(vpMgr + 0x38) : 1920;
-            int32_t vpH = vpMgr ? *reinterpret_cast<int32_t*>(vpMgr + 0x3c) : 1080;
-            float aspect = static_cast<float>(vpW) / static_cast<float>(vpH);
-            float diagSqMm = ccdDiagMm * ccdDiagMm;
-            float sensorHeightMm = std::sqrt(diagSqMm / (aspect * aspect + f1));
-            float sensorHeightM  = sensorHeightMm * f0_001;
-
-            sub_bb2970(ppfxCtx, 0,
-                       *reinterpret_cast<float*>(param + 0x1b0),
-                       *reinterpret_cast<float*>(param + 0x1b4),
-                       adaptiveFactor,
-                       baseFovRad,
+                       *reinterpret_cast<const int32_t*>(param + 0x1d0),
+                       *reinterpret_cast<const int32_t*>(param + 0x1d4));
+            sub_bb2970(ppfxCtx,
+                       0,
+                       focusDist,
+                       *reinterpret_cast<const float*>(param + 0x1b4),
+                       *reinterpret_cast<const float*>(param + 0x1b8),
+                       (*reinterpret_cast<const float*>(param + 0x1bc) * fPi) / f180,
                        sensorHeightM);
-            sub_bb45c0(ppfxCtx, *reinterpret_cast<int32_t*>(param + 0x240));
+
+            if (*reinterpret_cast<const int32_t*>(param + 0x1ac) != 0) {
+                if (sub_bb45c0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x240)) != 0) {
+                    *reinterpret_cast<int32_t*>(globalParam + 0x240) = -1;
+                }
+            }
         }
 
-        // Color Grading 3D LUT binding
-        if (*reinterpret_cast<int32_t*>(param + 0x2b4) != 0) {
-            bool cgValid = (*reinterpret_cast<int32_t*>(param + 0x2b8) != 0) && (param[0x2cc] != 0);
-            sub_bb3600(ppfxCtx, cgValid ? 1u : 0u);
-            sub_bb3660(ppfxCtx, 0, 2, 0, f1);
-
-            auto* lut3dObj = *reinterpret_cast<uint8_t**>(director + 0x2180);
-            auto* lut3dTex = *reinterpret_cast<DLRefCountedObj**>(lut3dObj + 0x10);
-            uint32_t lutW  = lut3dTex->vtable->getWidth_48(lut3dTex, 0);
-            uint32_t lutH  = lut3dTex->vtable->getHeight_50(lut3dTex, 0);
-            auto* lutGnm   = *reinterpret_cast<uint8_t**>(lut3dObj + 0x30) + 0x10;
-            uint32_t lutFmt = sub_1089960(lutGnm);
+        // 0x21d7ca0..0x21d7d23: 3D LUT Color Grading Binding
+        sub_bb3600(ppfxCtx, (*reinterpret_cast<const int32_t*>(globalParam + 0x2d0) != 0) ? 1u : 0u);
+        sub_bb3660(ppfxCtx, 0, 3, 0, 0.0f);
+        auto* lutSurf = *reinterpret_cast<uint8_t**>(director + 0x20d0);
+        if (lutSurf != nullptr) {
+            const uint32_t lutW = *reinterpret_cast<const uint16_t*>(lutSurf + 0x044);
+            const uint32_t lutH = *reinterpret_cast<const uint16_t*>(lutSurf + 0x046);
+            auto* lutGnm = *reinterpret_cast<uint8_t**>(director + 0x20d8) + 0x010;
+            const uint32_t lutFmt = sub_1089960(lutGnm);
             sub_bb5790(ppfxCtx, lutGnm, lutW, lutH, lutFmt);
-        }
-
-        // Motion Blur
-        if (*reinterpret_cast<int32_t*>(param + 0x048) > 0) {
-            sub_bb3870(ppfxCtx, (*reinterpret_cast<int32_t*>(param + 0x1dc) != 0) ? 1u : 0u);
-            sub_bb38b0(ppfxCtx, param[0x204]);
-            sub_bb3890(ppfxCtx, *reinterpret_cast<int32_t*>(param + 0x1e0));
-            sub_bb38e0(ppfxCtx,
-                       *reinterpret_cast<float*>(param + 0x2ac),
-                       *reinterpret_cast<float*>(param + 0x2b0));
-            sub_bb27c0(ppfxCtx, sceneView, 1);
-            sub_bb27e0(ppfxCtx, prevViewMtx, 1);
-
-            float mbDeltaTime = *reinterpret_cast<float*>(param + 0x004);
-            if ((resetHistoryFlags & 1u) != 0) {
-                mbDeltaTime = f0_0001;
-            }
-            sub_bb2800(ppfxCtx, mbDeltaTime);
-
-            auto* velWrap = *reinterpret_cast<uint8_t**>(param + 0x380);
-            if (velWrap != nullptr) {
-                auto* velTex = *reinterpret_cast<DLRefCountedObj**>(velWrap + 0x10);
-                uint32_t velW = velTex->vtable->getWidth_48(velTex, 0);
-                uint32_t velH = velTex->vtable->getHeight_50(velTex, 0);
-                auto* velGnm  = *reinterpret_cast<uint8_t**>(velWrap + 0x30) + 0x10;
-                uint32_t velFmt = sub_1089960(velGnm);
-                float scalePair[2] = {f1, fNeg1};
-                sub_bb5430(ppfxCtx, 1, velGnm, velW, velH, velFmt, 1, scalePair, 0);
-            } else {
-                float scalePair[2] = {f1, f1};
-                sub_bb5430(ppfxCtx, 0, nullptr, 0, 0, 0, 0, scalePair, 0);
-            }
-
-            float maxBlurLen = *reinterpret_cast<float*>(param + 0x1e8) *
-                               (*reinterpret_cast<float*>(param + 0x350));
-            sub_bb38f0(ppfxCtx,
-                       *reinterpret_cast<int32_t*>(param + 0x1ec),
-                       *reinterpret_cast<int32_t*>(param + 0x1f0),
-                       *reinterpret_cast<float*>(param + 0x1e4),
-                       maxBlurLen,
-                       *reinterpret_cast<float*>(param + 0x1f4));
-            sub_bb3900(ppfxCtx, 1u,
-                       *reinterpret_cast<float*>(param + 0x1f8),
-                       *reinterpret_cast<float*>(param + 0x1fc));
-        }
-
-        // Feedback Blur
-        if (*reinterpret_cast<int32_t*>(param + 0x028) != 0) {
-            bool enableFb = (*reinterpret_cast<int32_t*>(param + 0x208) != 0) &&
-                            (director[0x2719] == 0);
-            sub_bb34c0(ppfxCtx, enableFb ? 1u : 0u);
-            director[0x2719] = 0;
-
-            float fbWeight = *reinterpret_cast<float*>(param + 0x20c);
-            sub_bb34d0(ppfxCtx, fbWeight, fbWeight, *reinterpret_cast<float*>(param + 0x214));
-            sub_bb34e0(ppfxCtx, *reinterpret_cast<float*>(param + 0x218));
-        }
-
-        // Anti-Aliasing
-        if (*reinterpret_cast<int32_t*>(param + 0x030) != 0) {
-            sub_bb37f0(ppfxCtx, (*reinterpret_cast<int32_t*>(param + 0x220) != 0) ? 1u : 0u);
-        }
-
-        // --------------------------------------------------------------------
-        // Part C: Yebis2 Fullscreen Draw & Double-Buffered EOP Fence Sync
-        // --------------------------------------------------------------------
-        if (g_YebisPostProcessEnabled_56c3ce0) {
-            uint32_t drawFlags = 0x20003u;
-            if (*reinterpret_cast<int32_t*>(param + 0x008) == 0) {
-                drawFlags |= 0x4u;
-            }
-            if (director[0x271a] != 0) {
-                drawFlags |= 0x400u;
-                director[0x271a] = 0;
-            }
-            float drawCol[4] = {f1, f1, f1, f1};
-            sub_bb3c50(ppfxCtx, drawFlags, drawCol, 0, -1, fNegMax);
         } else {
-            // Manual fullscreen pass via Yebis GPU context
-            void* yGpu = g_ActiveYebisGpuCtx_56c3cb8;
-            uint32_t dsCtrl = 0;
-            sub_10850d0(&dsCtrl);
-            sub_1085130(&dsCtrl, 0);
-            sub_1076b30(yGpu, dsCtrl);
+            sub_bb3600(ppfxCtx, 0);
+        }
 
-            uint32_t primSetup = 0;
-            sub_1084f40(&primSetup);
-            sub_1084f50(&primSetup, 0);
-            sub_1084f60(&primSetup, 0);
-            sub_1084f70(&primSetup, 0, 0);
-            sub_1076e00(yGpu, primSetup);
+        // 0x21d7d23..0x21d7fb8: Motion Blur & Velocity Buffer
+        sub_bb3870(ppfxCtx,
+                   (velWrap != nullptr && *reinterpret_cast<const int32_t*>(param + 0x1dc) != 0) ? 1u : 0u);
+        sub_bb38b0(ppfxCtx, param[0x204]);
+        const int32_t mbType = ((resetFlags & 2u) != 0u)
+                                   ? 1
+                                   : *reinterpret_cast<const int32_t*>(param + 0x1e0);
+        sub_bb3890(ppfxCtx, mbType);
+        sub_bb38e0(ppfxCtx,
+                   *reinterpret_cast<const float*>(param + 0x2ac),
+                   *reinterpret_cast<const float*>(param + 0x2b0));
 
-            sub_1072fd0(yGpu, 0x0fu);
-            sub_1076030(yGpu, 0);
+        alignas(16) float mtxArg[16];
+        _mm_store_ps(mtxArg + 0,  curRow0);
+        _mm_store_ps(mtxArg + 4,  curRow1);
+        _mm_store_ps(mtxArg + 8,  curRow2);
+        _mm_store_ps(mtxArg + 12, curRow3);
+        sub_bb27c0(ppfxCtx, mtxArg, 1);
 
-            uint32_t blendCtrl = 0;
-            sub_1085380(&blendCtrl);
-            sub_1085390(&blendCtrl, 0, 0x0f);
-            sub_10853f0(&blendCtrl, 0);
-            sub_10733a0(yGpu, blendCtrl);
+        _mm_store_ps(mtxArg + 0,  prevRow0);
+        _mm_store_ps(mtxArg + 4,  prevRow1);
+        _mm_store_ps(mtxArg + 8,  prevRow2);
+        _mm_store_ps(mtxArg + 12, prevRow3);
+        sub_bb27e0(ppfxCtx, mtxArg, 1);
 
-            sub_1096f60(yGpu, 0, 0, outW, outH, 0.0f, f1);
-            sub_1077150(yGpu, 0, 0);
+        sub_bb2800(ppfxCtx, *reinterpret_cast<const float*>(param + 0x004));
 
-            uint32_t vtxFmt0 = 0;
-            sub_26b7310(&vtxFmt0, 0x25);
-            uint8_t gnmBufs[64] = {};
-            uint64_t fIdx = g_YebisBufferFlipIndex_56a6d20;
-            void* vbAddr0 = *reinterpret_cast<void**>(g_YebisDoubleBufArea_56a6d20 + fIdx * 8 + 0x1cfc8);
-            sub_1070650(gnmBufs + 0, vbAddr0, vtxFmt0, 12u, 4u);
-
-            uint32_t vtxFmt1 = 0;
-            sub_26b7310(&vtxFmt1, 0x1e);
-            void* vbAddr1 = *reinterpret_cast<void**>(g_YebisDoubleBufArea_56a6d20 + fIdx * 8 + 0x1cfd8);
-            sub_1070650(gnmBufs + 16, vbAddr1, vtxFmt1, 8u, 4u);
-
-            uint8_t* yShdrCtx = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x35d0;
-            sub_108f330(yShdrCtx, 0, 0, 2, gnmBufs);
-
-            uint64_t shdrIdx = g_YebisBufferFlipIndex_56a6d20 * 16u;
-            auto* vsObj = *reinterpret_cast<uint8_t**>(g_YebisDoubleBufArea_56a6d20 + shdrIdx + 0x1cfc0);
-            void* fetchMem = *reinterpret_cast<void**>(g_YebisDoubleBufArea_56a6d20 + shdrIdx + 0x1cfd0);
-            sub_1091bc0(fetchMem, vsObj + 0x40, 0);
-
-            vsObj = *reinterpret_cast<uint8_t**>(g_YebisDoubleBufArea_56a6d20 + shdrIdx + 0x1cfc0);
-            sub_108fbb0(yShdrCtx, vsObj, *reinterpret_cast<uint32_t*>(vsObj + 0x28), fetchMem, yShdrCtx + 0xb0d8);
-
-            auto* psObj = *reinterpret_cast<uint8_t**>(g_YebisDoubleBufArea_56a6d20 + shdrIdx + 0x1cfc8);
-            sub_108fdd0(yShdrCtx, psObj, yShdrCtx + 0xb148);
-
-            __m128i texDesc0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(inColorGnm));
-            __m128i texDesc1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(inColorGnm + 16));
-            alignas(16) __m128i localTexDesc[2] = {texDesc0, texDesc1};
-            sub_108d3f0(yShdrCtx, 1, 0, localTexDesc);
-
-            uint8_t samplerDesc[16] = {};
-            sub_1086dd0(samplerDesc);
-            sub_1086e10(samplerDesc, 2);
-            sub_108dfe0(yShdrCtx, 1, 0, samplerDesc);
-
-            void* ibAddr = *reinterpret_cast<void**>(
-                g_YebisDoubleBufArea_56a6d20 + g_YebisBufferFlipIndex_56a6d20 * 8u + 0x1cfe8);
-            if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
-                sub_108ca70(yShdrCtx, g_ActiveYebisGpuCtx_56c3cb8,
-                            static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x35c0);
-                gx_direct_vk::EmitDrawIndexAddr(g_ActiveYebisGpuCtx_56c3cb8,
-                                                reinterpret_cast<uint64_t>(ibAddr), 6u, 4u, 0u);
-            } else {
-                sub_1073fe0(g_ActiveYebisGpuCtx_56c3cb8, 4);
-                sub_1075270(g_ActiveYebisGpuCtx_56c3cb8, 0);
-                sub_108ca70(yShdrCtx, g_ActiveYebisGpuCtx_56c3cb8,
-                            static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x35c0);
-                sub_1074360(g_ActiveYebisGpuCtx_56c3cb8, 6u, ibAddr);
+        if (*reinterpret_cast<const int32_t*>(param + 0x1dc) != 0 &&
+            *reinterpret_cast<const int32_t*>(param + 0x1e0) == 2 &&
+            velWrap != nullptr)
+        {
+            auto* velGnm = *reinterpret_cast<uint8_t**>(velWrap + 0x028) + 0x010;
+            const uint32_t velW = *reinterpret_cast<const uint32_t*>(velWrap + 0x050);
+            const uint32_t velH = *reinterpret_cast<const uint32_t*>(velWrap + 0x054);
+            const float rawVelScale = *reinterpret_cast<const float*>(param + 0x1e8) *
+                                      *reinterpret_cast<const float*>(param + 0x350);
+            const float scalePair[2] = {
+                (rawVelScale > f0_0001) ? rawVelScale : f0_0001,
+                (rawVelScale > f0_001)  ? rawVelScale : f0_001
+            };
+            const uint32_t velFmt = sub_1089960(velGnm);
+            if (sub_bb5430(ppfxCtx, 1, velGnm, velW, velH, velFmt, 1, scalePair, 0) != 0) {
+                *reinterpret_cast<int32_t*>(globalParam + 0x1e0) = 1;
             }
         }
 
-        uint8_t* yGpu = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
-        sub_108ca80(yGpu + 0x35d0, yGpu, yGpu + 0x35c0);
+        sub_bb38f0(ppfxCtx,
+                   *reinterpret_cast<const int32_t*>(param + 0x1ec),
+                   *reinterpret_cast<const int32_t*>(param + 0x1f0),
+                   *reinterpret_cast<const float*>(param + 0x1e4),
+                   *reinterpret_cast<const float*>(param + 0x1e8),
+                   *reinterpret_cast<const float*>(param + 0x1f4));
+        sub_bb3900(ppfxCtx,
+                   (*reinterpret_cast<const int32_t*>(param + 0x200) != 0) ? 1u : 0u,
+                   *reinterpret_cast<const float*>(param + 0x1f8),
+                   *reinterpret_cast<const float*>(param + 0x1fc));
 
-        uint64_t nextFenceVal = g_YebisFenceCounter_56c3ce8 + 1u;
-        g_YebisFenceCounter_56c3ce8 = nextFenceVal;
-        uint8_t* fenceBase = g_YebisFenceGpuAddrBase_56c3cf8;
-        uint64_t curFlip   = g_YebisBufferFlipIndex_56a6d20;
-        sub_10778f0(g_ActiveYebisGfxc0_56c3cc0, 4, 0,
-                    fenceBase + curFlip * 8u, 2, nextFenceVal, 0, 0);
-
-        uint8_t nextFlip = g_YebisBufferFlipIndex_56a6d20 ^ 1u;
-        g_YebisBufferFlipIndex_56a6d20 = nextFlip;
-        uint8_t* waitAddr = g_YebisFenceGpuAddrBase_56c3cf8 + static_cast<uint64_t>(nextFlip) * 8u;
-        uint32_t expectedLow = *reinterpret_cast<uint32_t*>(waitAddr);
-        sub_1077b30(g_ActiveYebisGfxc0_56c3cc0, waitAddr, 0xffffffffu, 3, expectedLow);
-
-        uint32_t s0 = 0, sz0 = 0, s1 = 0, sz1 = 0;
-        sub_1089a10(1, &s0, &sz0, &s1, &sz1);
-
-        director[0x20] = 0;
-        if (director[0x271b] != 0) {
-            director[0x271b] = 0;
-            sub_21d9e50(director,
-                        *reinterpret_cast<void**>(param + 0x368),
-                        *reinterpret_cast<void**>(param + 0x378));
+        // 0x21d7fb8..0x21d8093: Feedback Blur, Anti-Aliasing & PPFX Render Kick
+        sub_bb34c0(ppfxCtx, (*reinterpret_cast<const int32_t*>(param + 0x208) != 0) ? 1u : 0u);
+        if (*reinterpret_cast<const int32_t*>(globalParam + 0x21c) != 0) {
+            const float fbW0 = *reinterpret_cast<const float*>(param + 0x20c);
+            sub_bb34d0(ppfxCtx,
+                       fbW0,
+                       f1 - fbW0,
+                       *reinterpret_cast<const float*>(param + 0x214));
+        } else {
+            sub_bb34d0(ppfxCtx,
+                       0.0f,
+                       f1,
+                       *reinterpret_cast<const float*>(param + 0x214));
         }
-        ppfxCtx = *reinterpret_cast<void**>(director + 0x2670);
+        sub_bb34e0(ppfxCtx, *reinterpret_cast<const float*>(param + 0x218));
+        sub_bb37f0(ppfxCtx, (*reinterpret_cast<const int32_t*>(param + 0x220) != 0) ? 1u : 0u);
+
+        const float clearGrey[4] = {
+            BitsToFloat(0x3ec0c0c1u),
+            BitsToFloat(0x3ec0c0c1u),
+            BitsToFloat(0x3ec0c0c1u),
+            f1
+        };
+        sub_bb3c50(ppfxCtx, 0x10000000u, clearGrey, 0, -1, fNegMax);
     }
 
-    if (auto* auxDepthWrap = *reinterpret_cast<uint8_t**>(param + 0x388)) {
-        sub_bb5f10(ppfxCtx, *reinterpret_cast<uint8_t**>(auxDepthWrap + 0x28) + 0x10);
-    }
-    if (auto* auxVelWrap = *reinterpret_cast<uint8_t**>(param + 0x380)) {
-        sub_bb5f10(ppfxCtx, *reinterpret_cast<uint8_t**>(auxVelWrap + 0x48) + 0x10);
-    }
+    // ========================================================================
+    // Part C (0x21d8093..0x21d8810): Yebis Fullscreen Quad Draw & Double-Buf Sync
+    // ========================================================================
+    {
+        uint32_t dsCtrl = 0;
+        sub_10850d0(&dsCtrl);
+        sub_1085130(&dsCtrl, 0);
+        sub_1076b30(g_ActiveYebisGpuCtx_56c3cb8, dsCtrl);
 
-    auto* gnmAfterYebis = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-    *reinterpret_cast<uint32_t*>((gnmAfterYebis + 0xb730) + 0x79c) |= 0xfffu;
-    *reinterpret_cast<uint32_t*>((gnmAfterYebis + 0xb518) + 0x0c)  |= 0xfffu;
-    *reinterpret_cast<uint32_t*>((gnmAfterYebis + 0xb528) + 0x2c)  |= 0xfffu;
-    *reinterpret_cast<uint32_t*>((gnmAfterYebis + 0xb558) + 0xf8)  |= 0xfffu;
-    cmdCtx[0x208] = 1;
+        uint32_t primSetup = 0;
+        sub_1084f40(&primSetup);
+        sub_1084f50(&primSetup, 0);
+        sub_1084f60(&primSetup, 0);
+        sub_1084f70(&primSetup, 2, 2);
+        sub_1076e00(g_ActiveYebisGpuCtx_56c3cb8, primSetup);
 
-    if (!didYebisRender) {
-        auto* copyGnmCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-        sub_2168660(copyGnmCtx,
-                    copyGnmCtx + 0xb730,
-                    *reinterpret_cast<void**>(param + 0x370),
-                    *reinterpret_cast<void**>(param + 0x368));
-    }
+        sub_1072fd0(g_ActiveYebisGpuCtx_56c3cb8, 0xfu);
+        auto* yGpu0 = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+        *reinterpret_cast<uint32_t*>(yGpu0 + 0x2f0) = 0u;
+        sub_1076030(yGpu0, 0);
 
-    // ------------------------------------------------------------------------
-    // Part D: Debug 3D-to-2D LUT Compute Pass ("LutCopy3DTo2DCs.cpo") & Quad Draw
-    // ------------------------------------------------------------------------
-    if (director[0x21a8] != 0) {
-        if (*reinterpret_cast<int32_t*>(param + 0x2b8) != 0 &&
-            *reinterpret_cast<int32_t*>(param + 0x2b4) != 0 &&
-            param[0x2cc] != 0) {
+        uint32_t blendCtrl = 0;
+        sub_1085380(&blendCtrl);
+        sub_1085390(&blendCtrl, 0, 7);
+        sub_10853f0(&blendCtrl, 0);
+        sub_10733a0(g_ActiveYebisGpuCtx_56c3cb8, blendCtrl);
 
-            auto* gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-            auto* dbg2dLutObj = *reinterpret_cast<uint8_t**>(director + 0x21a0);
-            void* dbgUav = dbg2dLutObj ? *reinterpret_cast<void**>(dbg2dLutObj + 0x40) : nullptr;
-            sub_2168a20(gnm, gnm + 0xb730, dbgUav, 0, 0, nullptr, 0, 0);
+        auto* sceneRoot = static_cast<uint8_t*>(g_SceneRendererRoot_5540dd8);
+        sub_1096f60(g_ActiveYebisGpuCtx_56c3cb8,
+                    0,
+                    0,
+                    *reinterpret_cast<const uint32_t*>(sceneRoot + 0x1e0),
+                    *reinterpret_cast<const uint32_t*>(sceneRoot + 0x1e4),
+                    f1,
+                    0.0f);
+        sub_1077150(g_ActiveYebisGpuCtx_56c3cb8, 0, 0);
 
-            auto* lut3dObj = *reinterpret_cast<uint8_t**>(director + 0x2180);
-            void* lut3dSrv = lut3dObj ? *reinterpret_cast<void**>(lut3dObj + 0x30) : nullptr;
-            auto* sb = gnm + 0xb730;
-            int64_t baseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b38)) * 0x5c8;
-            *reinterpret_cast<void**>(sb + baseOff + 0x3660) = lut3dSrv;
-            *reinterpret_cast<int32_t*>(sb + baseOff + 0x3668) = -1;
-            *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3b20) |= 1u;
-            *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x20u;
+        auto* vsWrap  = *reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(resBank + 0xa28) + 0x010);
+        auto* psWrap  = *reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(resBank + 0x9c0) + 0x010);
+        auto* quadVb  = *reinterpret_cast<uint8_t**>(resBank + 0x9a0);
+        auto* vtxDecl = *reinterpret_cast<uint8_t**>(resBank + 0x9a8);
 
-            void* shdrCont = *reinterpret_cast<void**>(director + 0x2198);
-            auto* csEntry = static_cast<uint8_t*>(
-                sub_2274e20(shdrCont, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b54ULL))));
-            void* csProg  = csEntry ? *reinterpret_cast<void**>(csEntry + 0x48) : nullptr;
-            sb = gnm + 0xb730;
-            if (*reinterpret_cast<void**>(sb + 0x3578) != csProg) {
-                *reinterpret_cast<void**>(sb + 0x3578) = csProg;
-                *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x2000u;
-            }
+        uint32_t elemFmtPos = 0;
+        uint32_t elemFmtUv  = 0;
+        sub_26b7310(&elemFmtPos, 2);
+        sub_26b7310(&elemFmtUv, 0x10);
 
-            auto* dispHelper = gnm + 0x50;
-            if (dispHelper[0x50] == 0) {
-                sub_26af700(gnm + 0x10);
-                dispHelper[0x50] = 1;
-            }
-            sub_26cbe50(dispHelper, gnm, gnm + 0xb730);
-            if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
-                gx_direct_vk::EmitDispatchDirect(gnm + 0x10, 1u, 1u, 16u);
-            } else {
-                sub_1074c50(gnm + 0x10, 1u, 1u, 16u);
-            }
-            sub_26ccf20(dispHelper, gnm, gnm + 0xb730);
+        const uint32_t vbByteSize = *reinterpret_cast<const uint32_t*>(quadVb + 0x02c);
+        const uint32_t numVerts   = static_cast<uint32_t>((static_cast<uint64_t>(vbByteSize) * 0xaaaaaaabULL) >> 36);
 
-            sub_2168a20(gnm, gnm + 0xb730, nullptr, 0, 0, nullptr, 0, 0);
+        alignas(16) uint32_t gnmVbPos[4] = {};
+        alignas(16) uint32_t gnmVbUv[4]  = {};
+        sub_1070650(gnmVbPos, *reinterpret_cast<void**>(quadVb + 0x020), elemFmtPos, 0x18u, numVerts);
+        sub_1070650(gnmVbUv,
+                    *reinterpret_cast<uint8_t**>(quadVb + 0x020) + 0x010,
+                    elemFmtUv,
+                    0x18u,
+                    numVerts);
 
-            sb = gnm + 0xb730;
-            baseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b38)) * 0x5c8;
-            *reinterpret_cast<void**>(sb + baseOff + 0x3660) = nullptr;
-            *reinterpret_cast<int32_t*>(sb + baseOff + 0x3668) = -1;
-            *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3b20) |= 1u;
-            *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x20u;
+        sub_108f330(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 2, 0, 1, gnmVbPos);
+        sub_108f330(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 2, 1, 1, gnmVbUv);
 
-            // Draw debug 2D LUT quad via director + 0x2658 shader
-            auto* quadShdr = *reinterpret_cast<uint8_t**>(director + 0x2658);
-            if (quadShdr != nullptr) {
-                void* vsProg = *reinterpret_cast<void**>(quadShdr + 0x28);
-                if (*reinterpret_cast<void**>(cmdCtx + 0xf8) != vsProg) {
-                    *reinterpret_cast<void**>(cmdCtx + 0xf8) = vsProg;
-                    cmdCtx[0x20c] = 1;
-                }
-                void* psProg = *reinterpret_cast<void**>(quadShdr + 0x30);
-                if (*reinterpret_cast<void**>(cmdCtx + 0x100) != psProg) {
-                    *reinterpret_cast<void**>(cmdCtx + 0x100) = psProg;
-                    cmdCtx[0x20c] = 1;
-                }
-
-                uint8_t* quadTexObj = (director[0x21a9] == 0)
-                    ? *reinterpret_cast<uint8_t**>(director + 0x21a0)
-                    : *reinterpret_cast<uint8_t**>(director + 0x2188);
-                void* quadSrv = quadTexObj ? *reinterpret_cast<void**>(quadTexObj + 0x30) : nullptr;
-                gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-                sb  = gnm + 0xb730;
-                int64_t psBaseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b30)) * 0x5c8;
-                *reinterpret_cast<void**>(sb + psBaseOff + 0x11c0) = quadSrv;
-                *reinterpret_cast<int32_t*>(sb + psBaseOff + 0x11c8) = -1;
-                *reinterpret_cast<uint32_t*>(sb + psBaseOff + 0x1680) |= 1u;
-                *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 2u;
-
-                // Allocate 4-vertex quad in dynamic vertex stream (director + 0x21b0)
-                auto* vtxStream = director + 0x21b0;
-                auto* dev = static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8);
-                uint32_t curFrameIdx = *reinterpret_cast<uint32_t*>(dev + 0x35c);
-                void* cpuVerts = nullptr;
-
-                if (*reinterpret_cast<uint32_t*>(vtxStream + 0x2ac) != 2u ||
-                    *reinterpret_cast<int32_t*>(vtxStream + 0x290) < 0) {
-                    gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-                    sub_26d0d30(*reinterpret_cast<void**>(gnm + 0x38),
-                                gnm + 0x10,
-                                &cpuVerts,
-                                vtxStream);
-                } else {
-                    if (*reinterpret_cast<uint32_t*>(vtxStream + 0x294) != curFrameIdx) {
-                        int32_t ringSlot = (*reinterpret_cast<int32_t*>(vtxStream + 0x28c) + 1) %
-                                           (*reinterpret_cast<int32_t*>(vtxStream + 0x290));
-                        *reinterpret_cast<int32_t*>(vtxStream + 0x28c)  = ringSlot;
-                        *reinterpret_cast<uint32_t*>(vtxStream + 0x294) = curFrameIdx;
-                        int32_t res = sub_2165150(vtxStream, 1, curFrameIdx);
-                        if (res >= 0) {
-                            cpuVerts = *reinterpret_cast<void**>(
-                                vtxStream + static_cast<int64_t>(*reinterpret_cast<int32_t*>(vtxStream + 0x28c)) * 8 + 0x88);
-                        }
-                    } else {
-                        cpuVerts = *reinterpret_cast<void**>(
-                            vtxStream + static_cast<int64_t>(*reinterpret_cast<int32_t*>(vtxStream + 0x28c)) * 8 + 0x88);
-                    }
-                }
-
-                if (cpuVerts != nullptr) {
-                    auto* vpMgr = static_cast<uint8_t*>(g_ViewportManagerSingleton_5540dc0);
-                    float vpWf = static_cast<float>(vpMgr ? *reinterpret_cast<int32_t*>(vpMgr + 0x38) : 1920);
-                    float vpHf = static_cast<float>(vpMgr ? *reinterpret_cast<int32_t*>(vpMgr + 0x3c) : 1080);
-
-                    float x0 = f16 / vpWf + fNeg1;
-                    float y0 = f1 - f16 / vpHf;
-                    float x1 = (f16 - fNeg256) / vpWf + fNeg1;
-                    float y1 = f1 - (f16 + f16) / vpHf;
-
-                    struct QuadVertex {
-                        float x, y, z;
-                        uint32_t color;
-                        float u, v;
-                    };
-                    auto* qv = static_cast<QuadVertex*>(cpuVerts);
-                    qv[0] = {x0, y0, 0.0f, 0xffffffffu, 0.0f, 0.0f};
-                    qv[1] = {x1, y0, 0.0f, 0xffffffffu, f1,   0.0f};
-                    qv[2] = {x0, y1, 0.0f, 0xffffffffu, 0.0f, f1};
-                    qv[3] = {x1, y1, 0.0f, 0xffffffffu, f1,   f1};
-                }
-
-                void* vsDecl = *reinterpret_cast<void**>(director + 0x2650);
-                if (*reinterpret_cast<void**>(cmdCtx + 0xf0) != vsDecl) {
-                    *reinterpret_cast<void**>(cmdCtx + 0xf0) = vsDecl;
-                    cmdCtx[0x20d] = 1;
-                }
-                if (*reinterpret_cast<void**>(cmdCtx + 0x10) != vtxStream) {
-                    *reinterpret_cast<void**>(cmdCtx + 0x10) = vtxStream;
-                    cmdCtx[0x20b] = 1;
-                }
-                if (*reinterpret_cast<int32_t*>(cmdCtx + 0x50) != 0) {
-                    *reinterpret_cast<int32_t*>(cmdCtx + 0x50) = 0;
-                    cmdCtx[0x20b] = 1;
-                }
-                if (*reinterpret_cast<int32_t*>(cmdCtx + 0x90) != 24) {
-                    *reinterpret_cast<int32_t*>(cmdCtx + 0x90) = 24;
-                    cmdCtx[0x20b] = 1;
-                }
-
-                // Set sampler state slot 0
-                gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-                sb  = gnm + 0xb730;
-                psBaseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b30)) * 0x5c8;
-                auto* smpSlot = sb + psBaseOff + 0x1510;
-                *reinterpret_cast<uint64_t*>(smpSlot + 0x00) = 0;
-                *reinterpret_cast<uint64_t*>(smpSlot + 0x08) = 0x3ff0000000000000ull;
-                *reinterpret_cast<uint32_t*>(smpSlot + 0x10) = 0x02020200u;
-                *reinterpret_cast<uint64_t*>(smpSlot + 0x14) = 0;
-                *reinterpret_cast<uint64_t*>(smpSlot + 0x1c) = 0x3f80000000000000ull;
-                *reinterpret_cast<uint64_t*>(smpSlot + 0x24) = 0x0000000141800000ull;
-                *reinterpret_cast<uint32_t*>(sb + psBaseOff + 0x1688) |= 1u;
-                *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 2u;
-
-                sub_21a1a00(cmdCtx);
-                sub_21a1c50(cmdCtx);
-
-                gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-                sub_21696c0(gnm, gnm + 0xb730, 4, 4);
-            }
+        auto* yGpuVs = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+        auto* vsBin  = *reinterpret_cast<uint8_t**>(vsWrap + 0x100);
+        if (vsBin != nullptr && *reinterpret_cast<uint8_t**>(yGpuVs + 0xe610) != vsBin) {
+            sub_1091bc0(yGpuVs + 0x5508, vsBin + 0x028, vsBin[0x03]);
         }
-    }
+        sub_108fbb0(yGpuVs + 0x2c8,
+                    vsBin,
+                    *reinterpret_cast<const uint32_t*>(vtxDecl + 0x040),
+                    *reinterpret_cast<void**>(vtxDecl + 0x010),
+                    yGpuVs + 0x5508);
 
-    // ------------------------------------------------------------------------
-    // Part E: CustomDof 2048-Entry CoC LUT Generation & Compute Dispatch
-    //         ("CustomDofLutCopy.cpo", dispatch 1x1x1)
-    // ------------------------------------------------------------------------
-    if (*reinterpret_cast<int32_t*>(param + 0x04c) > 0 &&
-        *reinterpret_cast<int32_t*>(param + 0x1ac) != 0 &&
-        (*reinterpret_cast<int32_t*>(param + 0x2d0) != 0 || director[0x2669] != 0) &&
-        *reinterpret_cast<void**>(director + 0x2198) != nullptr) {
-
-        void* ppfx = *reinterpret_cast<void**>(director + 0x2670);
-        auto* sceneView = *reinterpret_cast<uint8_t**>(cmdCtx + 0x210);
-        float zNear = *reinterpret_cast<float*>(sceneView + 0x54);
-        float zFar  = *reinterpret_cast<float*>(sceneView + 0x58);
-        float zRange = zFar - zNear;
-
-        int32_t customDofEnable = *reinterpret_cast<int32_t*>(param + 0x2d0);
-        int32_t nearCustom      = *reinterpret_cast<int32_t*>(param + 0x2d4);
-        float nearStart         = *reinterpret_cast<float*>(param + 0x2dc);
-        float nearEnd           = *reinterpret_cast<float*>(param + 0x2e0);
-        float nearCocSize       = *reinterpret_cast<float*>(param + 0x2e4);
-        float nearCocScale      = *reinterpret_cast<float*>(param + 0x2e8);
-        int32_t farCustom       = *reinterpret_cast<int32_t*>(param + 0x2d8);
-        float farStart          = *reinterpret_cast<float*>(param + 0x2ec);
-        float farEnd            = *reinterpret_cast<float*>(param + 0x2f0);
-        float farCocSize        = *reinterpret_cast<float*>(param + 0x2f4);
-        float farCocScale       = *reinterpret_cast<float*>(param + 0x2f8);
-        float farDistThresh     = *reinterpret_cast<float*>(param + 0x2fc);
-
-        auto* cocLutBuf = reinterpret_cast<float*>(director + 0x258);
-        for (int32_t i = 0; i < 2048; ++i) {
-            float normIdx = static_cast<float>(i) * fInv2047;
-            float baseCoc = sub_bb2dc0(ppfx, 0, 2, normIdx);
-
-            float outCoc = baseCoc;
-            if (customDofEnable != 0) {
-                float linDepth = (zFar * zNear) / (zFar - normIdx * zRange);
-                if (baseCoc <= 0.0f) {
-                    // Near field
-                    if (nearCustom != 0) {
-                        if (nearStart > linDepth) {
-                            float denom = nearStart - nearEnd;
-                            if (std::fabs(denom) < f1e_7) {
-                                outCoc = -nearCocSize;
-                            } else {
-                                float t = (nearStart - linDepth) / denom;
-                                if (t > f1) t = f1;
-                                outCoc = t * (-nearCocSize);
-                            }
-                        } else {
-                            outCoc = 0.0f;
-                        }
-                    } else {
-                        outCoc = baseCoc * nearCocScale;
-                    }
-                } else {
-                    // Far field
-                    if (farCustom != 0) {
-                        float focusDist = *reinterpret_cast<float*>(param + 0x1b0);
-                        float effFarStart = (focusDist > farDistThresh) ? focusDist : farStart;
-                        if (linDepth > effFarStart) {
-                            float denom = farEnd - effFarStart;
-                            if (std::fabs(denom) < f1e_7) {
-                                outCoc = farCocSize;
-                            } else {
-                                float t = (linDepth - effFarStart) / denom;
-                                if (t > f1) t = f1;
-                                outCoc = t * farCocSize;
-                            }
-                        } else {
-                            outCoc = 0.0f;
-                        }
-                    } else {
-                        outCoc = baseCoc * farCocScale;
-                    }
-                }
-            }
-            cocLutBuf[i] = outCoc;
+        auto* yGpuPs = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+        auto* psBin  = *reinterpret_cast<uint8_t**>(psWrap + 0x100);
+        if (psBin != nullptr && *reinterpret_cast<uint8_t**>(yGpuPs + 0xe618) != psBin) {
+            sub_1091bc0(yGpuPs + 0x3ce0, psBin + 0x03c, psBin[0x03]);
         }
+        sub_108fdd0(yGpuPs + 0x2c8, psBin, yGpuPs + 0x3ce0);
 
-        auto* gnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x08);
-        void* dofLutUav = director + 0x1b8;
-        sub_2168a20(gnm, gnm + 0xb730, dofLutUav, 0, 0, nullptr, 0, 0);
+        *reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x028) &= ~0x2ULL;
 
-        void* cbGpuAddr = nullptr;
-        auto* cbAlloc = *reinterpret_cast<DLAllocator**>(gnm + 0x38);
-        if (cbAlloc && cbAlloc->vtable && cbAlloc->vtable->allocate_58) {
-            cbGpuAddr = cbAlloc->vtable->allocate_58(cbAlloc, 0x2000, 0x10);
-        }
-        if (cbGpuAddr != nullptr) {
-            sub_2bbe578(cbGpuAddr, cocLutBuf, 0x2000);
-        }
+        auto* srcSrvObj = *reinterpret_cast<uint8_t**>(param + 0x370);
+        alignas(16) uint64_t texDesc128[4];
+        texDesc128[3] = *reinterpret_cast<const uint64_t*>(srcSrvObj + 0x028);
+        texDesc128[2] = *reinterpret_cast<const uint64_t*>(srcSrvObj + 0x020);
+        texDesc128[0] = *reinterpret_cast<const uint64_t*>(srcSrvObj + 0x010);
+        texDesc128[1] = *reinterpret_cast<const uint64_t*>(srcSrvObj + 0x018);
+        sub_108d3f0(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 1, 0, texDesc128);
 
-        auto* sb = gnm + 0xb730;
-        int64_t baseOff = static_cast<int64_t>(*reinterpret_cast<int32_t*>(sb + 0x3b38)) * 0x5c8;
-        *reinterpret_cast<void**>(sb + baseOff + 0x3a60) = cbGpuAddr;
-        *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3a68) = 0x2000u;
-        *reinterpret_cast<uint32_t*>(sb + baseOff + 0x3b2c) |= 1u;
-        *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x20u;
+        alignas(16) uint32_t gnmSamp[4] = {};
+        sub_1086dd0(gnmSamp);
+        sub_1086e10(gnmSamp, 1);
+        sub_108dfe0(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 1, 0, gnmSamp);
+        sub_108dfe0(static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8) + 0x2c8, 1, 2, gnmSamp);
 
-        void* shdrCont = *reinterpret_cast<void**>(director + 0x2198);
-        auto* csEntry = static_cast<uint8_t*>(
-            sub_2274e20(shdrCont, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b7cULL))));
-        void* csProg  = csEntry ? *reinterpret_cast<void**>(csEntry + 0x48) : nullptr;
-        sb = gnm + 0xb730;
-        if (*reinterpret_cast<void**>(sb + 0x3578) != csProg) {
-            *reinterpret_cast<void**>(sb + 0x3578) = csProg;
-            *reinterpret_cast<uint32_t*>(sb + 0x3b58) |= 0x2000u;
-        }
-
-        auto* dispHelper = gnm + 0x50;
-        if (dispHelper[0x50] == 0) {
-            sub_26af700(gnm + 0x10);
-            dispHelper[0x50] = 1;
-        }
-        sub_26cbe50(dispHelper, gnm, gnm + 0xb730);
+        void* const quadIbAddr = *reinterpret_cast<void**>(director + 0x2650);
         if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
-            gx_direct_vk::EmitDispatchDirect(gnm + 0x10, 1u, 1u, 1u);
+            auto* yDrawCtx = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+            sub_108ca70(yDrawCtx + 0x2c8, yDrawCtx, yDrawCtx + 0x080);
+            gx_direct_vk::EmitDrawIndexAddr(
+                yDrawCtx, reinterpret_cast<uint64_t>(quadIbAddr), 6u, 4u, 0u);
+            sub_108ca80(yDrawCtx + 0x2c8, yDrawCtx, yDrawCtx + 0x080);
         } else {
-            sub_1074c50(gnm + 0x10, 1u, 1u, 1u);
+            sub_1073fe0(g_ActiveYebisGpuCtx_56c3cb8, 4);
+            sub_1075270(g_ActiveYebisGpuCtx_56c3cb8, 0);
+            auto* yDrawCtx = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+            sub_108ca70(yDrawCtx + 0x2c8, yDrawCtx, yDrawCtx + 0x080);
+            sub_1074360(yDrawCtx, 6u, quadIbAddr);
+            sub_108ca80(yDrawCtx + 0x2c8, yDrawCtx, yDrawCtx + 0x080);
         }
-        sub_26ccf20(dispHelper, gnm, gnm + 0xb730);
 
-        sub_2168a20(gnm, gnm + 0xb730, nullptr, 0, 0, nullptr, 0, 0);
+        // Note: 0x21d84b8 loads cmdCtx + 0x08 (which is workerCtx->gnmCtx)
+        auto* cmdGnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x008);
+        if (sub_26b9a50(cmdGnm + 0xb478)) {
+            sub_26b9a40(cmdGnm + 0xb478);
+        }
+        sub_26afa00(cmdGnm + 0x010);
 
-        director[0x2669] = (*reinterpret_cast<int32_t*>(param + 0x2d0) != 0) ? 1u : 0u;
+        auto* curPpfx = *reinterpret_cast<uint8_t**>(director + 0x2670);
+        if (curPpfx != nullptr &&
+            *reinterpret_cast<const int32_t*>(param + 0x000) != 0 &&
+            director[0x020] != 0)
+        {
+            director[0x020] = 0;
+            auto* ppfxVt = *reinterpret_cast<DLAllocatorVtable**>(curPpfx);
+            ppfxVt->finish_38(curPpfx, 0, 0);
+
+            const uint8_t curFlip = g_YebisBufferFlipIndex_56a6d20;
+            void* fenceAddr = g_YebisFenceGpuAddrBase_56c3cf8 + static_cast<size_t>(curFlip) * 8u;
+            const uint64_t fenceVal = g_YebisFenceCounter_56c3ce8;
+
+            sub_10778f0(g_ActiveYebisGfxc0_56c3cc0, 4, 0, fenceAddr, 2, fenceVal, 0, 0);
+            sub_1077b30(g_ActiveYebisGfxc0_56c3cc0,
+                        fenceAddr,
+                        0xffffffffu,
+                        3,
+                        static_cast<uint32_t>(fenceVal));
+
+            uint64_t cmdStart0 = g_ActiveYebisCmdBase0_56c3cd0;
+            uint32_t cmdSize0  = static_cast<uint32_t>(
+                *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(g_ActiveYebisGfxc0_56c3cc0) + 0x010)) -
+                static_cast<uint32_t>(cmdStart0);
+            uint64_t cmdStart1 = g_ActiveYebisCmdBase1_56c3cd8;
+            uint32_t cmdSize1  = static_cast<uint32_t>(
+                *reinterpret_cast<const uint64_t*>(static_cast<const uint8_t*>(g_ActiveYebisGfxc1_56c3cc8) + 0x010)) -
+                static_cast<uint32_t>(cmdStart1);
+            sub_1089a10(1, &cmdStart0, &cmdSize0, &cmdStart1, &cmdSize1);
+
+            ++g_YebisFenceCounter_56c3ce8;
+            uint8_t nextFlip = static_cast<uint8_t>(g_YebisBufferFlipIndex_56a6d20 + 1u);
+            if (nextFlip > 1u) {
+                nextFlip = 0u;
+            }
+            g_YebisBufferFlipIndex_56a6d20 = nextFlip;
+
+            uint8_t* nextYebisCtx = g_YebisDoubleBufArea_56a6d20 + 0x008 +
+                                    static_cast<size_t>(nextFlip) * 0xe7b8u;
+            g_ActiveYebisGpuCtx_56c3cb8 = nextYebisCtx;
+            sub_10946d0(nextYebisCtx);
+
+            auto* activeYebis = static_cast<uint8_t*>(g_ActiveYebisGpuCtx_56c3cb8);
+            g_ActiveYebisGfxc0_56c3cc0  = activeYebis;
+            g_ActiveYebisGfxc1_56c3cc8  = activeYebis + 0x080;
+            g_ActiveYebisCmdBase0_56c3cd0 = *reinterpret_cast<const uint64_t*>(activeYebis + 0x000);
+            g_ActiveYebisCmdBase1_56c3cd8 = *reinterpret_cast<const uint64_t*>(activeYebis + 0x080);
+            sub_10946d0(activeYebis);
+
+            curPpfx = *reinterpret_cast<uint8_t**>(director + 0x2670);
+        }
+
+        auto* relVelWrap = *reinterpret_cast<uint8_t**>(param + 0x388);
+        if (relVelWrap != nullptr) {
+            sub_bb5f10(curPpfx, *reinterpret_cast<uint8_t**>(relVelWrap + 0x028) + 0x010);
+        }
+        auto* relDepthWrap = *reinterpret_cast<uint8_t**>(param + 0x380);
+        if (relDepthWrap != nullptr) {
+            sub_bb5f10(curPpfx, *reinterpret_cast<uint8_t**>(relDepthWrap + 0x048) + 0x010);
+        }
+
+        auto* innerDevCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        auto* gnm         = *reinterpret_cast<uint8_t**>(innerDevCtx + 0x008);
+        alignas(32) uint8_t zeroClearDesc[0x48] = {};
+        sub_26d3070(gnm + 0xb558, gnm, zeroClearDesc);
+        sub_26b9850(gnm + 0xb478, gnm + 0x010);
+        sub_26cd190(gnm + 0x0050, gnm);
+        sub_26af700(gnm + 0x0010);
+        sub_26bba10(gnm + 0xb518);
+        sub_26d3300(gnm + 0xb528);
+        sub_26d2d20(gnm + 0xb558);
+        sub_2bbe688(gnm + 0xb730, 0, 0x23a8);
+
+        innerDevCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_e47290(innerDevCtx + 0x1728, 1);
+        *reinterpret_cast<void**>(innerDevCtx + 0x1ec0) = sub_e47840(innerDevCtx + 0x1728);
+        innerDevCtx[0x1670] &= 0xfeu;
+        sub_219fcf0(*reinterpret_cast<uint8_t**>(cmdCtx + 0x000));
+
+        innerDevCtx = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        *reinterpret_cast<void**>(innerDevCtx + 0x0788)    = nullptr;
+        *reinterpret_cast<uint32_t*>(innerDevCtx + 0x0960) = 0u;
+        const uint32_t prevEnd = *reinterpret_cast<const uint32_t*>(innerDevCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(innerDevCtx + 0x0964) = (prevEnd > 1u) ? prevEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(innerDevCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = nullptr;
+    }
+
+    // ========================================================================
+    // Part D1 (0x21d8810..0x21d8d65): Optional LUT Overlay Quad / RT Rebind
+    // ========================================================================
+    if (*reinterpret_cast<void**>(director + 0x030) != nullptr &&
+        *reinterpret_cast<const int32_t*>(param + 0x2b8) != 0)
+    {
+        auto* outRtWrap = *reinterpret_cast<uint8_t**>(param + 0x390);
+        void* srcSurf   = *reinterpret_cast<void**>(outRtWrap + 0x008);
+        void* dstSurf   = *reinterpret_cast<void**>(resBank + 0x6e0);
+        auto* innerDev  = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_2168660(*reinterpret_cast<void**>(innerDev + 0x008), cmdCtx, dstSurf, srcSurf);
+
+        innerDev = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_e46f40(innerDev + 0x1728, *reinterpret_cast<void**>(param + 0x390), 0, 1);
+        *reinterpret_cast<void**>(innerDev + 0x1ec0) = sub_e47840(innerDev + 0x1728);
+        sub_21a1c50(innerDev);
+        sub_219fcf0(*reinterpret_cast<uint8_t**>(cmdCtx + 0x000));
+
+        auto* devSingleton = static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8);
+        auto* statePool    = *reinterpret_cast<uint8_t**>(devSingleton + 0x250);
+
+        void* rsObj = *reinterpret_cast<void**>(statePool + 0x1f8);
+        *reinterpret_cast<void**>(devCtx + 0x0258) = rsObj;
+        auto* gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<void**>(gnm + 0xb970) = rsObj;
+
+        void* bsObj = *reinterpret_cast<void**>(statePool + 0x000);
+        *reinterpret_cast<void**>(devCtx + 0x0480)    = bsObj;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0498) = 0xffffffffu;
+        *reinterpret_cast<void**>(gnm + 0xbc00)       = bsObj;
+        *reinterpret_cast<uint64_t*>(gnm + 0xbca0)    = 0;
+        *reinterpret_cast<uint64_t*>(gnm + 0xbc98)    = 0;
+        *reinterpret_cast<uint32_t*>(gnm + 0xbcb0)    = 0xffffffffu;
+
+        void* dssObj = *reinterpret_cast<void**>(statePool + 0x1c8);
+        *reinterpret_cast<void**>(devCtx + 0x0210) = dssObj;
+        devCtx[0x0218] = 0xffu;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<void**>(gnm + 0xbc08) = dssObj;
+        gnm[0xbcb4] = 0xffu;
+
+        auto* srvSlot1 = *reinterpret_cast<uint8_t**>(resBank + 0x958);
+        *reinterpret_cast<void**>(devCtx + 0x0970) = srvSlot1;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x09d8) =
+            (*reinterpret_cast<const uint32_t*>(devCtx + 0x09d8) != 0u) ? 1u : 0u;
+        const uint32_t prevEnd9dc = *reinterpret_cast<const uint32_t*>(devCtx + 0x09dc);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x09dc) = (prevEnd9dc > 2u) ? prevEnd9dc : 2u;
+        gnm[0x197a] |= 0x02u;
+        if (srvSlot1 != nullptr) {
+            constexpr uint32_t kSrvMask1 = 0x100002u;
+            auto* pState = reinterpret_cast<uint32_t*>(srvSlot1 + 0x44);
+            if ((*pState & kSrvMask1) != kSrvMask1) {
+                __atomic_fetch_or(pState, kSrvMask1, __ATOMIC_SEQ_CST);
+            }
+        }
+        *reinterpret_cast<void**>(gnm + 0xd530) = srvSlot1;
+
+        void* samp0 = *reinterpret_cast<void**>(
+            *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250) + 0x2d0);
+        *reinterpret_cast<void**>(devCtx + 0x09e0)    = samp0;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a60) = 0u;
+        const uint32_t prevSampEnd0 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0a64);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a64) = (prevSampEnd0 <= 1u) ? 1u : prevSampEnd0;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1978) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd0a8) = samp0;
+
+        void* samp3 = *reinterpret_cast<void**>(
+            *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250) + 0x2d8);
+        *reinterpret_cast<void**>(devCtx + 0x09f8) = samp3;
+        const uint32_t prevSampStart = *reinterpret_cast<const uint32_t*>(devCtx + 0x0a60);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a60) = (prevSampStart < 3u) ? prevSampStart : 3u;
+        const uint32_t prevSampEnd3 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0a64);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a64) = (prevSampEnd3 <= 4u) ? 4u : prevSampEnd3;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1978) |= 0x8ULL;
+        *reinterpret_cast<void**>(gnm + 0xd0c0) = samp3;
+
+        void* vsObj = *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(resBank + 0xa28) + 0x010);
+        *reinterpret_cast<void**>(devCtx + 0x0780) = vsObj;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc1b8) = vsObj;
+
+        void* psObj = *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(resBank + 0x9c8) + 0x010);
+        *reinterpret_cast<void**>(devCtx + 0x0a68) = psObj;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd598) = psObj;
+
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1320) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc6b0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1038) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xcba8) = 0;
+
+        void* psSrv0 = *reinterpret_cast<void**>(resBank + 0x6e8);
+        *reinterpret_cast<void**>(devCtx + 0x0788)    = psSrv0;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = 0u;
+        const uint32_t prevPsEnd0 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (prevPsEnd0 <= 1u) ? 1u : prevPsEnd0;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = psSrv0;
+
+        void* psSrv4 = *reinterpret_cast<void**>(director + 0x030);
+        *reinterpret_cast<void**>(devCtx + 0x07a8) = psSrv4;
+        const uint32_t prevPsStart4 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0960);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = (prevPsStart4 >= 4u) ? 3u : prevPsStart4;
+        const uint32_t prevPsEnd4 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (prevPsEnd4 <= 5u) ? 5u : prevPsEnd4;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x10ULL;
+        *reinterpret_cast<void**>(gnm + 0xd148) = *reinterpret_cast<void**>(director + 0x030);
+
+        innerDev = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        void* vtxDecl = *reinterpret_cast<void**>(resBank + 0x9a8);
+        *reinterpret_cast<void**>(innerDev + 0x0260) = vtxDecl;
+        auto* innerGnm = *reinterpret_cast<uint8_t**>(innerDev + 0x008);
+        *reinterpret_cast<void**>(innerGnm + 0xb730) = vtxDecl;
+
+        void* quadVb = *reinterpret_cast<void**>(resBank + 0x9a0);
+        *reinterpret_cast<void**>(innerDev + 0x0280)    = quadVb;
+        *reinterpret_cast<uint32_t*>(innerDev + 0x0380) = 0x18u;
+        *reinterpret_cast<uint32_t*>(innerDev + 0x0400) = 0u;
+        innerGnm[0x25f0] |= 0x01u;
+        *reinterpret_cast<void**>(innerGnm + 0xb750)    = *reinterpret_cast<void**>(resBank + 0x9a0);
+        *reinterpret_cast<uint32_t*>(innerGnm + 0xb850) = 0x18u;
+        *reinterpret_cast<uint32_t*>(innerGnm + 0xb8d0) = 0u;
+
+        *reinterpret_cast<uint32_t*>(innerDev + 0x0268) = 5u;
+        innerGnm = *reinterpret_cast<uint8_t**>(innerDev + 0x008);
+        *reinterpret_cast<uint32_t*>(innerGnm + 0xb738) = 5u;
+
+        sub_2bbe688(innerDev + 0x1670, 0, 0xb8);
+        *reinterpret_cast<uint64_t*>(innerDev + 0x1680) = 0xeULL;
+        *reinterpret_cast<uint64_t*>(innerDev + 0x1688) = 0x8ULL;
+        sub_21696c0(innerGnm, innerGnm + 0xb730, 4, 0);
+
+        *reinterpret_cast<void**>(devCtx + 0x0788)    = nullptr;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = 0u;
+        const uint32_t unbindEnd0 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (unbindEnd0 > 1u) ? unbindEnd0 : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = nullptr;
+
+        *reinterpret_cast<void**>(devCtx + 0x07a8) = nullptr;
+        const uint32_t unbindStart4 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0960);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = (unbindStart4 < 4u) ? unbindStart4 : 4u;
+        const uint32_t unbindEnd4 = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (unbindEnd4 > 5u) ? unbindEnd4 : 5u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x10ULL;
+        *reinterpret_cast<void**>(gnm + 0xd148) = nullptr;
+    } else {
+        auto* innerDev = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_e46f40(innerDev + 0x1728, *reinterpret_cast<void**>(param + 0x390), 0, 1);
+        *reinterpret_cast<void**>(innerDev + 0x1ec0) = sub_e47840(innerDev + 0x1728);
+        sub_21a1c50(innerDev);
+    }
+
+    // ========================================================================
+    // Part D2 (0x21d8d65..0x21d9654): Optional 3D-to-2D LUT Debug Preview Pass
+    // ========================================================================
+    if (*reinterpret_cast<void**>(director + 0x048) != nullptr &&
+        g_ViewportManagerSingleton_5540dc0 != nullptr &&
+        director[0x21a8] != 0)
+    {
+        void* lut3dSrv = *reinterpret_cast<void**>(director + 0x030);
+        if (lut3dSrv != nullptr) {
+            *reinterpret_cast<uint32_t*>(director + 0x078) = 0x10u;
+            *reinterpret_cast<uint32_t*>(director + 0x07c) = 0x100u;
+            *reinterpret_cast<uint32_t*>(director + 0x080) = 0x100u;
+            *reinterpret_cast<uint32_t*>(director + 0x084) = 0x10u;
+        }
+
+        auto* uav2d = *reinterpret_cast<uint8_t**>(director + 0x070);
+        auto* gnm   = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        sub_2168a20(gnm, gnm + 0xb730, uav2d, 0, 0, director + 0x078, 0, 0);
+
+        *reinterpret_cast<void**>(devCtx + 0x1508)    = uav2d;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1578) = 0u;
+        const uint32_t prevUavEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x157c);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x157c) = (prevUavEnd > 1u) ? prevUavEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x10000ULL;
+        if (uav2d != nullptr) {
+            constexpr uint32_t kUavMask0 = 0x200001u;
+            auto* pState = reinterpret_cast<uint32_t*>(uav2d + 0x44);
+            if ((*pState & kUavMask0) != kUavMask0) {
+                __atomic_fetch_or(pState, kUavMask0, __ATOMIC_SEQ_CST);
+            }
+        }
+        *reinterpret_cast<void**>(gnm + 0xda20) = uav2d;
+
+        void* cb3dTo2d = *reinterpret_cast<void**>(director + 0x050);
+
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0780) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc1b8) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0a68) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd598) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0d50) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd0a0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1320) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc6b0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1038) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xcba8) = 0;
+
+        void* linSampler = *reinterpret_cast<void**>(
+            *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250) + 0x2d0);
+        *reinterpret_cast<void**>(devCtx + 0x1580)    = linSampler;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1600) = 0u;
+        const uint32_t prevSampEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1604);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1604) = (prevSampEnd > 1u) ? prevSampEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd5a0) = linSampler;
+
+        auto* csEntry = static_cast<uint8_t*>(
+            sub_2274e20(resBank + 0x9a8, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b54ULL))));
+        if (csEntry != nullptr) {
+            void* csObj = *reinterpret_cast<void**>(csEntry + 0x010);
+            *reinterpret_cast<void**>(devCtx + 0x1608) = csObj;
+            *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = csObj;
+
+            *reinterpret_cast<void**>(devCtx + 0x1610)    = cb3dTo2d;
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0xffffffffu;
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+            *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0xffffffffu;
+            *reinterpret_cast<void**>(gnm + 0xda98)     = cb3dTo2d;
+
+            *reinterpret_cast<void**>(devCtx + 0x1338) = lut3dSrv;
+            const uint32_t prevSrvStart = *reinterpret_cast<const uint32_t*>(devCtx + 0x1500);
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1500) = (prevSrvStart < 2u) ? prevSrvStart : 2u;
+            const uint32_t prevSrvEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1504);
+            *reinterpret_cast<uint32_t*>(devCtx + 0x1504) = (prevSrvEnd > 3u) ? prevSrvEnd : 3u;
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            *reinterpret_cast<uint64_t*>(gnm + 0x1fa8) |= 0x4ULL;
+            *reinterpret_cast<void**>(gnm + 0xd630) = lut3dSrv;
+
+            sub_2bbe688(devCtx + 0x1670, 0, 0xb8);
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1680) = 0xeULL;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1688) = 0x8ULL;
+
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            sub_26af700(gnm + 0x010);
+            sub_26cbe50(gnm + 0x050, gnm, gnm + 0xb730);
+            if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
+                gx_direct_vk::EmitDispatchDirect(gnm + 0x010, 1u, 1u, 16u);
+            } else {
+                sub_1074c50(gnm + 0x010, 1u, 1u, 16u);
+            }
+            sub_26ccf20(gnm + 0x050, gnm, gnm + 0xb730);
+            sub_26af700(gnm + 0x010);
+        }
+
+        *reinterpret_cast<void**>(devCtx + 0x1610)    = nullptr;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0xffffffffu;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+        *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0xffffffffu;
+        *reinterpret_cast<void**>(gnm + 0xda98)     = nullptr;
+
+        *reinterpret_cast<void**>(devCtx + 0x1338) = nullptr;
+        const uint32_t unbindSrvStart = *reinterpret_cast<const uint32_t*>(devCtx + 0x1500);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1500) = (unbindSrvStart >= 2u) ? 2u : unbindSrvStart;
+        const uint32_t unbindSrvEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1504);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1504) = (unbindSrvEnd <= 3u) ? 3u : unbindSrvEnd;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fa8) |= 0x4ULL;
+        *reinterpret_cast<void**>(gnm + 0xd630) = nullptr;
+
+        *reinterpret_cast<void**>(devCtx + 0x1608) = nullptr;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = nullptr;
+
+        sub_219fcf0(devCtx);
+
+        // Map dynamic preview quad VB (+0x58) and write 4 vertices (24 bytes each)
+        auto* dynVb = *reinterpret_cast<uint8_t**>(director + 0x058);
+        gnm         = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        float* mappedVtx = nullptr;
+        if (sub_2165150(dynVb, 3, *reinterpret_cast<const uint32_t*>(gnm + 0xb510)) == 0 &&
+            dynVb[0x38] == 1u)
+        {
+            void* outCpuPtr = nullptr;
+            if (sub_26d0d30(gnm + 0xb6f8, gnm + 0x010, &outCpuPtr, dynVb + 0x018) == 0) {
+                mappedVtx = static_cast<float*>(outCpuPtr);
+            }
+        }
+
+        if (mappedVtx != nullptr) {
+            auto* vpMgr = static_cast<const uint8_t*>(g_ViewportManagerSingleton_5540dc0);
+            const float vpWf = static_cast<float>(static_cast<int64_t>(*reinterpret_cast<const uint32_t*>(vpMgr + 0x018)));
+            const float vpHf = static_cast<float>(static_cast<int64_t>(*reinterpret_cast<const uint32_t*>(vpMgr + 0x01c)));
+            const float x0 = ((0.0f / vpWf) * 2.0f) + fNeg1;
+            const float y0 = ((fNeg0 / vpHf) * 2.0f) + f1;
+            const float x1 = ((f16 / vpWf) * 2.0f) + fNeg1;
+            const float y1 = ((fNeg256 / vpHf) * 2.0f) + f1;
+
+            mappedVtx[0]  = x0; mappedVtx[1]  = y0; mappedVtx[2]  = f1;   mappedVtx[3]  = f1;
+            mappedVtx[4]  = 0.0f; mappedVtx[5]  = 0.0f;
+            mappedVtx[6]  = x1; mappedVtx[7]  = y0; mappedVtx[8]  = f1;   mappedVtx[9]  = f1;
+            mappedVtx[10] = f1; mappedVtx[11] = 0.0f;
+            mappedVtx[12] = x0; mappedVtx[13] = y1; mappedVtx[14] = f1;   mappedVtx[15] = f1;
+            mappedVtx[16] = 0.0f; mappedVtx[17] = f1;
+            mappedVtx[18] = x1; mappedVtx[19] = y1; mappedVtx[20] = f1;   mappedVtx[21] = f1;
+            mappedVtx[22] = f1; mappedVtx[23] = f1;
+        }
+
+        auto* srvSlot1 = *reinterpret_cast<uint8_t**>(resBank + 0x958);
+        *reinterpret_cast<void**>(devCtx + 0x0970) = srvSlot1;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x09d8) =
+            (*reinterpret_cast<const uint32_t*>(devCtx + 0x09d8) != 0u) ? 1u : 0u;
+        const uint32_t prevEnd9dc = *reinterpret_cast<const uint32_t*>(devCtx + 0x09dc);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x09dc) = (prevEnd9dc > 2u) ? prevEnd9dc : 2u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1978) |= 0x20000ULL;
+        if (srvSlot1 != nullptr) {
+            constexpr uint32_t kSrvMask1 = 0x100002u;
+            auto* pState = reinterpret_cast<uint32_t*>(srvSlot1 + 0x44);
+            if ((*pState & kSrvMask1) != kSrvMask1) {
+                __atomic_fetch_or(pState, kSrvMask1, __ATOMIC_SEQ_CST);
+            }
+        }
+        *reinterpret_cast<void**>(gnm + 0xd530) = srvSlot1;
+
+        auto* statePool = *reinterpret_cast<uint8_t**>(
+            static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250);
+        void* rsObj = *reinterpret_cast<void**>(statePool + 0x1f8);
+        *reinterpret_cast<void**>(devCtx + 0x0258) = rsObj;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<void**>(gnm + 0xb970) = rsObj;
+
+        void* bsObj = *reinterpret_cast<void**>(statePool + 0x000);
+        *reinterpret_cast<void**>(devCtx + 0x0480)    = bsObj;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0498) = 0xffffffffu;
+        *reinterpret_cast<void**>(gnm + 0xbc00)       = bsObj;
+        *reinterpret_cast<uint64_t*>(gnm + 0xbca0)    = 0;
+        *reinterpret_cast<uint64_t*>(gnm + 0xbc98)    = 0;
+        *reinterpret_cast<uint32_t*>(gnm + 0xbcb0)    = 0xffffffffu;
+
+        void* dssObj = *reinterpret_cast<void**>(statePool + 0x1c8);
+        *reinterpret_cast<void**>(devCtx + 0x0210) = dssObj;
+        devCtx[0x0218] = 0xffu;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<void**>(gnm + 0xbc08) = dssObj;
+        gnm[0xbcb4] = 0xffu;
+
+        void* samp0 = *reinterpret_cast<void**>(
+            *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250) + 0x2d0);
+        *reinterpret_cast<void**>(devCtx + 0x09e0)    = samp0;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a60) = 0u;
+        const uint32_t prevPsSampEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x0a64);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0a64) = (prevPsSampEnd <= 1u) ? 1u : prevPsSampEnd;
+        gnm[0x1978] |= 0x01u;
+        *reinterpret_cast<void**>(gnm + 0xd0a8) = samp0;
+
+        void* vsObj = *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(resBank + 0xa28) + 0x010);
+        *reinterpret_cast<void**>(devCtx + 0x0780) = vsObj;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc1b8) = vsObj;
+
+        void* psObj = *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(resBank + 0x9c0) + 0x010);
+        *reinterpret_cast<void**>(devCtx + 0x0a68) = psObj;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd598) = psObj;
+
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1320) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc6b0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1038) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xcba8) = 0;
+
+        void* previewSrv0 = *reinterpret_cast<void**>(director + 0x048);
+        *reinterpret_cast<void**>(devCtx + 0x0788)    = previewSrv0;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = 0u;
+        const uint32_t prevPsEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (prevPsEnd > 1u) ? prevPsEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = previewSrv0;
+
+        void* vtxDecl = *reinterpret_cast<void**>(resBank + 0x9a8);
+        *reinterpret_cast<void**>(devCtx + 0x0260) = vtxDecl;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<void**>(gnm + 0xb730) = vtxDecl;
+
+        void* previewVb = *reinterpret_cast<void**>(director + 0x058);
+        *reinterpret_cast<void**>(devCtx + 0x0280)    = previewVb;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0380) = 0x18u;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0400) = 0u;
+        gnm[0x25f0] |= 0x01u;
+        *reinterpret_cast<void**>(gnm + 0xb750)    = *reinterpret_cast<void**>(director + 0x058);
+        *reinterpret_cast<uint32_t*>(gnm + 0xb850) = 0x18u;
+        *reinterpret_cast<uint32_t*>(gnm + 0xb8d0) = 0u;
+
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0268) = 5u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint32_t*>(gnm + 0xb738) = 5u;
+
+        sub_2bbe688(devCtx + 0x1670, 0, 0xb8);
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1680) = 0xeULL;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1688) = 0x8ULL;
+        sub_21696c0(gnm, gnm + 0xb730, 4, 0);
+    }
+
+    // ========================================================================
+    // Part E (0x21d9654..0x21d9db8): CustomDof 2048-Entry CoC LUT Compute Pass
+    // ========================================================================
+    {
+        const void* curSceneView = *reinterpret_cast<const void**>(cmdCtx + 0x210);
+        auto* lutSurfObj         = *reinterpret_cast<const uint8_t**>(director + 0x20d0);
+        *reinterpret_cast<uint32_t*>(director + 0x0c0) = *reinterpret_cast<const uint16_t*>(lutSurfObj + 0x044);
+        *reinterpret_cast<uint32_t*>(director + 0x0c4) = *reinterpret_cast<const uint16_t*>(lutSurfObj + 0x046);
+        *reinterpret_cast<uint32_t*>(director + 0x0c8) = 0u;
+
+        alignas(32) uint8_t projParams[0x48] = {};
+        sub_21aa290(projParams, curSceneView);
+
+        auto clampPos = [](float v) noexcept -> float {
+            return !(v <= 0.0f) ? v : 0.0f;
+        };
+        const float nearStart = clampPos(*reinterpret_cast<const float*>(globalParam + 0x2dc)); // 0xf0(%rsp)
+        const float nearEnd   = clampPos(*reinterpret_cast<const float*>(globalParam + 0x2e0)); // 0x128(%rsp)
+        const float farStart  = clampPos(*reinterpret_cast<const float*>(globalParam + 0x2ec)); // 0x110(%rsp)
+        const float farEnd    = clampPos(*reinterpret_cast<const float*>(globalParam + 0x2f0));
+        const float farCutoff = clampPos(*reinterpret_cast<const float*>(globalParam + 0x2fc)); // 0x130(%rsp)
+
+        const float farSpan  = ((farEnd - farStart) > f1e_7) ? (farEnd - farStart) : f1e_7;     // 0xc0(%rsp)
+        const float nearSpan = ((nearEnd - nearStart) > f1e_7) ? (nearEnd - nearStart) : f1e_7; // 0xe0(%rsp)
+
+        auto* cocLutOut = reinterpret_cast<float*>(director + 0x0d0);
+        for (int32_t i = 0; i < 0x800; ++i) {
+            const float rawT = static_cast<float>(i) * fInv2047;
+            float clampedT = 0.0f;
+            if (!(0.0f > rawT)) {
+                clampedT = (rawT < f1) ? rawT : f1;
+            }
+            const float normDepth  = (i > 0x7fd) ? f1 : clampedT;
+            const float baseCoc    = sub_bb2dc0(savedPpfxCtx, 0, 3, normDepth);
+            const float linearDist = sub_bb2dc0(savedPpfxCtx, 0, 7, normDepth);
+
+            float coc = 0.0f;
+            if (*reinterpret_cast<const int32_t*>(globalParam + 0x2d4) == 0) {
+                coc = baseCoc;
+                if (0.0f > coc) {
+                    coc *= *reinterpret_cast<const float*>(globalParam + 0x2e8);
+                }
+            } else {
+                if (nearEnd > linearDist) {
+                    const float tNear = (linearDist - nearStart) / nearSpan;
+                    float cNear = 0.0f;
+                    if (!(0.0f > tNear)) {
+                        cNear = (tNear < f1) ? tNear : f1;
+                    }
+                    coc = -((f1 - cNear) * *reinterpret_cast<const float*>(globalParam + 0x2e4));
+                    if (0.0f > coc) {
+                        coc *= *reinterpret_cast<const float*>(globalParam + 0x2e8);
+                    }
+                }
+            }
+
+            if (*reinterpret_cast<const int32_t*>(globalParam + 0x2d8) != 0 && linearDist > farStart) {
+                const float tFar = (linearDist - farStart) / farSpan;
+                float cFar = 0.0f;
+                if (!(0.0f > tFar)) {
+                    cFar = (tFar < f1) ? tFar : f1;
+                }
+                coc = cFar * *reinterpret_cast<const float*>(globalParam + 0x2f4);
+            }
+
+            if (coc > 0.0f) {
+                coc *= *reinterpret_cast<const float*>(globalParam + 0x2f8);
+            }
+
+            const __m128 clipMask = _mm_cmplt_ss(_mm_set_ss(farCutoff), _mm_set_ss(linearDist));
+            cocLutOut[i] = _mm_cvtss_f32(_mm_andnot_ps(clipMask, _mm_set_ss(coc)));
+        }
+
+        auto* dofUav = *reinterpret_cast<uint8_t**>(director + 0x0b8);
+        auto* gnm    = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        sub_2168a20(gnm, gnm + 0xb730, dofUav, 0, 0, director + 0x0c0, 0, 0);
+
+        *reinterpret_cast<void**>(devCtx + 0x1510) = dofUav;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1578) =
+            (*reinterpret_cast<const uint32_t*>(devCtx + 0x1578) != 0u) ? 1u : 0u;
+        const uint32_t prevUavEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x157c);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x157c) = (prevUavEnd > 2u) ? prevUavEnd : 2u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x20000ULL;
+        if (dofUav != nullptr) {
+            constexpr uint32_t kUavMask1 = 0x200002u;
+            auto* pState = reinterpret_cast<uint32_t*>(dofUav + 0x44);
+            if ((*pState & kUavMask1) != kUavMask1) {
+                __atomic_fetch_or(pState, kUavMask1, __ATOMIC_SEQ_CST);
+            }
+        }
+        *reinterpret_cast<void**>(gnm + 0xda28) = dofUav;
+
+        void* dofCb = *reinterpret_cast<void**>(director + 0x20e0);
+
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0780) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc1b8) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0a68) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd598) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x0d50) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xd0a0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1320) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xc6b0) = 0;
+        *reinterpret_cast<uint64_t*>(devCtx + 0x1038) = 0;
+        *reinterpret_cast<uint64_t*>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xcba8) = 0;
+
+        *reinterpret_cast<void**>(devCtx + 0x1610)    = dofCb;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+        *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0u;
+        *reinterpret_cast<void**>(gnm + 0xda98)     = dofCb;
+
+        void* linSampler = *reinterpret_cast<void**>(
+            *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(g_RenderDeviceSingleton_55406c8) + 0x250) + 0x2d0);
+        *reinterpret_cast<void**>(devCtx + 0x1580)    = linSampler;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1600) = 0u;
+        const uint32_t prevSampEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x1604);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1604) = (prevSampEnd > 1u) ? prevSampEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd5a0) = linSampler;
+
+        auto* curResBank = *reinterpret_cast<uint8_t**>(director + 0x010);
+        auto* csEntry = static_cast<uint8_t*>(
+            sub_2274e20(curResBank + 0x9a8, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b7cULL))));
+        if (csEntry != nullptr) {
+            void* csObj = *reinterpret_cast<void**>(csEntry + 0x010);
+            *reinterpret_cast<void**>(devCtx + 0x1608) = csObj;
+            *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = csObj;
+
+            sub_2bbe688(devCtx + 0x1670, 0, 0xb8);
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1680) = 0xeULL;
+            *reinterpret_cast<uint64_t*>(devCtx + 0x1688) = 0x8ULL;
+
+            gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+            sub_26af700(gnm + 0x010);
+            sub_26cbe50(gnm + 0x050, gnm, gnm + 0xb730);
+            if (gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_YebisDrawDispatch)) {
+                gx_direct_vk::EmitDispatchDirect(gnm + 0x010, 1u, 1u, 1u);
+            } else {
+                sub_1074c50(gnm + 0x010, 1u, 1u, 1u);
+            }
+            sub_26ccf20(gnm + 0x050, gnm, gnm + 0xb730);
+            sub_26af700(gnm + 0x010);
+        }
+
+        *reinterpret_cast<void**>(devCtx + 0x1610)    = nullptr;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x1650) = 0u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1fb8) |= 0x1000000000ULL;
+        *reinterpret_cast<uint32_t*>(gnm + 0x1fd0)  = 0u;
+        *reinterpret_cast<void**>(gnm + 0xda98)     = nullptr;
+
+        *reinterpret_cast<void**>(devCtx + 0x1608) = nullptr;
+        *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = nullptr;
+
+        sub_219fcf0(devCtx);
+
+        auto* cmdGnm = *reinterpret_cast<uint8_t**>(cmdCtx + 0x008);
+        alignas(32) uint8_t zeroClearDesc[0x48] = {};
+        sub_26d3070(cmdGnm + 0xb558, cmdGnm, zeroClearDesc);
+        sub_26b9850(cmdGnm + 0xb478, cmdGnm + 0x010);
+        sub_26cd190(cmdGnm + 0x0050, cmdGnm);
+        sub_26af700(cmdGnm + 0x0010);
+        sub_26bba10(cmdGnm + 0xb518);
+        sub_26d3300(cmdGnm + 0xb528);
+        sub_26d2d20(cmdGnm + 0xb558);
+        sub_2bbe688(cmdGnm + 0xb730, 0, 0x23a8);
+
+        auto* innerDev = *reinterpret_cast<uint8_t**>(cmdCtx + 0x000);
+        sub_e47290(innerDev + 0x1728, 1);
+        *reinterpret_cast<void**>(innerDev + 0x1ec0) = sub_e47840(innerDev + 0x1728);
+        innerDev[0x1670] &= 0xfeu;
+
+        *reinterpret_cast<void**>(devCtx + 0x0788)    = nullptr;
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0960) = 0u;
+        const uint32_t prevPsEnd = *reinterpret_cast<const uint32_t*>(devCtx + 0x0964);
+        *reinterpret_cast<uint32_t*>(devCtx + 0x0964) = (prevPsEnd > 1u) ? prevPsEnd : 1u;
+        gnm = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
+        *reinterpret_cast<uint64_t*>(gnm + 0x1968) |= 0x1ULL;
+        *reinterpret_cast<void**>(gnm + 0xd128) = nullptr;
+
+        sub_219fcf0(devCtx);
     }
 }
 

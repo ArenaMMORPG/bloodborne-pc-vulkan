@@ -4,6 +4,8 @@
 #include <cmath>
 #include <immintrin.h>
 
+#include "gx_direct_vulkan.h"
+
 // ============================================================================
 // Module 06: Deferred Lighting and Ambient Occlusion (Step 2)
 // Range: 0x2297000 .. 0x22a0000 (20 functions, 36,817 bytes)
@@ -534,7 +536,10 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xa0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x08);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xa4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x0c);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xa8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x10);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xac) = *reinterpret_cast<uint32_t*>(evalBuf + 0x70);
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xac) =
+                    gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectChromaticAberration)
+                        ? *reinterpret_cast<uint32_t*>(evalBuf + 0x70)
+                        : 0u;
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xb0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x74);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xb4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x78);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0xbc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x80);
