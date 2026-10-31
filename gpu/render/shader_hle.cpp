@@ -20,6 +20,7 @@
 #include "render/rasterizer.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
 
@@ -209,6 +210,11 @@ void FlushPendingHleCopies(Rasterizer& rasterizer) {
 
     auto& runtime = rasterizer.GetRuntime();
     auto& buffer_cache = rasterizer.GetBufferCache();
+    auto& direct_buffers = rasterizer.GetDirectBuffers();
+    auto& texture_cache = rasterizer.GetTextureCache();
+    static const bool n1_native_bufs =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    bool wrote_native_buf = false;
 
     struct PairBatch {
         const VideoCore::Buffer* src;
@@ -226,11 +232,37 @@ void FlushPendingHleCopies(Rasterizer& rasterizer) {
         u64 src_buf_offset = g.src_va;
         const u64 src_range_size = g.src_size;
         if (!src_buf) {
-            std::tie(src_buf, src_buf_offset) =
-                buffer_cache.ObtainBuffer(g.src_va, g.src_size, false);
+            if (n1_native_bufs) {
+                u64 src_sz = g.src_size;
+                std::tie(src_buf, src_buf_offset) =
+                    direct_buffers.TryResolveReadClamped(g.src_va, src_sz);
+                if (!src_buf || src_sz < g.src_size) {
+                    src_buf = nullptr;
+                }
+            }
+            if (!src_buf) {
+                std::tie(src_buf, src_buf_offset) =
+                    buffer_cache.ObtainBuffer(g.src_va, g.src_size, false);
+            }
         }
-        const auto [dst_buf, dst_buf_offset] =
-            buffer_cache.ObtainBuffer(g.dst_va, g.dst_size, true);
+        const VideoCore::Buffer* dst_buf = nullptr;
+        u64 dst_buf_offset = 0;
+        if (n1_native_bufs && !VideoCore::GuestInPlace() &&
+            !VideoCore::BufferCache::LayerActive() &&
+            !texture_cache.HasActiveImagePages(g.dst_va, g.dst_size) &&
+            !texture_cache.IsMeta(g.dst_va)) {
+            std::tie(dst_buf, dst_buf_offset) =
+                direct_buffers.TryResolveWrite(g.dst_va, g.dst_size);
+            if (dst_buf) {
+                buffer_cache.NoteExternalGpuModified(g.dst_va, g.dst_size);
+                wrote_native_buf = true;
+            }
+        }
+        if (!dst_buf) {
+            direct_buffers.OnGpuWrite(g.dst_va, g.dst_size);
+            std::tie(dst_buf, dst_buf_offset) =
+                buffer_cache.ObtainBuffer(g.dst_va, g.dst_size, true);
+        }
 
         auto group_copies = std::span{copies_storage}.subspan(g.copy_start, g.copy_count);
         for (auto& c : group_copies) {
@@ -268,6 +300,9 @@ void FlushPendingHleCopies(Rasterizer& rasterizer) {
         if (!MultiCopy(rasterizer, batch.src, batch.dst, batch.copies, batch.ranges)) {
             runtime.CopyBuffer(batch.src, batch.dst, batch.copies);
         }
+    }
+    if (wrote_native_buf) {
+        runtime.FlushBarriers();
     }
     groups.clear();
     copies_storage.clear();

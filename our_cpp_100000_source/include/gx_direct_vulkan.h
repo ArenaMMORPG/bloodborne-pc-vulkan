@@ -46,6 +46,17 @@ __attribute__((weak)) void bb_direct_vk_register_immutable_buffer(uint32_t resou
                                                                   uint32_t raw_byte_size,
                                                                   uint32_t alloc_byte_size,
                                                                   uint32_t bind_flags) noexcept;
+__attribute__((weak)) void bb_direct_vk_register_native_buffer(uint32_t resource_id,
+                                                               const void* gpu_addr,
+                                                               uint32_t raw_byte_size,
+                                                               uint32_t alloc_byte_size,
+                                                               uint32_t bind_flags,
+                                                               uint32_t usage_type,
+                                                               uint32_t has_initial_data) noexcept;
+__attribute__((weak)) void bb_direct_vk_note_exact_buffer_alloc(const void* gpu_addr,
+                                                                uint32_t raw_byte_size,
+                                                                uint32_t alloc_byte_size,
+                                                                uint32_t is_native_owned) noexcept;
 __attribute__((weak)) void bb_direct_vk_retire_buffer_range(const void* gpu_addr,
                                                             uint64_t byte_size) noexcept;
 
@@ -557,6 +568,33 @@ inline uint32_t ActiveNativeVkMask() noexcept {
 
 inline bool EnabledNativeVk(uint32_t bit) noexcept {
     return (ActiveNativeVkMask() & bit) != 0u;
+}
+
+inline void NoteDirectExactBufferAlloc(const void* gpu_addr,
+                                       uint32_t raw_byte_size,
+                                       uint32_t alloc_byte_size,
+                                       uint32_t is_native_owned) noexcept {
+    if (!EnabledNativeVk(kN1_NativeBuffers) || !bb_direct_vk_note_exact_buffer_alloc ||
+        !gpu_addr || alloc_byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_note_exact_buffer_alloc(
+        gpu_addr, raw_byte_size, alloc_byte_size, is_native_owned);
+}
+
+inline void RegisterDirectNativeBuffer(uint32_t resource_id,
+                                       const void* gpu_addr,
+                                       uint32_t raw_byte_size,
+                                       uint32_t alloc_byte_size,
+                                       uint32_t bind_flags,
+                                       uint32_t usage_type,
+                                       uint32_t has_initial_data) noexcept {
+    if (!EnabledV3Sub(kV3Sub_DirectBuffers) || !EnabledNativeVk(kN1_NativeBuffers) ||
+        !bb_direct_vk_register_native_buffer || !gpu_addr || raw_byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_register_native_buffer(resource_id, gpu_addr, raw_byte_size, alloc_byte_size,
+                                         bind_flags, usage_type, has_initial_data);
 }
 
 inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) noexcept {

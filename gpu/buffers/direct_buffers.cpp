@@ -17,9 +17,11 @@
 #include "render/scheduler.h"
 #include "shim/bbport_toggles.h"
 #include "textures/texture_cache.h"
+#include "vulkan/instance.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
+extern "C" bool BbLookupMappedEnd(u64 address, uintptr_t& out_end);
 
 namespace VideoCore::DirectBuffers {
 
@@ -152,6 +154,23 @@ constexpr size_t kNativeDirPages = static_cast<size_t>(kNativeDirSpan >> kNative
 constexpr u64 kNativeMaxSingleBlockBytes = 128ULL << 20; // ignore whole-heap container carve-outs
 std::array<std::atomic<u32>, kNativeDirPages> g_native_page_end_rel4{};
 
+// N1.2: 65,536-slot (16,384 sets x 4 ways = 1 MiB BSS) lock-free ExactBufferTable keyed by exact
+// `GXGnmBuffer::gpuBaseAddr` (always >= 4-byte aligned, so bit 0 of `addr_and_flag` stores
+// `is_native_owned`, and `sizes_packed` stores `(u64(alloc_size) << 32) | u64(req_size)`).
+constexpr size_t kExactBufSets = 16384;
+constexpr size_t kExactBufWays = 4;
+struct ExactBufSlot {
+    std::atomic<u64> addr_and_flag{0};
+    std::atomic<u64> sizes_packed{0};
+};
+std::array<std::array<ExactBufSlot, kExactBufWays>, kExactBufSets> g_exact_buf_table{};
+std::atomic<u32> g_exact_rr_hand{0};
+
+[[nodiscard]] constexpr size_t ExactBufSetIdx(VAddr addr) noexcept {
+    const u64 a = addr >> 4;
+    return static_cast<size_t>((a ^ (a >> 11) ^ (a >> 22)) & (kExactBufSets - 1));
+}
+
 } // namespace
 
 void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
@@ -167,6 +186,12 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
         }
         for (auto& cell : g_native_page_end_rel4) {
             cell.store(0u, std::memory_order_relaxed);
+        }
+        for (auto& set : g_exact_buf_table) {
+            for (auto& way : set) {
+                way.addr_and_flag.store(0ULL, std::memory_order_relaxed);
+                way.sizes_packed.store(0ULL, std::memory_order_relaxed);
+            }
         }
     }
 }
@@ -376,7 +401,68 @@ void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept {
     }
 }
 
+void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size,
+                           bool is_native_owned) noexcept {
+    if (addr == 0 || (addr & 3ULL) != 0ULL || alloc_size == 0) {
+        return;
+    }
+    const u32 safe_req = req_size > 0 && req_size <= alloc_size ? req_size : alloc_size;
+    const u64 packed_sizes = (static_cast<u64>(alloc_size) << 32) | static_cast<u64>(safe_req);
+    const u64 tagged_addr = (addr & ~3ULL) | (is_native_owned ? 1ULL : 0ULL);
+    auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+
+    // 1. Update matching address in place if present.
+    for (size_t w = 0; w < kExactBufWays; ++w) {
+        const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
+        if ((cur & ~3ULL) == addr) {
+            set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+            set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
+            return;
+        }
+    }
+    // 2. Fill first empty way if available.
+    for (size_t w = 0; w < kExactBufWays; ++w) {
+        u64 expected = 0ULL;
+        if (set[w].addr_and_flag.compare_exchange_strong(
+                expected, 2ULL, std::memory_order_acquire, std::memory_order_relaxed)) {
+            set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+            set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
+            return;
+        }
+    }
+    // 3. Evict a way round-robin.
+    const size_t victim =
+        static_cast<size_t>(g_exact_rr_hand.fetch_add(1u, std::memory_order_relaxed) &
+                            (kExactBufWays - 1));
+    set[victim].addr_and_flag.store(0ULL, std::memory_order_release);
+    set[victim].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+    set[victim].addr_and_flag.store(tagged_addr, std::memory_order_release);
+}
+
+bool IsExactNativeOwnedBuffer(VAddr addr) noexcept {
+    if (addr == 0 || (addr & 3ULL) != 0ULL) {
+        return false;
+    }
+    const auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+    const u64 wanted = addr | 1ULL;
+    for (size_t w = 0; w < kExactBufWays; ++w) {
+        if (set[w].addr_and_flag.load(std::memory_order_acquire) == wanted) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept {
+    if ((addr & 3ULL) == 0ULL && addr != 0) {
+        auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
+            if ((cur & ~3ULL) == addr) {
+                set[w].addr_and_flag.store(0ULL, std::memory_order_release);
+            }
+        }
+    }
     if (byte_size == 0 || byte_size > kNativeMaxSingleBlockBytes || addr < kNativeDirBase) {
         return;
     }
@@ -420,7 +506,28 @@ u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
     u64 clamped = ClampTransientCueReadSize(addr, requested_size);
     static const bool n1_enabled =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (!n1_enabled || clamped == 0 || addr < kNativeDirBase) {
+    if (!n1_enabled || clamped == 0) {
+        return clamped;
+    }
+    if ((addr & 3ULL) == 0ULL && addr != 0) {
+        const auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            const u64 tag = set[w].addr_and_flag.load(std::memory_order_acquire);
+            if ((tag & ~3ULL) == addr) {
+                const u64 sizes = set[w].sizes_packed.load(std::memory_order_relaxed);
+                const u32 req_sz = static_cast<u32>(sizes & 0xFFFFFFFFULL);
+                const u32 alloc_sz = static_cast<u32>(sizes >> 32);
+                if (alloc_sz != 0) {
+                    if (clamped > alloc_sz) {
+                        return req_sz != 0 ? req_sz : alloc_sz;
+                    }
+                    return clamped;
+                }
+                break;
+            }
+        }
+    }
+    if (addr < kNativeDirBase) {
         return clamped;
     }
     const u64 rel = addr - kNativeDirBase;
@@ -523,6 +630,33 @@ void Manager::ClearMruFor(const Buffer* buf) noexcept {
     }
 }
 
+void Manager::UpdateMruEntry(VAddr base_addr, u64 alloc_size, const Buffer* buf,
+                             u64 base_offset) noexcept {
+    if (!buf) {
+        for (auto& slot : mru) {
+            if (slot.base_addr == base_addr) {
+                slot = {};
+            }
+        }
+        return;
+    }
+    bool updated_existing = false;
+    for (auto& slot : mru) {
+        if (slot.base_addr == base_addr) {
+            slot.alloc_size = alloc_size;
+            slot.buffer = buf;
+            slot.base_offset = base_offset;
+            updated_existing = true;
+        }
+    }
+    if (!updated_existing) {
+        const size_t h0 =
+            static_cast<size_t>(((base_addr >> 12) ^ (base_addr >> 20)) & (kMruSlots - 1));
+        mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
+        mru[h0] = MruSlot{base_addr, alloc_size, buf, base_offset};
+    }
+}
+
 void Manager::ReclaimCompleted() noexcept {
     while (!retired.empty() && scheduler.IsFree(retired.front().first)) {
         retired.pop_front();
@@ -546,6 +680,7 @@ void Manager::RetireOverlapping(VAddr addr, u64 size) {
             ++it;
             continue;
         }
+        UpdateMruEntry(e_start, 0, nullptr, 0);
         ClearMruFor(it->second.buffer.get());
         retired.emplace_back(tick, std::move(it->second.buffer));
         it = entries_by_base.erase(it);
@@ -598,7 +733,7 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
                     inout_size = rem;
                 }
                 note_hit();
-                return {slot.buffer, addr - slot.base_addr};
+                return {slot.buffer, slot.base_offset + (addr - slot.base_addr)};
             }
         }
     }
@@ -623,15 +758,360 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
             if (inout_size > rem) {
                 inout_size = rem;
             }
-            Buffer* buf = it->second.buffer.get();
+            const Buffer* active_buf = it->second.stream_override_buf
+                                           ? it->second.stream_override_buf
+                                           : it->second.buffer.get();
+            const u64 active_off =
+                it->second.stream_override_buf ? it->second.stream_override_off : 0ULL;
             mru[h1] = mru[h0];
-            mru[h0] = MruSlot{base, alloc_size, buf};
+            mru[h0] = MruSlot{base, alloc_size, active_buf, active_off};
             note_hit();
-            return {buf, addr - base};
+            return {active_buf, active_off + (addr - base)};
         }
     }
     note_miss();
     return {nullptr, 0};
+}
+
+std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size) {
+    if (size == 0 || addr >= kMaxGuestVa || entries_by_base.empty() || !AnyBitmap64k(addr, size)) {
+        return {nullptr, 0};
+    }
+    NoteTransientCueHeapGpuWrite(addr, size);
+    Vulkan::DirectShaders::InvalidateRange(addr, size);
+
+    auto it = entries_by_base.upper_bound(addr);
+    if (it != entries_by_base.begin()) {
+        --it;
+        const VAddr base = it->first;
+        const u64 alloc_size = it->second.alloc_size;
+        if (addr >= base && addr + size <= base + alloc_size) {
+            if (it->second.dirty_writeback) {
+                FlushPendingWritebacks();
+                it = entries_by_base.find(base);
+                if (it == entries_by_base.end() || !it->second.buffer) {
+                    return {nullptr, 0};
+                }
+            }
+            const Buffer* dst_buf = it->second.buffer.get();
+            const u64 dst_off = addr - base;
+            runtime.AccessBuffer(dst_buf, dst_off, size,
+                                 vk::PipelineStageFlagBits2::eAllGraphics |
+                                     vk::PipelineStageFlagBits2::eComputeShader,
+                                 vk::AccessFlagBits2::eShaderRead |
+                                     vk::AccessFlagBits2::eUniformRead |
+                                     vk::AccessFlagBits2::eVertexAttributeRead |
+                                     vk::AccessFlagBits2::eIndexRead |
+                                     vk::AccessFlagBits2::eIndirectCommandRead);
+            return {dst_buf, dst_off};
+        }
+    }
+    RetireOverlapping(addr, size);
+    return {nullptr, 0};
+}
+
+void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
+                                      u32& out_handled_mask,
+                                      BufferCache& buf_cache,
+                                      TextureCache& tex_cache,
+                                      Core::MemoryManager* memory) {
+    out_handled_mask = 0;
+    if (regions.empty() || regions.size() > 32 || entries_by_base.empty() || !memory) {
+        return;
+    }
+
+    struct StagedSlice {
+        u32 region_idx{0};
+        bool fast_memcpy{false};
+        VAddr dst_va{0};
+        VAddr src_va{0};
+        u32 copy_bytes{0};
+        u32 slice_span{0};
+        u32 rel_offset{0};
+    };
+
+    const u64 align = std::max<u64>(
+        16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
+    std::array<StagedSlice, 32> staged{};
+    u32 staged_count = 0;
+    u64 total_bytes = 0;
+    u32 candidate_mask = 0;
+
+    for (u32 idx = 0; idx < regions.size(); ++idx) {
+        const auto& reg = regions[idx];
+        if (reg.byte_size == 0 || reg.byte_size > (512ULL << 10) || reg.dst_va >= kMaxGuestVa) {
+            continue;
+        }
+
+        const u64 page = reg.dst_va >> kPageShift64K;
+        if ((bitmap_64k[page >> 6] & (1ULL << (page & 63ULL))) == 0ULL) {
+            continue;
+        }
+
+        auto it = entries_by_base.find(reg.dst_va);
+        if (it == entries_by_base.end() || !it->second.buffer) {
+            continue;
+        }
+        const auto& e = it->second;
+        if (reg.byte_size < e.raw_size || reg.byte_size > e.alloc_size ||
+            e.alloc_size > (512ULL << 10)) {
+            continue;
+        }
+
+        bool ordering_hazard = false;
+        for (u32 prev = 0; prev < idx; ++prev) {
+            if (RangesOverlap(reg.src_va, reg.byte_size, regions[prev].dst_va,
+                              regions[prev].byte_size)) {
+                ordering_hazard = true;
+                break;
+            }
+            if ((candidate_mask & (1u << prev)) == 0 &&
+                RangesOverlap(reg.dst_va, e.alloc_size, regions[prev].dst_va,
+                              regions[prev].byte_size)) {
+                ordering_hazard = true;
+                break;
+            }
+        }
+        if (ordering_hazard) {
+            continue;
+        }
+
+        if (tex_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
+            tex_cache.IsMeta(reg.dst_va)) {
+            continue;
+        }
+
+        const bool cue_src =
+            IsTransientCueHeap(reg.src_va, reg.byte_size) && !IsCueHeapEverGpuModified();
+        uintptr_t mapped_end = 0;
+        const bool fast_mapped =
+            cue_src || (BbLookupMappedEnd(reg.src_va, mapped_end) &&
+                        mapped_end > reg.src_va && (mapped_end - reg.src_va) >= reg.byte_size);
+        if (!cue_src) {
+            if ((!fast_mapped &&
+                 memory->ClampRangeSize(reg.src_va, reg.byte_size) != reg.byte_size) ||
+                buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) {
+                continue;
+            }
+        }
+
+        const u64 rel_off = Common::AlignUp<u64>(total_bytes, align);
+        const u64 slice_span = Common::AlignUp<u64>(e.alloc_size, 16ULL);
+        if (rel_off + slice_span > (4ULL << 20)) {
+            break;
+        }
+        total_bytes = rel_off + slice_span;
+        staged[staged_count++] = StagedSlice{
+            .region_idx = idx,
+            .fast_memcpy = fast_mapped,
+            .dst_va = reg.dst_va,
+            .src_va = reg.src_va,
+            .copy_bytes = reg.byte_size,
+            .slice_span = static_cast<u32>(slice_span),
+            .rel_offset = static_cast<u32>(rel_off),
+        };
+        candidate_mask |= (1u << idx);
+    }
+
+    if (staged_count == 0 || total_bytes == 0) {
+        return;
+    }
+
+    auto& sbuf = buf_cache.GetStreamBuffer();
+    u64 base_off = 0;
+    if (!sbuf.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
+        !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
+        !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+        const auto reserved = sbuf.Reserve(total_bytes, align, /*allow_wait=*/false);
+        if (!reserved) {
+            return;
+        }
+        base_off = *reserved;
+        u8* const base_dst = sbuf.mapped_data.data() + base_off;
+        Buffer* const sbuf_ptr = &sbuf;
+        Core::MemoryManager* const mem = memory;
+        std::array<std::pair<u64, u64>, 32> host_ranges{};
+        for (u32 k = 0; k < staged_count; ++k) {
+            host_ranges[k] = {staged[k].src_va, staged[k].copy_bytes};
+        }
+        scheduler.RecordHostCopy(
+            [staged, staged_count, base_dst, base_off, total_bytes, sbuf_ptr, mem] {
+                for (u32 k = 0; k < staged_count; ++k) {
+                    const auto& s = staged[k];
+                    u8* dst = base_dst + s.rel_offset;
+                    if (s.fast_memcpy) {
+                        std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
+                    } else {
+                        mem->CopySparseMemory(s.src_va, dst, s.copy_bytes);
+                    }
+                    if (s.slice_span > s.copy_bytes) {
+                        std::memset(dst + s.copy_bytes, 0, s.slice_span - s.copy_bytes);
+                    }
+                }
+                sbuf_ptr->Flush(base_off, total_bytes);
+            });
+        scheduler.NoteHostCopySources(std::span{host_ranges.data(), staged_count});
+    } else {
+        const auto [data, offset] = sbuf.Map(total_bytes, align, /*allow_wait=*/false);
+        if (!data) {
+            return;
+        }
+        for (u32 k = 0; k < staged_count; ++k) {
+            const auto& s = staged[k];
+            u8* dst = data + s.rel_offset;
+            if (s.fast_memcpy) {
+                std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
+            } else {
+                memory->CopySparseMemory(s.src_va, dst, s.copy_bytes);
+            }
+            if (s.slice_span > s.copy_bytes) {
+                std::memset(dst + s.copy_bytes, 0, s.slice_span - s.copy_bytes);
+            }
+        }
+        sbuf.Commit();
+        base_off = offset;
+    }
+
+    BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
+    for (u32 k = 0; k < staged_count; ++k) {
+        const auto& s = staged[k];
+        auto it = entries_by_base.find(s.dst_va);
+        if (it == entries_by_base.end()) {
+            continue;
+        }
+        auto& e = it->second;
+        const u64 stream_off = base_off + s.rel_offset;
+        e.stream_override_buf = &sbuf;
+        e.stream_override_off = stream_off;
+        if (!e.dirty_writeback) {
+            e.dirty_writeback = true;
+            dirty_writeback_bases.push_back(s.dst_va);
+        }
+        UpdateMruEntry(s.dst_va, e.alloc_size, &sbuf, stream_off);
+        buf_cache.NoteExternalGpuModified(s.dst_va, e.alloc_size);
+        Vulkan::DirectShaders::InvalidateRange(s.dst_va, e.alloc_size);
+    }
+    scheduler.NoteEndRenderingWork();
+    out_handled_mask = candidate_mask;
+}
+
+void Manager::FlushPendingWritebacks() {
+    if (dirty_writeback_bases.empty()) {
+        return;
+    }
+    std::vector<VAddr> dirty;
+    dirty.swap(dirty_writeback_bases);
+
+    auto* buf_cache = g_active_buf_cache.load(std::memory_order_acquire);
+    if (!buf_cache) {
+        for (const VAddr base : dirty) {
+            if (auto it = entries_by_base.find(base); it != entries_by_base.end()) {
+                it->second.stream_override_buf = nullptr;
+                it->second.stream_override_off = 0;
+                it->second.dirty_writeback = false;
+                UpdateMruEntry(base, it->second.alloc_size, it->second.buffer.get(), 0);
+            }
+        }
+        return;
+    }
+
+    scheduler.EndRendering();
+
+    struct WritebackCmd {
+        vk::Buffer dst_vk{};
+        u64 src_off{0};
+        u64 size{0};
+    };
+    static thread_local std::vector<WritebackCmd> cmds;
+    cmds.clear();
+    cmds.reserve(dirty.size());
+
+    const Buffer& sbuf = buf_cache->GetStreamBuffer();
+    const u64 sbuf_bytes = sbuf.SizeBytes();
+    for (const VAddr base : dirty) {
+        auto it = entries_by_base.find(base);
+        if (it == entries_by_base.end()) {
+            continue;
+        }
+        auto& e = it->second;
+        if (!e.dirty_writeback || !e.stream_override_buf || !e.buffer) {
+            e.stream_override_buf = nullptr;
+            e.stream_override_off = 0;
+            e.dirty_writeback = false;
+            continue;
+        }
+        const u64 copy_bytes =
+            std::min<u64>(e.buffer->SizeBytes(), Common::AlignUp<u64>(e.raw_size, 4ULL));
+        const u64 src_off = e.stream_override_off;
+        e.stream_override_buf = nullptr;
+        e.stream_override_off = 0;
+        e.dirty_writeback = false;
+        UpdateMruEntry(base, e.alloc_size, e.buffer.get(), 0);
+        if (copy_bytes == 0 || src_off + copy_bytes > sbuf_bytes) {
+            continue;
+        }
+        cmds.push_back(WritebackCmd{
+            .dst_vk = e.buffer->Handle(),
+            .src_off = src_off,
+            .size = copy_bytes,
+        });
+    }
+
+    if (cmds.empty()) {
+        return;
+    }
+
+    const vk::Buffer src_vk = sbuf.Handle();
+    constexpr size_t kBatchCap = 512;
+    for (size_t offset = 0; offset < cmds.size(); offset += kBatchCap) {
+        const size_t count = std::min(kBatchCap, cmds.size() - offset);
+        const bool is_first = (offset == 0);
+        const bool is_last = (offset + count >= cmds.size());
+        const auto recorded_cmds =
+            scheduler.RecordData(std::span<const WritebackCmd>{cmds.data() + offset, count});
+        scheduler.Record([src_vk, recorded_cmds, is_first, is_last](vk::CommandBuffer cmdbuf) {
+            if (is_first) {
+                const vk::MemoryBarrier2 pre_barrier{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eAllGraphics |
+                                    vk::PipelineStageFlagBits2::eComputeShader |
+                                    vk::PipelineStageFlagBits2::eCopy |
+                                    vk::PipelineStageFlagBits2::eClear,
+                    .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+                    .dstAccessMask = vk::AccessFlagBits2::eTransferWrite |
+                                     vk::AccessFlagBits2::eTransferRead,
+                };
+                cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+                    .memoryBarrierCount = 1,
+                    .pMemoryBarriers = &pre_barrier,
+                });
+            }
+            for (const auto& cmd : recorded_cmds) {
+                const vk::BufferCopy region{
+                    .srcOffset = cmd.src_off,
+                    .dstOffset = 0,
+                    .size = cmd.size,
+                };
+                cmdbuf.copyBuffer(src_vk, cmd.dst_vk, 1, &region);
+            }
+            if (is_last) {
+                const vk::MemoryBarrier2 post_barrier{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAllGraphics |
+                                    vk::PipelineStageFlagBits2::eComputeShader |
+                                    vk::PipelineStageFlagBits2::eCopy |
+                                    vk::PipelineStageFlagBits2::eClear,
+                    .dstAccessMask = vk::AccessFlagBits2::eMemoryRead |
+                                     vk::AccessFlagBits2::eMemoryWrite,
+                };
+                cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+                    .memoryBarrierCount = 1,
+                    .pMemoryBarriers = &post_barrier,
+                });
+            }
+        });
+    }
 }
 
 void Manager::ProcessEvents(Core::MemoryManager* memory) {
@@ -650,7 +1130,8 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
     static thread_local std::vector<u8> superseded;
     superseded.assign(n, 0u);
     for (size_t i = 0; i < n; ++i) {
-        if (events[i].kind != EventKind::RegisterImmutable) {
+        if (events[i].kind != EventKind::RegisterImmutable &&
+            events[i].kind != EventKind::RegisterNative) {
             continue;
         }
         const VAddr i_addr = events[i].addr;
@@ -669,6 +1150,8 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
 
     constexpr u64 kChunkBytes = 16ULL << 20; // 16 MiB staging segment slice
     u64 uploaded_bytes_since_flush = 0;
+    bool needs_barrier_flush = false;
+    auto* active_buf_cache = g_active_buf_cache.load(std::memory_order_acquire);
 
     for (size_t i = 0; i < n; ++i) {
         const auto& ev = events[i];
@@ -693,55 +1176,71 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
 
         RetireOverlapping(ev.addr, guest_span);
 
+        const char* debug_name = (ev.usage_type == 1)   ? "DirectImmutableBuf"
+                                 : (ev.usage_type == 2) ? "DirectDynamicBuf"
+                                                        : "DirectDefaultBuf";
         auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
-                                            MemoryType::DeviceLocal, "DirectImmutableBuf");
+                                            MemoryType::DeviceLocal, debug_name);
 
-        u64 copied = 0;
-        while (copied < raw_size) {
-            const u64 raw_chunk = std::min<u64>(raw_size - copied, kChunkBytes);
-            const bool is_last = (copied + raw_chunk == raw_size);
-            const u64 stage_chunk = is_last ? (vk_alloc_size - copied) : raw_chunk;
+        if (ev.has_initial_data != 0) {
+            u64 copied = 0;
+            while (copied < raw_size) {
+                const u64 raw_chunk = std::min<u64>(raw_size - copied, kChunkBytes);
+                const bool is_last = (copied + raw_chunk == raw_size);
+                const u64 stage_chunk = is_last ? (vk_alloc_size - copied) : raw_chunk;
 
-            const auto staging =
-                runtime.GetStagingPool().Request(stage_chunk, MemoryType::HostUncached);
-            std::memcpy(staging.mapped, reinterpret_cast<const u8*>(ev.addr + copied), raw_chunk);
-            if (stage_chunk > raw_chunk) {
-                std::memset(staging.mapped + raw_chunk, 0, stage_chunk - raw_chunk);
+                const auto staging =
+                    runtime.GetStagingPool().Request(stage_chunk, MemoryType::HostUncached);
+                std::memcpy(staging.mapped, reinterpret_cast<const u8*>(ev.addr + copied),
+                            raw_chunk);
+                if (stage_chunk > raw_chunk) {
+                    std::memset(staging.mapped + raw_chunk, 0, stage_chunk - raw_chunk);
+                }
+                staging.Flush();
+
+                const vk::BufferCopy copy_region{
+                    .srcOffset = staging.offset,
+                    .dstOffset = copied,
+                    .size = stage_chunk,
+                };
+                runtime.CopyBuffer(staging.buffer, buf.get(), std::span{&copy_region, 1});
+                copied += raw_chunk;
             }
-            staging.Flush();
-
-            const vk::BufferCopy copy_region{
-                .srcOffset = staging.offset,
-                .dstOffset = copied,
-                .size = stage_chunk,
-            };
-            runtime.CopyBuffer(staging.buffer, buf.get(), std::span{&copy_region, 1});
-            copied += raw_chunk;
+            uploaded_bytes_since_flush += vk_alloc_size;
+        } else {
+            runtime.FillBuffer(buf.get(), 0, vk_alloc_size, 0);
+            if (active_buf_cache) {
+                active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
+            }
         }
+        needs_barrier_flush = true;
 
         Buffer* raw_ptr = buf.get();
         Entry entry{};
         entry.resource_id = ev.resource_id;
         entry.bind_flags = ev.bind_flags;
+        entry.usage_type = ev.usage_type;
         entry.raw_size = raw_size;
         entry.alloc_size = guest_span;
         entry.buffer = std::move(buf);
         entries_by_base[ev.addr] = std::move(entry);
         SetBitmapRange(ev.addr, ev.addr + guest_span);
-        const size_t h0 = static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
+        const size_t h0 =
+            static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
         mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-        mru[h0] = MruSlot{ev.addr, guest_span, raw_ptr};
+        mru[h0] = MruSlot{ev.addr, guest_span, raw_ptr, 0};
 
-        uploaded_bytes_since_flush += vk_alloc_size;
         if (uploaded_bytes_since_flush >= (32ULL << 20)) {
+            FlushPendingWritebacks();
             runtime.FlushBarriers();
+            needs_barrier_flush = false;
             Vulkan::SubmitInfo info{};
             scheduler.Flush(info);
             ReclaimCompleted();
             uploaded_bytes_since_flush = 0;
         }
     }
-    if (uploaded_bytes_since_flush > 0) {
+    if (needs_barrier_flush) {
         runtime.FlushBarriers();
     }
 }
@@ -792,6 +1291,20 @@ void bb_direct_vk_note_asset_buffer_write(const void* gpu_addr, uint64_t byte_si
     runtime_memory_note_write(reinterpret_cast<uintptr_t>(gpu_addr), byte_size);
 }
 
+void bb_direct_vk_note_exact_buffer_alloc(const void* gpu_addr,
+                                          uint32_t raw_byte_size,
+                                          uint32_t alloc_byte_size,
+                                          uint32_t is_native_owned) noexcept {
+    if (!gpu_addr || raw_byte_size == 0) {
+        return;
+    }
+    const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    const u32 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
+    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, span,
+                                                    is_native_owned != 0u);
+}
+
 void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
                                             const void* gpu_addr,
                                             uint32_t raw_byte_size,
@@ -803,10 +1316,46 @@ void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
     VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
+    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
+                                                    true);
     VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = VideoCore::DirectBuffers::EventKind::RegisterImmutable;
+    ev.usage_type = 1u;
+    ev.has_initial_data = 1u;
+    ev.resource_id = resource_id;
+    ev.bind_flags = bind_flags;
+    ev.raw_byte_size = raw_byte_size;
+    ev.alloc_byte_size = static_cast<u32>(span);
+    ev.addr = addr;
+    ev.byte_size = span;
+    VideoCore::DirectBuffers::PushEvent(ev);
+}
+
+void bb_direct_vk_register_native_buffer(uint32_t resource_id,
+                                         const void* gpu_addr,
+                                         uint32_t raw_byte_size,
+                                         uint32_t alloc_byte_size,
+                                         uint32_t bind_flags,
+                                         uint32_t usage_type,
+                                         uint32_t has_initial_data) noexcept {
+    if (!gpu_addr || raw_byte_size == 0) {
+        return;
+    }
+    const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
+    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
+                                                    true);
+    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
+    VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
+    VideoCore::DirectBuffers::Event ev{};
+    ev.kind = (usage_type == 1u && has_initial_data != 0u)
+                  ? VideoCore::DirectBuffers::EventKind::RegisterImmutable
+                  : VideoCore::DirectBuffers::EventKind::RegisterNative;
+    ev.usage_type = static_cast<u8>(usage_type);
+    ev.has_initial_data = static_cast<u8>(has_initial_data != 0u ? 1u : 0u);
     ev.resource_id = resource_id;
     ev.bind_flags = bind_flags;
     ev.raw_byte_size = raw_byte_size;

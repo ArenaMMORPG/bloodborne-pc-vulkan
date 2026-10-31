@@ -55,6 +55,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     }
     BbGuestMemory::Install(instance); // bbport: before the runtime maps direct memory
     memory->SetRasterizer(this);
+    buffer_cache.SetDirectBuffersManager(&direct_buffers);
     VideoCore::DirectBuffers::SetActiveCaches(&buffer_cache, &texture_cache);
 
     GpuProfiler::Init(instance, scheduler);
@@ -78,12 +79,14 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // bbport: this thread joins the texture binding helper before it changes image state.
     runtime.SetImageAccessHook(&JoinBindHelper, this);
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
+        direct_buffers.FlushPendingWritebacks();
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
     });
 }
 
 Rasterizer::~Rasterizer() {
+    buffer_cache.SetDirectBuffersManager(nullptr);
     VideoCore::DirectBuffers::SetActiveCaches(nullptr, nullptr);
 }
 
@@ -1005,8 +1008,16 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     if (HasPendingHleCopies() && PendingHleCopiesConflict(indirect.args, stride * max_count)) {
         FlushPendingHleCopies(*this);
     }
-    const auto [buffer, base] =
-        buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
+    const VideoCore::Buffer* buffer = nullptr;
+    u64 base = 0;
+    {
+        u64 req_bytes = static_cast<u64>(stride) * max_count;
+        std::tie(buffer, base) = direct_buffers.TryResolveReadClamped(indirect.args, req_bytes);
+        if (!buffer || req_bytes < static_cast<u64>(stride) * max_count) {
+            std::tie(buffer, base) =
+                buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
+        }
+    }
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, stride * max_count);
     // The arguments checked on the GPU first (vk_indirect_guard.h): a dispatch, outside the
     // render pass.
@@ -1031,13 +1042,19 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         BindIndexBuffer();
     }
 
-    const VideoCore::Buffer* count_buffer;
-    u64 count_offset;
+    const VideoCore::Buffer* count_buffer = nullptr;
+    u64 count_offset = 0;
     if (count_address != 0) {
         if (HasPendingHleCopies() && PendingHleCopiesConflict(count_address, 4)) {
             FlushPendingHleCopies(*this);
         }
-        std::tie(count_buffer, count_offset) = buffer_cache.ObtainBuffer(count_address, 4, false);
+        u64 cnt_bytes = 4;
+        std::tie(count_buffer, count_offset) =
+            direct_buffers.TryResolveReadClamped(count_address, cnt_bytes);
+        if (!count_buffer || cnt_bytes < 4) {
+            std::tie(count_buffer, count_offset) =
+                buffer_cache.ObtainBuffer(count_address, 4, false);
+        }
         needs_barrier |= runtime.IsBufferAccessed(count_buffer, count_offset, 4);
     }
     if (HasPendingHleCopies() && scheduler.WillBeginRendering(state)) {
@@ -1279,7 +1296,15 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     if (!BindResources(pipeline)) {
         return;
     }
-    const auto [buffer, base] = buffer_cache.ObtainBuffer(address, size, false);
+    const VideoCore::Buffer* buffer = nullptr;
+    u64 base = 0;
+    {
+        u64 req_bytes = size;
+        std::tie(buffer, base) = direct_buffers.TryResolveReadClamped(address, req_bytes);
+        if (!buffer || req_bytes < size) {
+            std::tie(buffer, base) = buffer_cache.ObtainBuffer(address, size, false);
+        }
+    }
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
 
     scheduler.EndRendering();
@@ -1352,6 +1377,7 @@ void Rasterizer::Finish() {
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);
     }
+    direct_buffers.FlushPendingWritebacks();
     PublishSignals();
     scheduler.Finish();
 }
@@ -1363,6 +1389,7 @@ void Rasterizer::ProcessDirectTextureEvents() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    direct_buffers.FlushPendingWritebacks();
     ProcessDirectTextureEvents();
     if (fault_process_pending) {
         fault_process_pending = false;

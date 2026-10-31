@@ -569,6 +569,13 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         if (address == 0 || raw_size == 0) {
             continue;
         }
+        // N1.2: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in dedicated VMA
+        // DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest RAM at `address`
+        // is never CPU-updated after CreateAndInitialize. Skip Stage A ConstRing memcpy entirely.
+        if (!desc.is_written && n1_native_buf &&
+            VideoCore::DirectBuffers::IsExactNativeOwnedBuffer(address)) {
+            continue;
+        }
         if (!desc.is_written && stage_a_bypass) {
             if (raw_size <= VideoCore::BufferCache::STREAM_THRESHOLD) {
                 if (constants_in_place) {

@@ -47,16 +47,26 @@ namespace DirectBuffers {
 enum class EventKind : u8 {
     RetireRange = 0,
     RegisterImmutable = 1,
+    RegisterNative = 2,
 };
 
 struct Event {
     EventKind kind{EventKind::RetireRange};
+    u8 usage_type{1};
+    u8 has_initial_data{1};
+    u16 pad0{0};
     u32 resource_id{0};
     u32 bind_flags{0};
     u32 raw_byte_size{0};
     u32 alloc_byte_size{0};
     VAddr addr{0};
     u64 byte_size{0};
+};
+
+struct NativeCopyRegion {
+    VAddr dst_va{0};
+    VAddr src_va{0};
+    u32 byte_size{0};
 };
 
 void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept;
@@ -77,12 +87,15 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 /// to the end of their live CGGpuFreeListAllocatorGnm allocation block.
 [[nodiscard]] u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept;
 
-/// N1.1: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)) tracking all
-/// live CGGpuFreeListAllocatorGnm & GXGnmBuffer blocks with 4-byte precision so unbounded
-/// 0xFFFFFFFF vertex/shader V# descriptors clamp to their exact native buffer block instead of
-/// spilling 2.5+ GiB into BufferCache + mprotect(PROT_READ).
+/// N1.1 / N1.2: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)) +
+/// 65,536-slot ExactBufferTable tracking every live GXGnmBuffer (exact requestedSize, allocSize,
+/// and native VkBuffer ownership) so unbounded 0xFFFFFFFF V# descriptors clamp to the exact byte
+/// size of their GXGnmBuffer (zero 4 KiB neighbor overshoot) and Stage A skips ConstRing memcpy
+/// for native-owned buffers.
 void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept;
 void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept;
+void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size, bool is_native_owned) noexcept;
+[[nodiscard]] bool IsExactNativeOwnedBuffer(VAddr addr) noexcept;
 [[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept;
 
 class Manager {
@@ -94,22 +107,41 @@ public:
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
 
-    /// Stage B: drains pending RegisterImmutable / RetireRange events, uploads immutable buffers
-    /// into DEVICE_LOCAL VRAM outside render passes, and reclaims retired buffers whose GPU tick
-    /// has completed.
+    /// Stage B: drains pending RegisterImmutable / RegisterNative / RetireRange events, creates
+    /// VMA sub-allocated DEVICE_LOCAL VkBuffers outside render passes, and reclaims retired
+    /// buffers whose GPU tick has completed.
     void ProcessEvents(Core::MemoryManager* memory);
 
-    /// N1.1 (~2 ns fast path): resolves a read-only [addr, addr + inout_size) binding inside a
-    /// live native DirectImmutableBuf, clamping oversized/0xFFFFFFFF V# sizes to the exact end of
-    /// that GXGnmBuffer. Returns {nullptr, 0} on miss so BufferCache handles dynamic/UAV ranges.
+    /// N1.1 / N1.2 (~2 ns fast path): resolves a read-only [addr, addr + inout_size) binding
+    /// inside a live native VkBuffer (or its active zero-break stream_buffer version), clamping
+    /// oversized/0xFFFFFFFF V# sizes to the exact end of that GXGnmBuffer.
     [[nodiscard]] std::pair<const Buffer*, u64> TryResolveReadClamped(VAddr addr,
                                                                       u64& inout_size) noexcept;
     [[nodiscard]] std::pair<const Buffer*, u64> TryResolveRead(VAddr addr, u64 size) noexcept {
         return TryResolveReadClamped(addr, size);
     }
 
-    /// Stage B: invalidates any DirectImmutableBuf overlapping a GPU write [addr, addr + size) so
-    /// stale immutable data can never shadow subsequent GPU-written bytes.
+    /// N1.2: Resolves a non-stream GPU write [addr, addr + size) directly into a native VkBuffer
+    /// (flushing any active stream override first and arming WAR barrier tracking). If a write
+    /// partially crosses buffer boundaries, retires the entry and returns {nullptr, 0}.
+    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(VAddr addr, u64 size);
+
+    /// N1.2: Renames full-buffer CPU-source `DirectCopyBuffers` updates (`FlushBufferUpdates_A/B`)
+    /// of native `DEFAULT`/`DYNAMIC` `GXGnmBuffer`s directly into `stream_buffer` without calling
+    /// `EndRendering()` or `BufferCache::ObtainBuffer`, coalescing the final deduplicated writeback
+    /// into the persistent native `VkBuffer` at `EndRendering()` / `OnSubmit()`.
+    /// Sets bit `(1u << idx)` in `out_handled_mask` for each handled region (up to 32 regions).
+    void StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
+                                 u32& out_handled_mask,
+                                 BufferCache& buf_cache,
+                                 TextureCache& tex_cache,
+                                 Core::MemoryManager* memory);
+
+    /// N1.2: Writes the latest deduplicated `stream_buffer` version of each dirty native buffer
+    /// back into its persistent `DEVICE_LOCAL` `VkBuffer` outside any active RenderPass.
+    void FlushPendingWritebacks();
+
+    /// Stage B: invalidates any native VkBuffer overlapping an external/UAV GPU write.
     void OnGpuWrite(VAddr addr, u64 size) noexcept;
 
     static constexpr u64 kMaxGuestVa = 1ULL << 40; // 1 TiB (40-bit PS4 VA space, matches BbMem::AddressBits = 40)
@@ -122,15 +154,20 @@ private:
     struct Entry {
         u32 resource_id{0};
         u32 bind_flags{0};
+        u8 usage_type{1};
+        bool dirty_writeback{false};
         u64 raw_size{0};
         u64 alloc_size{0};
+        const Buffer* stream_override_buf{nullptr};
+        u64 stream_override_off{0};
         std::unique_ptr<Buffer> buffer;
     };
 
     struct MruSlot {
         VAddr base_addr{0};
         u64 alloc_size{0};
-        Buffer* buffer{nullptr};
+        const Buffer* buffer{nullptr};
+        u64 base_offset{0};
     };
 
     void SetBitmapRange(VAddr start, VAddr end) noexcept;
@@ -139,6 +176,8 @@ private:
     void RetireOverlapping(VAddr addr, u64 size);
     void ReclaimCompleted() noexcept;
     void ClearMruFor(const Buffer* buf) noexcept;
+    void UpdateMruEntry(VAddr base_addr, u64 alloc_size, const Buffer* buf,
+                        u64 base_offset) noexcept;
 
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
@@ -146,6 +185,7 @@ private:
 
     static constexpr size_t kMruSlots = 32;
     std::map<VAddr, Entry> entries_by_base;
+    std::vector<VAddr> dirty_writeback_bases;
     std::deque<std::pair<u64, std::unique_ptr<Buffer>>> retired;
     std::vector<u64> bitmap_64k;
     std::array<MruSlot, kMruSlots> mru{};

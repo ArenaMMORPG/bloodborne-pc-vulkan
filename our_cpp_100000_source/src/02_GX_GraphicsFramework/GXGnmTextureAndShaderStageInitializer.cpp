@@ -3773,6 +3773,18 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
         slotWords[0] = 0ULL;
     }
 
+    const bool n1_native_eligible =
+        gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) &&
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) &&
+        desc->usageType <= 2u && (desc->cpuAccessFlags & 2u) == 0u &&
+        (desc->bindFlags & 0x90u) == 0u && desc->byteSize > 0u &&
+        CGMemoryGnm_IsCpuReadableAddress(gpuMem);
+    gx_direct_vk::NoteDirectExactBufferAlloc(
+        gpuMem,
+        hasCounterTail != 0 ? allocSize : desc->byteSize,
+        allocSize,
+        n1_native_eligible ? 1u : 0u);
+
     if (initialDataPtr != nullptr) {
         if (CGMemoryGnm_IsCpuReadableAddress(gpuMem)) {
             if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers)) {
@@ -3789,11 +3801,12 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
                     std::memset(static_cast<uint8_t*>(gpuMem) + copySize, 0, noteSize - copySize);
                 }
                 gx_direct_vk::NoteDirectAssetBufferWrite(gpuMem, noteSize);
-                // Immutable buffers (usageType == 1, cpuAccessFlags == 0, no UAV 0x80 / SO 0x10)
-                // — including 100% of combined FLVER model VB+IB buffers — get a dedicated VMA
-                // DEVICE_LOCAL VkBuffer resolved in O(1) on Stage B.
-                if (desc->usageType == 1u && desc->cpuAccessFlags == 0u &&
-                    (desc->bindFlags & 0x90u) == 0u && copySize > 0u) {
+                if (n1_native_eligible) {
+                    gx_direct_vk::RegisterDirectNativeBuffer(
+                        outBuf->resourceId, gpuMem, copySize, allocSize,
+                        desc->bindFlags, desc->usageType, 1u);
+                } else if (desc->usageType == 1u && desc->cpuAccessFlags == 0u &&
+                           (desc->bindFlags & 0x90u) == 0u && copySize > 0u) {
                     gx_direct_vk::RegisterDirectImmutableBuffer(
                         outBuf->resourceId, gpuMem, copySize, allocSize, desc->bindFlags);
                 }
@@ -3801,6 +3814,10 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
                 CGMemoryGnm_FastCopyGpuMemory(gpuMem, *initialDataPtr, desc->byteSize);
             }
         }
+    } else if (n1_native_eligible) {
+        gx_direct_vk::RegisterDirectNativeBuffer(
+            outBuf->resourceId, gpuMem, desc->byteSize, allocSize,
+            desc->bindFlags, desc->usageType, 0u);
     }
     return 0;
 }

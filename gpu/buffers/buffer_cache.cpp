@@ -1161,7 +1161,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             const auto& s = inpass_shadows[static_cast<size_t>(i)];
             if (device_addr < s.dst_va + s.size && s.dst_va < device_addr + size) {
                 if (!is_written && device_addr >= s.dst_va &&
-                    device_addr + size <= s.dst_va + s.size) {
+                    device_addr + size <= s.dst_va + s.readable_size) {
                     match_idx = i;
                     break;
                 }
@@ -1852,7 +1852,7 @@ bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, 
             inpass_shadows.push_back(InPassShadow{
                 .dst_va = s.dst_va,
                 .size = s.byte_size,
-                .pad = 0u,
+                .readable_size = Common::AlignUp<u32>(s.byte_size, 16u),
                 .stream_off = stream_off,
             });
         }
@@ -1862,6 +1862,9 @@ bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, 
 }
 
 void BufferCache::FlushInPassShadows() {
+    if (direct_buffers_mgr) {
+        direct_buffers_mgr->FlushPendingWritebacks();
+    }
     if (inpass_shadows.empty()) {
         return;
     }

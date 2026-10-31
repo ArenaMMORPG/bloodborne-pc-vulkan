@@ -60,6 +60,10 @@ public:
         return buffer_cache;
     }
 
+    [[nodiscard]] VideoCore::DirectBuffers::Manager& GetDirectBuffers() noexcept {
+        return direct_buffers;
+    }
+
     [[nodiscard]] TemporalUpscaler& GetUpscaler() noexcept {
         return *upscaler;
     }

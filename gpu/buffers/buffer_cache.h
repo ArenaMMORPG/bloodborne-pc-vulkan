@@ -49,6 +49,10 @@ class StagingBufferPool;
 
 namespace VideoCore {
 
+namespace DirectBuffers {
+class Manager;
+}
+
 class TextureCache;
 
 
@@ -185,6 +189,15 @@ public:
                                             u64 total_bytes);
     void FlushInPassShadows();
     [[nodiscard]] bool OverlapsInPassShadow(VAddr addr, u64 size) const noexcept;
+
+    void SetDirectBuffersManager(DirectBuffers::Manager* mgr) noexcept {
+        direct_buffers_mgr = mgr;
+    }
+    void NoteExternalGpuModified(VAddr addr, u64 size) noexcept {
+        if (size != 0) {
+            gpu_modified_ranges.Add(addr, size);
+        }
+    }
 
     /// bbport BB_GUEST_IN_PLACE: where a command processor write (WRITE_DATA) the GPU performs in
     /// stream order lands: the arena over the game's memory, if the range is bound there in place.
@@ -394,10 +407,11 @@ private:
     struct InPassShadow {
         VAddr dst_va;
         u32 size;
-        u32 pad;
+        u32 readable_size;
         u64 stream_off;
     };
     std::vector<InPassShadow> inpass_shadows;
+    DirectBuffers::Manager* direct_buffers_mgr = nullptr;
     /// BB_TRACE_SIZE=bytes (diagnostics): bindings over GPU-written buffers of that size, counted by
     /// the path they take, reported every 5 s.
     void TraceBinding(VAddr addr, u64 size, bool is_written, int kind);
