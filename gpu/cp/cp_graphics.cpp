@@ -441,6 +441,27 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
+                } else if (vk_op == DirectVk::Op::ReleaseU32LabelsBatch) {
+                    const u32 count = op_word >> 16;
+                    if (count > 0 && count <= 32 && body_words == 3u + count * 2u) {
+                        const u32 value = body[2];
+                        std::array<VAddr, 32> addrs{};
+                        std::memcpy(addrs.data(), body + 3u, count * sizeof(VAddr));
+                        if (BbFreeCheck::Enabled()) {
+                            for (u32 i = 0; i < count; ++i) {
+                                BbFreeCheck::NoteFenceDecoded(addrs[i], value, packet, packet,
+                                                              work.seq);
+                            }
+                        }
+                        if (rasterizer->RunInOrder(&Tasks::DirectVkReleaseU32LabelsBatchTask,
+                                                   body + 1u, (2u + count * 2u) * sizeof(u32),
+                                                   BbToggle::PipelinedTasks, false)) {
+                            DropReachedFences();
+                            for (u32 i = 0; i < count; ++i) {
+                                NotePending(addrs[i], value, 4u, true);
+                            }
+                        }
+                    }
                 } else if (vk_op == DirectVk::Op::OcclusionQuery) {
                     const u32 query_op = op_word >> 16;
                     if (body_words == 4u && query_op <= 2u) {

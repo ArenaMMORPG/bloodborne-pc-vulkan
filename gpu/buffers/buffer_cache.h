@@ -725,6 +725,8 @@ private:
         std::unique_ptr<std::array<std::atomic<Leaf*>, kDirSlots>> dir =
             std::make_unique<std::array<std::atomic<Leaf*>, kDirSlots>>();
         std::atomic<bool> has_any{false};
+        std::atomic<u64> min_page{~0ULL};
+        std::atomic<u64> max_page{0ULL};
 
         static bool Enabled() noexcept {
             static const bool on = [] {
@@ -747,8 +749,19 @@ private:
                 return;
             }
             const u64 end_addr = std::min<u64>(addr + size - 1, (1ULL << 40) - 1);
-            u64 page = addr >> 12;
+            const u64 first_page = addr >> 12;
+            u64 page = first_page;
             const u64 last_page = end_addr >> 12;
+            u64 cur_min = min_page.load(std::memory_order_relaxed);
+            while (first_page < cur_min &&
+                   !min_page.compare_exchange_weak(cur_min, first_page,
+                                                   std::memory_order_relaxed)) {
+            }
+            u64 cur_max = max_page.load(std::memory_order_relaxed);
+            while (last_page > cur_max &&
+                   !max_page.compare_exchange_weak(cur_max, last_page,
+                                                   std::memory_order_relaxed)) {
+            }
             while (page <= last_page) {
                 const u32 dir_idx = static_cast<u32>(page >> 14);
                 auto& slot = (*dir)[dir_idx];
@@ -786,9 +799,17 @@ private:
             if (!has_any.load(std::memory_order_acquire) || size == 0 || addr >= (1ULL << 40)) {
                 return false;
             }
-            const u64 end_addr = std::min<u64>(addr + size - 1, (1ULL << 40) - 1);
+            const u64 max_dist = ((1ULL << 40) - 1) - addr;
+            const u64 end_addr = (size - 1 > max_dist) ? ((1ULL << 40) - 1) : (addr + size - 1);
             u64 page = addr >> 12;
-            const u64 last_page = end_addr >> 12;
+            u64 last_page = end_addr >> 12;
+            const u64 min_p = min_page.load(std::memory_order_relaxed);
+            const u64 max_p = max_page.load(std::memory_order_relaxed);
+            if (min_p > max_p || last_page < min_p || page > max_p) {
+                return false;
+            }
+            page = std::max(page, min_p);
+            last_page = std::min(last_page, max_p);
             while (page <= last_page) {
                 const u32 dir_idx = static_cast<u32>(page >> 14);
                 const u64 dir_last = std::min<u64>(last_page, ((u64(dir_idx) + 1) << 14) - 1);

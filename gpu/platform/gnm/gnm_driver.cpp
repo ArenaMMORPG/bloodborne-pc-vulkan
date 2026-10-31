@@ -101,10 +101,11 @@ LockMode SubmitLock() {
         if (std::getenv("BB_SUBMIT_AHEAD") != nullptr) {
             return LockMode::Decode;
         }
-        if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
-            std::printf("Gnm: async full-frame CPU/GPU pipeline active (V5.2a LockMode::Flip)\n");
-            return LockMode::Flip;
-        }
+        // Note: Bloodborne's double-buffered GX context (ctx[0]/ctx[1]) builds the first 2
+        // submissions of frame F+1 independently of frame F (BB_SUBMIT_AHEAD=2), whereas
+        // submission #3+ polls frame F's GPU EoP labels to recycle guest CPU frame-pool nodes.
+        // Keep LockMode::Decode (ahead=2) as default; LockMode::Flip remains opt-in via
+        // BB_SUBMIT_LOCK=flip.
         return LockMode::Decode;
     }();
     return mode;
@@ -221,14 +222,14 @@ void WatchOverlapLeak(u32 submits_in_frame) {
         consecutive_growth_windows = 0;
         return;
     }
-    if ((steady_frames - 600) % 300 == 0) {
+    if ((steady_frames - 600) % 200 == 0) {
         if (live > prev_window_live + 256) {
             ++consecutive_growth_windows;
         } else {
             consecutive_growth_windows = 0;
         }
         prev_window_live = live;
-        if (consecutive_growth_windows >= 8 && live - baseline > 150000) {
+        if (consecutive_growth_windows >= 5 && live - baseline > 40000) {
             pacing.overlap_off = true;
             std::printf("Gnm: steady-state heap leak detected (%lld allocations over %lld): frames "
                         "no longer overlap (BB_SUBMIT_AHEAD 0)\n",

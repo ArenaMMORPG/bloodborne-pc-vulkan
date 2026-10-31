@@ -58,6 +58,7 @@ void DirectVkResolveColorTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkUploadTextureTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkClearDepthStencilTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
+void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkOcclusionQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 
 /// An end-of-pipe fence now (no draw recording thread).

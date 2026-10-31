@@ -19,4 +19,10 @@ void RecordPortableGpuLabel(vk::CommandBuffer command, vk::Buffer buffer, u64 of
 void RecordPortableGpuZeroLabelsBatch(vk::CommandBuffer command,
                                       std::span<const std::pair<vk::Buffer, u64>> targets);
 
+/// Coalesced batch of 32-bit value end-of-pipe label writes (V5.2b ReleaseU32LabelsBatch):
+/// emits 1 pre-barrier and 1 post-barrier around all 32-bit updateBuffer writes.
+void RecordPortableGpuU32LabelsBatch(vk::CommandBuffer command,
+                                     std::span<const std::pair<vk::Buffer, u64>> targets,
+                                     u32 value);
+
 } // namespace Vulkan

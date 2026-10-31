@@ -66,4 +66,29 @@ void RecordPortableGpuZeroLabelsBatch(vk::CommandBuffer command,
                 vk::AccessFlagBits2::eHostRead);
 }
 
+void RecordPortableGpuU32LabelsBatch(vk::CommandBuffer command,
+                                     std::span<const std::pair<vk::Buffer, u64>> targets,
+                                     u32 value) {
+    if (targets.empty()) {
+        return;
+    }
+    const auto barrier = [&](vk::PipelineStageFlags2 source, vk::AccessFlags2 source_access,
+                             vk::PipelineStageFlags2 dest, vk::AccessFlags2 dest_access) {
+        const vk::MemoryBarrier2 memory{.srcStageMask = source, .srcAccessMask = source_access,
+                                        .dstStageMask = dest, .dstAccessMask = dest_access};
+        command.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &memory});
+    };
+    barrier(vk::PipelineStageFlagBits2::eAllCommands,
+            vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            vk::PipelineStageFlagBits2::eTransfer | vk::PipelineStageFlagBits2::eHost,
+            vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eHostRead);
+    for (const auto& [buffer, offset] : targets) {
+        command.updateBuffer(buffer, offset, sizeof(value), &value);
+    }
+    barrier(vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+            vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost,
+            vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite |
+                vk::AccessFlagBits2::eHostRead);
+}
+
 } // namespace Vulkan

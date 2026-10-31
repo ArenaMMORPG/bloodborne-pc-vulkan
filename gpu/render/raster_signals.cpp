@@ -431,6 +431,75 @@ bool Rasterizer::WriteZeroLabelsBatchOnGpu(std::span<const VAddr> addresses) {
     return true;
 }
 
+bool Rasterizer::WriteU32LabelsBatchOnGpu(std::span<const VAddr> addresses, u32 value) {
+    if (addresses.empty()) {
+        return true;
+    }
+    static const bool enabled = [this] {
+        const char* env = std::getenv("BB_GPU_LABELS");
+        if (!env && instance.IsAmdGfx8()) {
+            return false;
+        }
+        return !env || env[0] != '0';
+    }();
+    if (!enabled || !VideoCore::GuestInPlace() || !HonestLabels() || BbFreeCheck::Enabled()) {
+        return false;
+    }
+    struct ResolvedLabel {
+        VAddr addr;
+        const VideoCore::Buffer* buf;
+        u64 offset;
+    };
+    boost::container::static_vector<ResolvedLabel, 32> resolved;
+    boost::container::static_vector<std::pair<vk::Buffer, u64>, 32> vk_targets;
+    for (const VAddr addr : addresses) {
+        if ((addr & 3u) != 0u || resolved.size() >= 32) {
+            return false;
+        }
+        const auto target = buffer_cache.GuestChunkSource(addr, 4u);
+        if (!target) {
+            return false;
+        }
+        resolved.push_back(ResolvedLabel{addr, target->first, target->second});
+        vk_targets.emplace_back(target->first->Handle(), target->second);
+    }
+
+    static const bool force_portable = [] {
+        const char* env = std::getenv("BB_GPU_LABELS_PORTABLE");
+        return env && env[0] != '0';
+    }();
+    const bool marker = instance.IsBufferMarkerSupported() && !force_portable;
+    // Note: transient CGGpuFreeListAllocatorGnm staging blocks (value=4) are pure memory-reclaim
+    // markers and never read occlusion query results, so we intentionally avoid calling
+    // occlusion->WriteBeforeLabel() (which would unnecessarily break active Vulkan render passes).
+    if (!marker) {
+        scheduler.EndRendering();
+        runtime.FlushBarriers();
+    }
+    scheduler.Record([vk_targets, marker, value](vk::CommandBuffer cmdbuf) {
+        if (!marker) {
+            RecordPortableGpuU32LabelsBatch(cmdbuf, vk_targets, value);
+            return;
+        }
+        for (const auto& [buf, offset] : vk_targets) {
+            cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eBottomOfPipe, buf, offset,
+                                        value);
+        }
+    });
+    for (const auto& item : resolved) {
+        if (!marker) {
+            runtime.AccessBuffer(item.buf, item.offset, 4u,
+                                 vk::PipelineStageFlagBits2::eTransfer,
+                                 vk::AccessFlagBits2::eTransferWrite);
+        }
+        buffer_cache.NoteLateCommandWrite(item.addr, &value, 4u);
+    }
+    // Single submission-policy tracking signal per batch (~16/frame instead of ~533/frame).
+    SignalAfterGpu([] {}, resolved.back().addr, value);
+    BbStats::gpu_labels.fetch_add(resolved.size(), std::memory_order_relaxed);
+    return true;
+}
+
 bool Rasterizer::PipeSignals() const {
     static const bool enabled = [] {
         const char* env = std::getenv("BB_PIPE_SIGNALS");

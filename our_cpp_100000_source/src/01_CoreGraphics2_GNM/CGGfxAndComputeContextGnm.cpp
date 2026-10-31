@@ -707,30 +707,82 @@ void CGGfxContextGnm_FlushPendingStagingUploads(uint8_t* self) {
         return;
     }
 
-    uint8_t* ctxRef = self;
-    uint32_t mask = *reinterpret_cast<uint32_t*>(self + 0xb460);
-    while (mask != 0) {
-        uint32_t bit = static_cast<uint32_t>(__builtin_ctz(mask));
-        uint8_t* blk = *reinterpret_cast<uint8_t**>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL);
+    if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4)) {
+        gx_direct_vk::ReleaseU32LabelBatch u32Batch(self, 4u);
+        uint8_t* chainHead = nullptr;
+        uint8_t* chainTail = nullptr;
+        auto enqueueBlock = [&](uint8_t* node) noexcept {
+            *reinterpret_cast<uint64_t*>(node) = 2ULL;
+            if (!chainHead) {
+                chainHead = node;
+            } else {
+                *reinterpret_cast<uint8_t**>(chainTail + 0x28) = node;
+            }
+            chainTail = node;
+            u32Batch.Add(reinterpret_cast<uint64_t>(node));
+        };
+
+        uint32_t mask = *reinterpret_cast<uint32_t*>(self + 0xb460);
+        while (mask != 0) {
+            uint32_t bit = static_cast<uint32_t>(__builtin_ctz(mask));
+            uint8_t* blk =
+                *reinterpret_cast<uint8_t**>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL);
+            while (blk) {
+                uint8_t* nextBlk = *reinterpret_cast<uint8_t**>(blk + 0x28);
+                enqueueBlock(blk);
+                blk = nextBlk;
+            }
+            *reinterpret_cast<uint64_t*>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL) = 0;
+            mask -= (1u << bit);
+        }
+        *reinterpret_cast<uint32_t*>(self + 0xb460) = 0;
+
+        uint8_t* blk = *reinterpret_cast<uint8_t**>(self + 0xb458);
+        while (blk) {
+            uint8_t* nextBlk = *reinterpret_cast<uint8_t**>(blk + 0x28);
+            enqueueBlock(blk);
+            blk = nextBlk;
+        }
+        *reinterpret_cast<uint64_t*>(self + 0xb458) = 0;
+
+        if (chainHead) {
+            uint8_t* alloc = *reinterpret_cast<uint8_t**>(self + 0xb3d0);
+            uint8_t** headSlot = reinterpret_cast<uint8_t**>(alloc + 0x98);
+            uint8_t* oldHead = __atomic_load_n(headSlot, __ATOMIC_RELAXED);
+            do {
+                *reinterpret_cast<uint8_t**>(chainTail + 0x28) = oldHead;
+            } while (!__atomic_compare_exchange_n(
+                headSlot, &oldHead, chainHead, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+            u32Batch.Flush();
+            *reinterpret_cast<uint64_t*>(self + 0xb4b8) = *reinterpret_cast<uint64_t*>(self + 0x10);
+        }
+    } else {
+        uint8_t* ctxRef = self;
+        uint32_t mask = *reinterpret_cast<uint32_t*>(self + 0xb460);
+        while (mask != 0) {
+            uint32_t bit = static_cast<uint32_t>(__builtin_ctz(mask));
+            uint8_t* blk =
+                *reinterpret_cast<uint8_t**>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL);
+            while (blk) {
+                uint8_t* nextBlk = *reinterpret_cast<uint8_t**>(blk + 0x28);
+                reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26aa5a0ULL))(
+                    *reinterpret_cast<void**>(self + 0xb3d0), &ctxRef, blk);
+                blk = nextBlk;
+            }
+            *reinterpret_cast<uint64_t*>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL) = 0;
+            mask -= (1u << bit);
+        }
+        *reinterpret_cast<uint32_t*>(self + 0xb460) = 0;
+
+        uint8_t* blk = *reinterpret_cast<uint8_t**>(self + 0xb458);
         while (blk) {
             uint8_t* nextBlk = *reinterpret_cast<uint8_t**>(blk + 0x28);
             reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26aa5a0ULL))(
                 *reinterpret_cast<void**>(self + 0xb3d0), &ctxRef, blk);
             blk = nextBlk;
         }
-        *reinterpret_cast<uint64_t*>(self + 0xb3d8 + static_cast<size_t>(bit) * 8ULL) = 0;
-        mask -= (1u << bit);
+        *reinterpret_cast<uint64_t*>(self + 0xb458) = 0;
     }
-    *reinterpret_cast<uint32_t*>(self + 0xb460) = 0;
-
-    uint8_t* blk = *reinterpret_cast<uint8_t**>(self + 0xb458);
-    while (blk) {
-        uint8_t* nextBlk = *reinterpret_cast<uint8_t**>(blk + 0x28);
-        reinterpret_cast<void(*)(void*, void*, void*)>(GX_VMA(0x26aa5a0ULL))(
-            *reinterpret_cast<void**>(self + 0xb3d0), &ctxRef, blk);
-        blk = nextBlk;
-    }
-    *reinterpret_cast<uint64_t*>(self + 0xb458) = 0;
 
     reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x26cd3f0ULL))(self + 0x40, self);
 

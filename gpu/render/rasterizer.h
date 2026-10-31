@@ -331,6 +331,7 @@ public:
     /// from the CPU): not in GPU-visible guest memory, no VK_AMD_buffer_marker, BB_GPU_LABELS=0.
     bool WriteLabelOnGpu(VAddr address, u64 value, u32 num_bytes);
     bool WriteZeroLabelsBatchOnGpu(std::span<const VAddr> addresses);
+    bool WriteU32LabelsBatchOnGpu(std::span<const VAddr> addresses, u32 value);
     /// bbport: a ZPASS_DONE event (the game's occlusion query) at `address` for `pairs` depth
     /// blocks, in stream order (vk_occlusion.h). False when it is left to the caller (the old
     /// memory model).

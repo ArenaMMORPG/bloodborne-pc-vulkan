@@ -3,8 +3,17 @@
 // (dirty registers, user data, constants) and stage B (draw recording thread) records it.
 
 #include "render/raster_internal.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
+
+namespace {
+inline bool FastNonCeRamSkip() noexcept {
+    static const bool on =
+        gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4);
+    return on;
+}
+} // namespace
 
 // bbport: two-stage draw pipeline (vk_draw_pipe.h). Packet layout, 8-byte aligned parts:
 // DrawPacket, u16 block indices, u32 block words (RegDirty::BlockWords each), then per stage a
@@ -230,6 +239,9 @@ void Rasterizer::FlushStageAReadCoalescer() {
 
 void Rasterizer::NotePendingRead(VAddr address, u64 size, bool gpu_in_place) {
     if (draw_pipe && size && OnStageA()) {
+        if (FastNonCeRamSkip() && !buffer_cache.IsConstRamRange(address, size)) {
+            return;
+        }
         const u8 mask = gpu_in_place ? u8(kCoalesceStageB | kCoalesceGpuInPl) : kCoalesceStageB;
         NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), mask);
     }
@@ -520,10 +532,15 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         const Gcn::Buffer vsharp = prepared_stage ? prepared_stage->buffer_sharps[index]
                                                   : desc.GetSharp(stage);
         const VAddr address = vsharp.base_address;
-        if (address == 0 || vsharp.GetSize() == 0) {
+        const u64 raw_size = vsharp.GetSize();
+        if (address == 0 || raw_size == 0) {
             continue;
         }
-        const u64 size = memory->ClampRangeSize(address, vsharp.GetSize());
+        if (!desc.is_written && constants_in_place && FastNonCeRamSkip() &&
+            !BbCeStats::Enabled() && !buffer_cache.IsConstRamRange(address, raw_size)) {
+            continue;
+        }
+        const u64 size = memory->ClampRangeSize(address, raw_size);
         if (desc.is_written) {
             // The game's copy shader: what its control list names, not the tens of MiB bound (they
             // kept every constant around them from the ring: bound in place, a later constant RAM
@@ -568,7 +585,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             size <= VideoCore::BufferCache::STREAM_THRESHOLD && !constants_in_place) {
             out.push_back({index, static_cast<u32>(size), RingPending, address, 0,
                            u32(hle_candidate)});
-            NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), kCoalesceResolve);
+            if (!FastNonCeRamSkip() || buffer_cache.IsConstRamRange(address, size)) {
+                NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), kCoalesceResolve);
+            }
             continue;
         }
         const bool copyable = constram_sync ||
@@ -806,6 +825,9 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     static const bool no_stream_constram = std::getenv("BB_EXP_NO_STREAM") != nullptr;
     auto note_stage_b_read = [&](VAddr r_addr, u64 r_size) {
+        if (FastNonCeRamSkip() && !buffer_cache.IsConstRamRange(r_addr, r_size)) {
+            return;
+        }
         const bool sync_stream = !no_stream_constram && r_size != 0 &&
                                  r_size <= VideoCore::BufferCache::CONSTRAM_STREAM_THRESHOLD &&
                                  !VideoCore::ConstantsInPlace() &&
@@ -1211,7 +1233,8 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
                 binding.offset = RingNotCopied;
             }
             // Read by stage B or the GPU later: a dump over it waits for the packet.
-            if (!offset || binding.always_note) {
+            if ((!offset || binding.always_note) &&
+                (!FastNonCeRamSkip() || self.buffer_cache.IsConstRamRange(address, size))) {
                 self.pending_reads.NoteTables(address, size, number, false,
                                               self.draw_pipe->ConsumedPackets());
                 self.pending_gpu_reads.NoteTables(

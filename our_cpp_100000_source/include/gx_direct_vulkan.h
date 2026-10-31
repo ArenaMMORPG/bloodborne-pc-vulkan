@@ -371,9 +371,10 @@ inline bool EnabledV5() noexcept {
     return (ActiveMask() & kModuleV5_NativePcFx) != 0u;
 }
 
-inline constexpr uint32_t kV5Sub_NativePostFx        = 1u << 0; // V5.1: Live C++20 PostFX toggles (CA/DoF/Bloom in 0x229e990 & 0x21d5f80, zero binary patches)
-inline constexpr uint32_t kV5Sub_NativeHeapsAndFixes = 1u << 1; // V5.1: Native 1 MiB GX command heaps, Intel Tonemap Fix, Light Grid override & GPU heap telemetry
-inline constexpr uint32_t kV5Sub_AsyncFramePipeline  = 1u << 2; // V5.2a: Full-frame CPU/GPU overlap (LockMode::Flip) + thread-safe Yebis2 deferred unregister
+inline constexpr uint32_t kV5Sub_NativePostFx          = 1u << 0; // V5.1: Live C++20 PostFX toggles (CA/DoF/Bloom in 0x229e990 & 0x21d5f80, zero binary patches)
+inline constexpr uint32_t kV5Sub_NativeHeapsAndFixes   = 1u << 1; // V5.1: Native 1 MiB GX command heaps, Intel Tonemap Fix, Light Grid override & GPU heap telemetry
+inline constexpr uint32_t kV5Sub_AsyncFramePipeline    = 1u << 2; // V5.2a: Thread-safe Yebis2 deferred texture unregister (sub_bb5f10/sub_bb5e40) + safe double-buffered overlap
+inline constexpr uint32_t kV5Sub_DecommissionLegacyPm4 = 1u << 3; // V5.2b: Coalesced 32-bit EoP block-free batch (ReleaseU32LabelsBatch) + non-CeRam ConstEngine fast-path
 
 // Effect indices matching BbSettings::Effects in gpu/shim/bbport_settings.h
 inline constexpr uint32_t kEffectChromaticAberration = 0u;
@@ -509,6 +510,8 @@ enum class Op : uint32_t {
     ReleaseLabelsBatch       = 21u,
     // V3.3: Direct VkQueryPool OcclusionQuery (replaces 0x1077660 DMA_DATA + WAIT_REG_MEM + 2x EVENT_WRITE)
     OcclusionQuery           = 22u,
+    // V5.2b: Coalesced End-of-Pipe 32-bit value label release batch (replaces ~533/frame 0x26aa5a0 EventWriteEop)
+    ReleaseU32LabelsBatch    = 23u,
 };
 
 struct CopyRegion {
@@ -1508,6 +1511,48 @@ struct ReleaseLabelBatch {
             Flush();
         }
         addrs[count++] = reinterpret_cast<uint64_t>(status_ptr);
+    }
+};
+
+// Coalesces up to 32 End-of-Pipe 32-bit value status writes (CGGpuFreeListAllocatorGnm_DeferFreeWithEoPLabelA,
+// 0x26aa5a0 -> 0x10778f0 with Data32 value=4) into a single DirectVk::Op::ReleaseU32LabelsBatch packet.
+struct ReleaseU32LabelBatch {
+    static constexpr uint32_t kMaxLabels = 32u;
+    void* dcb = nullptr;
+    uint32_t value = 4u;
+    uint32_t count = 0u;
+    uint64_t addrs[kMaxLabels]{};
+
+    explicit ReleaseU32LabelBatch(void* dcb_raw, uint32_t val = 4u) noexcept
+        : dcb(dcb_raw), value(val) {}
+
+    inline void Flush() noexcept {
+        if (count == 0u || !dcb) {
+            count = 0u;
+            return;
+        }
+        // Packet layout: [0]=NOP header (body = 3 + 2*count), [1]=kNopPayloadTag,
+        // [2]=Op::ReleaseU32LabelsBatch | (count << 16), [3]=value, [4..3+2*count]=uint64_t addrs[count]
+        const uint32_t body_dwords = 3u + count * 2u;
+        uint32_t* pkt = ReserveDcbDwords(dcb, 1u + body_dwords);
+        if (pkt) {
+            pkt[0] = MakeNopHeader(body_dwords);
+            pkt[1] = kNopPayloadTag;
+            pkt[2] = static_cast<uint32_t>(Op::ReleaseU32LabelsBatch) | (count << 16);
+            pkt[3] = value;
+            std::memcpy(pkt + 4u, addrs, static_cast<size_t>(count) * sizeof(uint64_t));
+        }
+        count = 0u;
+    }
+
+    inline void Add(uint64_t gpu_addr) noexcept {
+        if (!gpu_addr) {
+            return;
+        }
+        if (count == kMaxLabels) {
+            Flush();
+        }
+        addrs[count++] = gpu_addr;
     }
 };
 
