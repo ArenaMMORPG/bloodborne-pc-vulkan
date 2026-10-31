@@ -449,6 +449,9 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
             uploaded_bytes_since_flush = 0;
         }
     }
+    if (uploaded_bytes_since_flush > 0) {
+        runtime.FlushBarriers();
+    }
 }
 
 } // namespace VideoCore::DirectBuffers

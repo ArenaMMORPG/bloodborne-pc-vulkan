@@ -30,6 +30,7 @@
 #include "render/runtime.h"
 #include "render/scheduler.h"
 #include "textures/texture_cache.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 #include <mutex>
 #include <pthread.h>
@@ -1277,8 +1278,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     }
     // bbport BB_LAYER_MEMORY: the game's memory in place through its chunk buffer (the module
     // says which); what is not whole in one chunk takes the paths below (VRAM copies).
+    static const bool v6_fast_bind =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
+    const bool allow_texel_memo = v6_fast_bind && !LayerMode() && !GuestInPlace();
     if ((LayerMode() || (!GuestInPlace() && size > STREAM_THRESHOLD)) && !is_written &&
-        !is_texel_buffer && !stats && BindMemoOn()) {
+        (!is_texel_buffer || allow_texel_memo) && !stats && BindMemoOn()) {
         // A reading binding resolved before, with nothing changed since (BindMemo).
         if (maintained_epoch != packet_epoch) {
             Maintain();
@@ -1287,14 +1291,23 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             LayerProcessTraps();
         }
         const u64 cur_gen = LayerMode() ? layer_generation : ResidencyGeneration();
+        const u32 cur_second = BbStats::coarse_second.load(std::memory_order_relaxed);
         BindMemo& memo = BindMemoSlot(device_addr, size);
         if (memo.address == device_addr && memo.size == size &&
             memo.generation == cur_gen &&
-            memo.second == BbStats::coarse_second.load(std::memory_order_relaxed)) {
+            (!LayerMode() || memo.second == cur_second) &&
+            (!is_texel_buffer || (memo.tex_gen == texture_cache.RegistryGeneration() &&
+                                  !texture_cache.IsMeta(device_addr)))) {
             const u64 cur_epoch = BbMem::cpu_change_epoch.load(std::memory_order_acquire);
             if (!memo.vram || memo.epoch == cur_epoch ||
                 !memory_tracker->IsRegionCpuModified(device_addr, size)) {
                 memo.epoch = cur_epoch;
+                if (!LayerMode() && memo.second != cur_second) {
+                    const u64 first_b = device_addr >> block_shift;
+                    const u64 last_b = (device_addr + size - 1) >> block_shift;
+                    NoteUse(first_b << block_shift, (last_b - first_b + 1) << block_shift);
+                    memo.second = cur_second;
+                }
                 if (LayerMode()) {
                     (memo.vram ? BbStats::bound_vram_bytes : BbStats::bound_in_place_bytes)
                         .fetch_add(size, std::memory_order_relaxed);
@@ -1429,15 +1442,19 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     if (GuestInPlace()) {
         BbStats::bound_vram_bytes.fetch_add(size, std::memory_order_relaxed);
     }
-    SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
-    if (!GuestInPlace() && !is_written && !is_texel_buffer && !stats && size > STREAM_THRESHOLD &&
-        BindMemoOn()) {
+    const u64 tex_gen_before = texture_cache.RegistryGeneration();
+    const bool synced_from_image =
+        SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
+    if (!GuestInPlace() && !is_written &&
+        (!is_texel_buffer || (allow_texel_memo && !synced_from_image)) &&
+        !stats && size > STREAM_THRESHOLD && BindMemoOn()) {
         BindMemoSlot(device_addr, size) = {
             .address = device_addr,
             .size = size,
             .generation = ResidencyGeneration(),
             .epoch = vram_epoch,
             .offset = arena->Offset(device_addr),
+            .tex_gen = !synced_from_image ? tex_gen_before : ~0ULL,
             .buffer = arena,
             .second = BbStats::coarse_second.load(std::memory_order_relaxed),
             .vram = true,

@@ -84,7 +84,8 @@ public:
     /// thread in one piece each).
     void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,
                        std::span<const vk::DescriptorImageInfo> image_infos = {},
-                       std::span<const vk::DescriptorBufferInfo> buffer_infos = {}) const;
+                       std::span<const vk::DescriptorBufferInfo> buffer_infos = {},
+                       bool bulk_known = false) const;
 
 protected:
     /// The descriptor set layout of the stages' resources (buffers, images, samplers per stage,

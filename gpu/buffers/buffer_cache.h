@@ -452,7 +452,7 @@ private:
     /// tracking's use marks are per second). BB_BIND_MEMO=0: every binding takes the full path.
     struct BindMemo {
         VAddr address = 0;
-        u64 size = 0, generation = 0, epoch = 0, offset = 0;
+        u64 size = 0, generation = 0, epoch = 0, offset = 0, tex_gen = ~0ULL;
         const Buffer* buffer = nullptr;
         u32 second = 0;
         bool vram = false;

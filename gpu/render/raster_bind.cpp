@@ -4,10 +4,16 @@
 
 #include "bbport_button_prompts.h"
 #include "render/raster_internal.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
 
 namespace {
+inline bool StageBFastBind() noexcept {
+    static const bool on =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
+    return on;
+}
 /// The push data's viewport transform: the first viewport's (as the vertex shader applies it
 /// with clipping off; one viewport, see ViewportIndex).
 Shader::PushData MakeUserData(const Gcn::Regs& regs) {
@@ -425,24 +431,43 @@ void Rasterizer::EmitVertexBuffers() {
         v.bindings.size() * sizeof(v.bindings[0]) + v.attributes.size() * sizeof(v.attributes[0]) +
         num_buffers * (sizeof(vk::Buffer) + 3 * sizeof(vk::DeviceSize)) + 128);
     if (dynamic_input) {
-        scheduler.Record([bindings = scheduler.RecordData(std::span<const vk::VertexInputBindingDescription2EXT>{v.bindings.data(), v.bindings.size()}),
-                          attributes = scheduler.RecordData(std::span<const vk::VertexInputAttributeDescription2EXT>{
-                              v.attributes.data(), v.attributes.size()})](
-                             vk::CommandBuffer cmdbuf) {
-            cmdbuf.setVertexInputEXT(bindings, attributes);
-        });
+        const auto bindings = scheduler.RecordData(
+            std::span<const vk::VertexInputBindingDescription2EXT>{v.bindings.data(),
+                                                                   v.bindings.size()});
+        const auto attributes = scheduler.RecordData(
+            std::span<const vk::VertexInputAttributeDescription2EXT>{v.attributes.data(),
+                                                                     v.attributes.size()});
+        if (num_buffers == 0) {
+            scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
+                cmdbuf.setVertexInputEXT(bindings, attributes);
+            });
+            return;
+        }
+        const auto buffers =
+            scheduler.RecordData(std::span<const vk::Buffer>{v.host_buffers.data(), num_buffers});
+        const auto offsets = scheduler.RecordData(
+            std::span<const vk::DeviceSize>{v.host_offsets.data(), num_buffers});
+        if (StageBFastBind()) {
+            scheduler.Record(
+                [bindings, attributes, num_buffers, buffers, offsets](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.setVertexInputEXT(bindings, attributes);
+                    cmdbuf.bindVertexBuffers(0, num_buffers, buffers.data(), offsets.data());
+                });
+        } else {
+            scheduler.Record([bindings, attributes](vk::CommandBuffer cmdbuf) {
+                cmdbuf.setVertexInputEXT(bindings, attributes);
+            });
+            scheduler.Record([num_buffers, buffers, offsets](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindVertexBuffers(0, num_buffers, buffers.data(), offsets.data());
+            });
+        }
+        return;
     }
     if (num_buffers == 0) {
         return;
     }
     const auto buffers = scheduler.RecordData(std::span<const vk::Buffer>{v.host_buffers.data(), num_buffers});
     const auto offsets = scheduler.RecordData(std::span<const vk::DeviceSize>{v.host_offsets.data(), num_buffers});
-    if (dynamic_input) {
-        scheduler.Record([num_buffers, buffers, offsets](vk::CommandBuffer cmdbuf) {
-            cmdbuf.bindVertexBuffers(0, num_buffers, buffers.data(), offsets.data());
-        });
-        return;
-    }
     const auto sizes = scheduler.RecordData(std::span<const vk::DeviceSize>{v.host_sizes.data(), num_buffers});
     const auto strides = scheduler.RecordData(std::span<const vk::DeviceSize>{v.host_strides.data(), num_buffers});
     scheduler.Record([num_buffers, buffers, offsets, sizes, strides](vk::CommandBuffer cmdbuf) {
@@ -621,8 +646,11 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 std::printf("%s\n", ready ? " (prepared)" : "");
             }
         }
-        needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
-        bound_buffers.emplace_back(range.buffer, range.offset, size, false);
+        if (!StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
+            (!is_direct_buf && range.buffer != &buffer_cache.GetStreamBuffer())) {
+            needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
+            bound_buffers.emplace_back(range.buffer, range.offset, size, false);
+        }
     }
 
     // Each stream at its offset in its range's buffer (null for streams without memory).
@@ -676,13 +704,16 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     } else {
         std::tie(buffer, offset) = buffer_cache.ObtainBuffer(address, size, false);
     }
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
     if (!is_direct_buf && InPlaceReads::Enabled()) {
         InPlaceReads::Note(address, size, scheduler.CurrentTick(), 0, 3);
     }
     // Tracked as a graphics read after the draw (ResetBindings): an upload into a mirrored index
     // range must not overtake the draw's fixed-function index fetches.
-    bound_buffers.emplace_back(buffer, offset, size, false);
+    if (!StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
+        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer())) {
+        needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
+        bound_buffers.emplace_back(buffer, offset, size, false);
+    }
     index_bind = {buffer->Handle(), offset, index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32};
 }
 
@@ -983,12 +1014,15 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         }
         return;
     }
-    bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
     if (desc.is_written) {
         // Raw storage-buffer writes can also make an aliased cached image stale.
         texture_cache.InvalidateMemoryFromGPU(address, size);
     }
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+    if (desc.is_written || !StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
+        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer())) {
+        bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
+        needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+    }
 }
 
 void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,

@@ -18,6 +18,7 @@
 #include "render/pipeline_cache.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
 
@@ -126,15 +127,18 @@ void Pipeline::CreateLayouts(vk::ShaderStageFlags push_stages, const char* kind,
 
 void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,
                              std::span<const vk::DescriptorImageInfo> image_infos,
-                             std::span<const vk::DescriptorBufferInfo> buffer_infos) const {
+                             std::span<const vk::DescriptorBufferInfo> buffer_infos,
+                             bool bulk_known) const {
     const auto bind_point =
         IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
     const auto stage_flags = IsCompute() ? vk::ShaderStageFlagBits::eCompute : AllGraphicsStageBits;
     const vk::PipelineLayout layout = *pipeline_layout;
-    scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
-        cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
-    });
+    static const bool fast_bind =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
     if (set_writes.empty()) {
+        scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
+            cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+        });
         return;
     }
     if (!uses_push_descriptors) {
@@ -144,13 +148,25 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
             write.dstSet = desc_set;
         }
         instance.GetDevice().updateDescriptorSets(set_writes, {});
-        scheduler.Record([bind_point, layout, desc_set](vk::CommandBuffer cmdbuf) {
-            cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, {});
-        });
+        if (fast_bind) {
+            scheduler.Record([bind_point, layout, stage_flags, push_data,
+                              desc_set](vk::CommandBuffer cmdbuf) {
+                cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+                cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, {});
+            });
+        } else {
+            scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
+                cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+            });
+            scheduler.Record([bind_point, layout, desc_set](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindDescriptorSets(bind_point, layout, 0, desc_set, {});
+            });
+        }
         return;
     }
     if (!scheduler.IsRecordingDeferred()) {
         scheduler.Record([&](vk::CommandBuffer cmdbuf) {
+            cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
             cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, set_writes);
         });
         return;
@@ -163,18 +179,25 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
         return p >= array.data() && p + count <= array.data() + array.size();
     };
     const bool bulk =
-        (!image_infos.empty() || !buffer_infos.empty()) &&
-        std::ranges::all_of(set_writes, [&](const vk::WriteDescriptorSet& write) {
-            return !write.pTexelBufferView &&
-                   (!write.pImageInfo ||
-                    within(write.pImageInfo, write.descriptorCount, image_infos)) &&
-                   (!write.pBufferInfo ||
-                    within(write.pBufferInfo, write.descriptorCount, buffer_infos));
+        (fast_bind && bulk_known && (!image_infos.empty() || !buffer_infos.empty())) ||
+        ((!image_infos.empty() || !buffer_infos.empty()) &&
+         std::ranges::all_of(set_writes, [&](const vk::WriteDescriptorSet& write) {
+             return !write.pTexelBufferView &&
+                    (!write.pImageInfo ||
+                     within(write.pImageInfo, write.descriptorCount, image_infos)) &&
+                    (!write.pBufferInfo ||
+                     within(write.pBufferInfo, write.descriptorCount, buffer_infos));
+         }));
+    if (!fast_bind) {
+        scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
+            cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
         });
+    }
     std::span<const vk::WriteDescriptorSet> writes;
     if (bulk) {
         scheduler.ReserveRecordData(set_writes.size() * sizeof(vk::WriteDescriptorSet) +
-                                    image_infos.size_bytes() + buffer_infos.size_bytes() + 256);
+                                    image_infos.size_bytes() + buffer_infos.size_bytes() +
+                                    sizeof(Shader::PushData) + 256);
         writes = scheduler.RecordData(std::span<const vk::WriteDescriptorSet>{set_writes});
         const auto images = scheduler.RecordData(image_infos);
         const auto buffers = scheduler.RecordData(buffer_infos);
@@ -188,7 +211,8 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
             }
         }
     } else {
-        size_t bytes = set_writes.size() * sizeof(vk::WriteDescriptorSet) + 64;
+        size_t bytes = set_writes.size() * sizeof(vk::WriteDescriptorSet) +
+                       sizeof(Shader::PushData) + 64;
         for (const auto& write : set_writes) {
             bytes += write.descriptorCount *
                          (sizeof(vk::DescriptorBufferInfo) + sizeof(vk::DescriptorImageInfo) +
@@ -214,9 +238,17 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
             }
         }
     }
-    scheduler.Record([bind_point, layout, writes](vk::CommandBuffer cmdbuf) {
-        cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
-    });
+    if (fast_bind) {
+        scheduler.Record([bind_point, layout, stage_flags, push_data,
+                          writes](vk::CommandBuffer cmdbuf) {
+            cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+            cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
+        });
+    } else {
+        scheduler.Record([bind_point, layout, writes](vk::CommandBuffer cmdbuf) {
+            cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
+        });
+    }
 }
 
 std::string Pipeline::GetDebugString() const {

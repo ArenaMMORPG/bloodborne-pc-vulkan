@@ -857,7 +857,7 @@ void Rasterizer::BeginDraw(const GraphicsPipeline* pipeline, const RenderState& 
     {
         BB_SECTION(PipelineBind);
         pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                                {buffer_infos.data(), buffer_infos.size()});
+                                {buffer_infos.data(), buffer_infos.size()}, true);
     }
 }
 
@@ -1218,7 +1218,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                            {buffer_infos.data(), buffer_infos.size()});
+                            {buffer_infos.data(), buffer_infos.size()}, true);
 
     const vk::Pipeline handle = pipeline->Handle();
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;
@@ -1303,7 +1303,7 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
         std::tie(args, args_offset) = indirect_guard->CheckArgs(*buffer, base);
     }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                            {buffer_infos.data(), buffer_infos.size()});
+                            {buffer_infos.data(), buffer_infos.size()}, true);
 
     const vk::Pipeline handle = pipeline->Handle();
     const vk::Buffer raw_args = buffer->Handle();
