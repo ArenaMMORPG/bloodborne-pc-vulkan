@@ -3,6 +3,7 @@
 // (dirty registers, user data, constants) and stage B (draw recording thread) records it.
 
 #include "render/raster_internal.h"
+#include "buffers/direct_buffers.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
@@ -11,6 +12,12 @@ namespace {
 inline bool FastNonCeRamSkip() noexcept {
     static const bool on =
         gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4);
+    return on;
+}
+
+inline bool StageARingBypass() noexcept {
+    static const bool on =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageARingBypass);
     return on;
 }
 } // namespace
@@ -124,6 +131,7 @@ void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
     if (!draw_pipe || !size) {
         return;
     }
+    VideoCore::DirectBuffers::NoteTransientCueHeapGpuWrite(address, size);
     // Numbered by packet (a position, the packet's start, counted as reached once the packet
     // before it had run, while this one was not recorded yet), in hashed granules: a lookup per
     // constant binding instead of a scan of the writes (a list scan was ~5% of this thread).
@@ -438,6 +446,9 @@ bool Rasterizer::PendingWriteOverlaps(VAddr address, u64 size) {
 void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                            boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out,
                            const Gcn::ComputeProgram* cs) {
+    if (stage.buffers.empty()) {
+        return;
+    }
     BB_SECTION(ARing);
     const PreparedStage* prepared_stage = nullptr;
     if (prepared && !BbToggle::Disabled(BbToggle::PreparedResources)) {
@@ -519,6 +530,8 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     // BB_CONSTANTS_IN_PLACE: nothing is copied here; the recording thread binds the game's memory
     // (or copies what is not in place, a read noted below).
     const bool constants_in_place = VideoCore::ConstantsInPlace();
+    const bool stage_a_bypass =
+        StageARingBypass() && !BbCeStats::Enabled() && !VideoCore::BufferCache::LayerPagedActive();
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
         if (desc.IsSpecial()) {
@@ -535,6 +548,30 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         const u64 raw_size = vsharp.GetSize();
         if (address == 0 || raw_size == 0) {
             continue;
+        }
+        if (!desc.is_written && stage_a_bypass) {
+            if (raw_size <= VideoCore::BufferCache::STREAM_THRESHOLD) {
+                if (constants_in_place) {
+                    if (!buffer_cache.IsConstRamRange(address, raw_size)) {
+                        continue;
+                    }
+                } else if (resolvers &&
+                           VideoCore::DirectBuffers::IsTransientCueHeap(address, raw_size) &&
+                           !buffer_cache.IsConstRamRange(address, raw_size)) {
+                    out.push_back({index, static_cast<u32>(raw_size), RingPending, address, 0,
+                                   u32(hle_candidate)});
+                    continue;
+                }
+            } else {
+                const u64 ce_check_len = std::min<u64>(raw_size, 16_MB);
+                if (!buffer_cache.IsConstRamRange(address, ce_check_len) &&
+                    (VideoCore::DirectBuffers::IsTransientCueHeap(
+                         address, VideoCore::BufferCache::STREAM_THRESHOLD + 1) ||
+                     memory->ClampRangeSize(address, VideoCore::BufferCache::STREAM_THRESHOLD + 1) >
+                         VideoCore::BufferCache::STREAM_THRESHOLD)) {
+                    continue;
+                }
+            }
         }
         if (!desc.is_written && constants_in_place && FastNonCeRamSkip() &&
             !BbCeStats::Enabled() && !buffer_cache.IsConstRamRange(address, raw_size)) {
@@ -1199,6 +1236,10 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
     auto& ring = *self.worker_rings[worker];
     const u64 alignment = std::max<u64>(self.instance.StorageMinAlignment(),
                                         self.instance.UniformMinAlignment());
+    static const bool precise_readbacks =
+        EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+    const bool fast_cue_resolve =
+        StageARingBypass() && !precise_readbacks && !VideoCore::BufferCache::LayerActive();
     bool used_ring = false;
     for (u32 i = 0; i < packet.num_stages; ++i) {
         const auto& stage = *reinterpret_cast<const PacketStage*>(in);
@@ -1213,6 +1254,20 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
             }
             const VAddr address = binding.address;
             const u64 size = binding.size;
+            if (fast_cue_resolve &&
+                VideoCore::DirectBuffers::IsTransientCueHeap(address, size) &&
+                !VideoCore::DirectBuffers::IsCueHeapEverGpuModified()) {
+                if (const auto offset = ring.Allocate(size, alignment)) {
+                    std::memcpy(ring.Data(*offset), reinterpret_cast<const void*>(address), size);
+                    ring.Flush(*offset, size);
+                    binding.offset = *offset;
+                    binding.ring = 1 + worker;
+                    used_ring = true;
+                } else {
+                    binding.offset = RingNotCopied;
+                }
+                continue;
+            }
             // The checks stage A made before: the GPU has written or will write these bytes,
             // or the layer keeps a VRAM copy. Writes noted for later packets only make it
             // stay with stage B (bound in place), never the reverse.

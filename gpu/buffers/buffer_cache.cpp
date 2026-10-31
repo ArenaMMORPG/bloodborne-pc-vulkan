@@ -678,6 +678,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
 BufferCache::~BufferCache() = default;
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
+    if (DirectBuffers::OverlapsTransientCueHeap(device_addr, size)) {
+        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
+    }
     if (LayerMode()) {
         LayerNoteCpuWrite(device_addr, size);
     }
@@ -1144,8 +1147,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     // decoded later (WriteData, constant RAM dumps) change them on the CPU in decode order, and
     // a draw decoded before must keep its values (buffer renaming). GPU writes are noted for
     // that: a range the GPU has yet to write is not copied.
-    if (is_written && !shadows.empty()) {
-        DropShadows(device_addr, size);
+    if (is_written) {
+        DirectBuffers::NoteTransientCueHeapGpuWrite(device_addr, size);
+        if (!shadows.empty()) {
+            DropShadows(device_addr, size);
+        }
     }
     // bbport: a read-only binding of blocks that were resident and in place the last time, with
     // the residency unchanged since (most bindings in place, constants with
@@ -1172,6 +1178,100 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
         memory->CopySparseMemory(device_addr, data, size);
         stream_buffer.Commit();
+        TraceBinding(device_addr, size, false, 3);
+        return {&stream_buffer, offset};
+    }
+    // V6.2: Direct zero-fault streaming for transient `cueHeap` read-only bindings up to 2 MiB
+    // (dynamic vertex buffers, Havok Cloth Buffer<float4>, dynamic bone palettes, and any CBs not
+    // pre-copied by ResolvePacket). Avoids creating a 512 MiB cueHeap VRAM arena mirror, avoids
+    // RenderPass breaks + vkCmdCopyBuffer + pipeline barriers, eliminates the remaining 8,693/s
+    // SIGSEGV write faults on cueHeap, and deduplicates repeated shadow/G-buffer bindings within
+    // the same submission tick in O(1).
+    if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
+        size != 0 && size <= 2_MB &&
+        DirectBuffers::IsTransientCueHeap(device_addr, size) &&
+        (!DirectBuffers::IsCueHeapEverGpuModified() ||
+         !gpu_modified_ranges.Intersects(device_addr, size))) {
+        struct CueStreamMemo {
+            VAddr addr = 0;
+            u32 size = 0;
+            u32 pad = 0;
+            u64 tick = ~0ULL;
+            u64 inv_gen = 0;
+            u64 offset = 0;
+        };
+        static constexpr size_t kCueMemoSlots = 256;
+        thread_local std::array<CueStreamMemo, kCueMemoSlots> tls_cue_memo{};
+        const u64 cur_tick = scheduler.CurrentTick();
+        const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
+        const size_t memo_idx =
+            static_cast<size_t>(((device_addr >> 6) ^ (device_addr >> 15) ^ (u64(size) << 2)) &
+                                (kCueMemoSlots - 1));
+        auto& memo = tls_cue_memo[memo_idx];
+        if (memo.addr == device_addr && memo.size == size && memo.tick == cur_tick &&
+            memo.inv_gen == cur_inv) {
+            TraceBinding(device_addr, size, false, 3);
+            return {&stream_buffer, memo.offset};
+        }
+        if (stats) {
+            auto& region = Stats().regions[RegionKey(device_addr)];
+            ++region.stream_count;
+            region.stream_bytes += size;
+        }
+        const u64 align = std::max<u64>(
+            16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
+        static const bool precise_readbacks =
+            EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+        if (!stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
+            !BbToggle::Disabled(BbToggle::DeferredStreamCopies)) {
+            if (const auto offset = stream_buffer.Reserve(size, align)) {
+                u8* const dst = stream_buffer.mapped_data.data() + *offset;
+                const u64 flush_off = *offset;
+                Buffer* const sbuf = &stream_buffer;
+                Core::MemoryManager* const mem = memory;
+                const bool precise = precise_readbacks;
+                if (size <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+                    scheduler.RecordHostCopy(
+                        [device_addr, dst, size, flush_off, sbuf, mem, precise] {
+                            if (!precise) {
+                                std::memcpy(dst, reinterpret_cast<const void*>(device_addr), size);
+                            } else {
+                                mem->CopySparseMemory(device_addr, dst, size);
+                            }
+                            sbuf->Flush(flush_off, size);
+                        });
+                } else {
+                    constexpr u32 kChunk = 1_MB;
+                    for (u32 rel = 0; rel < size; rel += kChunk) {
+                        const u32 chunk = std::min<u32>(kChunk, size - rel);
+                        const VAddr src_chunk = device_addr + rel;
+                        u8* const dst_chunk = dst + rel;
+                        const u64 f_off = flush_off + rel;
+                        BbCopy::Async([src_chunk, dst_chunk, chunk, f_off, sbuf, mem, precise] {
+                            if (!precise) {
+                                std::memcpy(dst_chunk, reinterpret_cast<const void*>(src_chunk),
+                                            chunk);
+                            } else {
+                                mem->CopySparseMemory(src_chunk, dst_chunk, chunk);
+                            }
+                            sbuf->Flush(f_off, chunk);
+                        });
+                    }
+                }
+                scheduler.NoteHostCopySource(device_addr, size);
+                memo = {device_addr, size, 0u, scheduler.CurrentTick(), cur_inv, *offset};
+                TraceBinding(device_addr, size, false, 3);
+                return {&stream_buffer, *offset};
+            }
+        }
+        const auto [data, offset] = stream_buffer.Map(size, align);
+        if (!precise_readbacks) {
+            std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);
+        } else {
+            memory->CopySparseMemory(device_addr, data, size);
+        }
+        stream_buffer.Commit();
+        memo = {device_addr, size, 0u, scheduler.CurrentTick(), cur_inv, offset};
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
     }
@@ -2791,6 +2891,9 @@ void BufferCache::ProcessPendingAssets() {
 }
 
 void BufferCache::NoteLateCommandWrite(VAddr addr, const void* data, u64 size) {
+    if (DirectBuffers::OverlapsTransientCueHeap(addr, size)) {
+        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
+    }
     if (!GuestInPlace() || WriteTracking() || size == 0) {
         return;
     }
@@ -2993,6 +3096,9 @@ void BufferCache::DropShadows(VAddr addr, u64 size) {
 
 bool BufferCache::UpdateGpuWritten(VAddr addr, std::span<const u8> data) {
     const u64 size = data.size();
+    if (DirectBuffers::OverlapsTransientCueHeap(addr, size)) {
+        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
+    }
     if (!GuestInPlace() || WriteTracking() || size == 0 || ((addr | size) & 3) != 0 ||
         IsAnyInPlace(addr, size) || !memory_tracker->IsRegionGpuModified(addr, size)) {
         return false;

@@ -735,9 +735,11 @@ void GXGnmCommandContext_EndQuery(void* context, void* unused, void* queryObj) {
         }
         case 2:
         case 3: {
-            CGCommandBufferGnm_WriteEndOfPipeCounter(gfxCtx, 4, gpuBuf + 0x08, 0);
             *reinterpret_cast<std::uint64_t*>(gpuBuf) = 0;
-            CGCommandBufferGnm_WriteEndOfPipeImmediate(gfxCtx, 4, gpuBuf, 1, 0);
+            if (!gx_direct_vk::TryDirectTimestampQuery(gfxCtx, 1u, gpuBuf)) {
+                CGCommandBufferGnm_WriteEndOfPipeCounter(gfxCtx, 4, gpuBuf + 0x08, 0);
+                CGCommandBufferGnm_WriteEndOfPipeImmediate(gfxCtx, 4, gpuBuf, 1, 0);
+            }
             break;
         }
         case 4: {
@@ -856,7 +858,9 @@ void GXGnmCommandContext_BeginQuery(void* context, void* unused, void* queryObj)
         case 2:
             break;
         case 3: {
-            CGCommandBufferGnm_WriteEndOfPipeCounter(gfxCtx, 4, gpuBuf + 0x10, 0);
+            if (!gx_direct_vk::TryDirectTimestampQuery(gfxCtx, 0u, gpuBuf)) {
+                CGCommandBufferGnm_WriteEndOfPipeCounter(gfxCtx, 4, gpuBuf + 0x10, 0);
+            }
             break;
         }
         case 4: {

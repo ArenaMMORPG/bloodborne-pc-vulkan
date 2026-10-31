@@ -524,6 +524,77 @@ void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8*
     }
 }
 
+void DirectVkTimestampQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    DirectTimestampEvent ev{};
+    std::memcpy(&ev, data, sizeof(ev));
+    if (ev.base_address == 0 || ev.query_op > 1u) {
+        return;
+    }
+    const VAddr ts_addr = ev.base_address + (ev.query_op == 0u ? 0x10ULL : 0x08ULL);
+    const u32 label_count = (ev.query_op == 0u) ? 1u : 2u;
+    BbStats::eop_decoded.fetch_add(label_count, std::memory_order_relaxed);
+
+    if (Vulkan::Rasterizer::HonestLabels()) {
+        rasterizer.ProcessDownloadImages();
+        const bool ts_ok = rasterizer.WriteTimestampOnGpu(ts_addr, true);
+        if (ev.query_op == 0u) {
+            if (ts_ok) {
+                BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
+                return;
+            }
+            rasterizer.SignalAfterGpu(
+                [ts_addr] {
+                    const u64 seq = BbFreeCheck::NextFenceSeq();
+                    MaybeDelay(seq);
+                    WriteLabel(reinterpret_cast<void*>(ts_addr), GpuClock64(), 8u,
+                               BbFreeCheck::Eop, seq);
+                    BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
+                },
+                ts_addr, 0ULL);
+            return;
+        }
+        const bool ready_ok = ts_ok && rasterizer.WriteLabelOnGpu(ev.base_address, 1ULL, 8u);
+        if (ready_ok) {
+            Diagnostics::NoteLabel(Diagnostics::LabelStep::GraphicsOnGpu, ev.base_address, 1ULL,
+                                   8u);
+            BbStats::eop_written.fetch_add(2u, std::memory_order_relaxed);
+            return;
+        }
+        const VAddr base_addr = ev.base_address;
+        rasterizer.SignalAfterGpu(
+            [base_addr, ts_addr, ts_ok] {
+                if (!ts_ok) {
+                    const u64 seq_ts = BbFreeCheck::NextFenceSeq();
+                    MaybeDelay(seq_ts);
+                    WriteLabel(reinterpret_cast<void*>(ts_addr), GpuClock64(), 8u,
+                               BbFreeCheck::Eop, seq_ts);
+                }
+                const u64 seq_ready = BbFreeCheck::NextFenceSeq();
+                MaybeDelay(seq_ready);
+                WriteLabel(reinterpret_cast<void*>(base_addr), 1ULL, 8u, BbFreeCheck::Eop,
+                           seq_ready);
+                BbStats::eop_written.fetch_add(ts_ok ? 1u : 2u, std::memory_order_relaxed);
+            },
+            base_addr, 1ULL);
+        return;
+    }
+
+    // V6.2: Profiler D3D11_QUERY_TIMESTAMP / TIMESTAMP_DISJOINT writes never depend on deferred
+    // host staging copies; writing directly on Stage B avoids 339/frame SignalAfterHostCopies ->
+    // Scheduler::KickRecording(true) RecordChunk splits and recorder_mutex acquisitions.
+    const u64 ts = GpuClock64();
+    const u64 seq_ts = BbFreeCheck::NextFenceSeq();
+    MaybeDelay(seq_ts);
+    WriteLabel(reinterpret_cast<void*>(ts_addr), ts, 8u, BbFreeCheck::Eop, seq_ts);
+    if (ev.query_op == 1u) {
+        const u64 seq_ready = BbFreeCheck::NextFenceSeq();
+        MaybeDelay(seq_ready);
+        WriteLabel(reinterpret_cast<void*>(ev.base_address), 1ULL, 8u, BbFreeCheck::Eop,
+                   seq_ready);
+    }
+    BbStats::eop_written.fetch_add(label_count, std::memory_order_relaxed);
+}
+
 } // namespace Tasks
 
 } // namespace BbCp

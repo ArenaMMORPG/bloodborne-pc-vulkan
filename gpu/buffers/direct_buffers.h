@@ -63,11 +63,14 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept;
 [[nodiscard]] bool HasPendingEvents() noexcept;
 void DrainEvents(std::vector<Event>& out);
 
-/// V6.1: Registers the transient GX resource cache (`cueHeap`, up to 512 MiB CPU->GPU staging ring)
-/// so DirectCopyBuffers stages host RAM directly to destination VRAM without creating a 512 MiB
-/// VRAM mirror or arming mprotect(PROT_READ) page traps on cueHeap.
+/// V6.1/V6.2: Registers the transient GX resource cache (`cueHeap`, up to 512 MiB CPU->GPU staging ring)
+/// so DirectCopyBuffers and BufferCache::ObtainBuffer stream host RAM directly without creating a
+/// 512 MiB VRAM mirror or arming mprotect(PROT_READ) page traps on cueHeap.
 void RegisterTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
 [[nodiscard]] bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
+void NoteTransientCueHeapGpuWrite(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] bool IsCueHeapEverGpuModified() noexcept;
 
 class Manager {
 public:

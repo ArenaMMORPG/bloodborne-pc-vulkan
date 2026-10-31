@@ -337,6 +337,7 @@ private:
     /// bbport: the housekeeping EnsureResident did before every binding (Process*), once a packet.
     void Maintain();
     u64 packet_epoch = 1, maintained_epoch = 0;
+    std::atomic<u64> transient_invalidate_gen{1};
     /// bbport: answers of EnsureResident ("all resident") and IsInPlace for block ranges, valid
     /// while resident_ranges and in_place_blocks keep their generation.
     struct ResidencyMemo {

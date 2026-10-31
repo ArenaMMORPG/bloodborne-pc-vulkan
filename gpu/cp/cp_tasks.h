@@ -28,6 +28,13 @@ struct DirectOcclusionEvent {
     u32 query_op;
 };
 
+/// V6.2: Direct timestamp / timestamp-disjoint query packet (0 = Begin case 3, 1 = End case 2/3).
+struct DirectTimestampEvent {
+    VAddr base_address;
+    u32 query_op;
+    u32 pad;
+};
+
 /// COPY_DATA from memory or GDS, or of a value into GDS.
 struct CopyTask {
     VAddr dst;
@@ -60,6 +67,7 @@ void DirectVkClearDepthStencilTask(Vulkan::Rasterizer& rasterizer, const u8* dat
 void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 void DirectVkOcclusionQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data);
+void DirectVkTimestampQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data);
 
 /// An end-of-pipe fence now (no draw recording thread).
 void SignalEop(const EventWriteEop& eop, u64 seq);

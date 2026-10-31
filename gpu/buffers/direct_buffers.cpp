@@ -30,6 +30,7 @@ std::atomic<u32> g_pending_count{0};
 std::atomic<bool> g_ever_registered{false};
 std::atomic<VAddr> g_cue_heap_base{0};
 std::atomic<VAddr> g_cue_heap_end{0};
+std::atomic<bool> g_cue_heap_gpu_modified{false};
 std::mutex g_queue_mutex;
 std::vector<Event> g_queue;
 
@@ -161,6 +162,29 @@ bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
     return addr >= base && addr < end && (end - addr) >= byte_size;
 }
 
+bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0) {
+        return false;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return false;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    return RangesOverlap(addr, byte_size, base, end - base);
+}
+
+void NoteTransientCueHeapGpuWrite(VAddr addr, u64 byte_size) noexcept {
+    if (!g_cue_heap_gpu_modified.load(std::memory_order_relaxed) &&
+        OverlapsTransientCueHeap(addr, byte_size)) [[unlikely]] {
+        g_cue_heap_gpu_modified.store(true, std::memory_order_release);
+    }
+}
+
+bool IsCueHeapEverGpuModified() noexcept {
+    return g_cue_heap_gpu_modified.load(std::memory_order_acquire);
+}
+
 void DrainEvents(std::vector<Event>& out) {
     out.clear();
     if (g_pending_count.load(std::memory_order_acquire) == 0) {
@@ -280,6 +304,7 @@ void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
     if (size == 0) {
         return;
     }
+    NoteTransientCueHeapGpuWrite(addr, size);
     Vulkan::DirectShaders::InvalidateRange(addr, size);
     if (entries_by_base.empty()) {
         return;

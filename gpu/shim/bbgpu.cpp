@@ -115,13 +115,17 @@ struct RegionCache {
     };
     u64 generation = 1; // odd: invalid
     u32 last = 0;
+    u32 count = 0;
     u32 next = 0;
-    std::array<Entry, 8> entries{};
+    std::array<Entry, 64> entries{};
 };
 thread_local RegionCache region_cache;
 const uint64_t* g_memory_generation_ptr = nullptr;
 
-bool CachedMapped(VAddr address, u64 size) {
+// V6.2: Resolves the maximal contiguous mapped span [start, end) containing `address` against the
+// 64-slot per-thread cache, eliminating 8.6M+ pthread_rwlock acquisitions in runtime_memory_clamp
+// on unbounded 0xFFFFFFFF V# bindings across Stage A, Resolvers, and Stage B.
+bool LookupMappedEnd(VAddr address, uintptr_t& out_end) {
     const uint64_t* gen_ptr = g_memory_generation_ptr;
     if (!gen_ptr) [[unlikely]] {
         gen_ptr = runtime_memory_generation();
@@ -132,40 +136,79 @@ bool CachedMapped(VAddr address, u64 size) {
         return false; // being changed
     }
     auto& cache = region_cache;
-    const uintptr_t limit = address + size;
     if (cache.generation == generation) {
-        const auto& mru = cache.entries[cache.last];
-        if (address >= mru.start && limit <= mru.end) {
-            return true;
-        }
-        for (u32 i = 0; i < cache.entries.size(); ++i) {
-            const auto& e = cache.entries[i];
-            if (address >= e.start && limit <= e.end) {
-                cache.last = i;
+        if (cache.count != 0) {
+            const auto& mru = cache.entries[cache.last];
+            if (address >= mru.start && address < mru.end) {
+                out_end = mru.end;
                 return true;
+            }
+            for (u32 i = 0; i < cache.count; ++i) {
+                const auto& e = cache.entries[i];
+                if (address >= e.start && address < e.end) {
+                    cache.last = i;
+                    out_end = e.end;
+                    return true;
+                }
             }
         }
     } else {
         cache.generation = generation;
-        cache.entries = {};
         cache.last = 0;
+        cache.count = 0;
         cache.next = 0;
     }
     uintptr_t start = 0, end = 0;
     int mapped = 0;
-    if (!runtime_memory_region(address, &start, &end, &mapped) || !mapped) {
+    if (!runtime_memory_region(address, &start, &end, &mapped) || !mapped || end <= start) {
         return false;
     }
-    const u32 slot = cache.next++ & (cache.entries.size() - 1);
-    cache.entries[slot] = {start, end};
+    uintptr_t contig_start = start;
+    while (contig_start > 0) {
+        uintptr_t ps = 0, pe = 0;
+        int pm = 0;
+        if (!runtime_memory_region(contig_start - 1, &ps, &pe, &pm) || !pm ||
+            pe != contig_start || ps >= contig_start) {
+            break;
+        }
+        contig_start = ps;
+    }
+    uintptr_t contig_end = end;
+    while (contig_end < ~uintptr_t{0}) {
+        uintptr_t ns = 0, ne = 0;
+        int nm = 0;
+        if (!runtime_memory_region(contig_end, &ns, &ne, &nm) || !nm ||
+            ns != contig_end || ne <= contig_end) {
+            break;
+        }
+        contig_end = ne;
+    }
+    if (__atomic_load_n(gen_ptr, __ATOMIC_ACQUIRE) != generation) {
+        return false;
+    }
+    const u32 slot = (cache.count < cache.entries.size())
+                         ? cache.count++
+                         : (cache.next++ & (cache.entries.size() - 1));
+    cache.entries[slot] = {contig_start, contig_end};
     cache.last = slot;
-    return limit <= end;
+    out_end = contig_end;
+    return true;
+}
+
+bool CachedMapped(VAddr address, u64 size) {
+    uintptr_t contig_end = 0;
+    return LookupMappedEnd(address, contig_end) && size <= (contig_end - address);
 }
 } // namespace
 
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
-    if (size && CachedMapped(virtual_addr, size)) {
-        return size;
+    if (size == 0) {
+        return 0;
+    }
+    uintptr_t contig_end = 0;
+    if (LookupMappedEnd(virtual_addr, contig_end)) {
+        const u64 avail = contig_end - virtual_addr;
+        return size <= avail ? size : avail;
     }
     return runtime_memory_clamp(virtual_addr, size);
 }

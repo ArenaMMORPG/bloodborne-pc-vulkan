@@ -549,6 +549,8 @@ enum class Op : uint32_t {
     OcclusionQuery           = 22u,
     // V5.2b: Coalesced End-of-Pipe 32-bit value label release batch (replaces ~533/frame 0x26aa5a0 EventWriteEop)
     ReleaseU32LabelsBatch    = 23u,
+    // V6.2: Direct Timestamp / TimestampDisjoint Query (replaces ~339/frame 0x2169ec0/0x216a070 EventWriteEop + KickRecording)
+    TimestampQuery           = 24u,
 };
 
 struct CopyRegion {
@@ -1636,6 +1638,40 @@ inline bool TryDirectOcclusionQuery(void* dcb_raw,
     pkt[0] = MakeNopHeader(4u);
     pkt[1] = kNopPayloadTag;
     pkt[2] = static_cast<uint32_t>(Op::OcclusionQuery) | ((query_op & 0xFFFFu) << 16);
+    pkt[3] = static_cast<uint32_t>(addr);
+    pkt[4] = static_cast<uint32_t>(addr >> 32);
+    return true;
+}
+
+// ============================================================================
+// V6.2: Direct Timestamp / TimestampDisjoint Query (replaces ~339/frame EventWriteEop)
+// ============================================================================
+// Packet layout (5 dwords, body_dwords = 4):
+//   [0] = MakeNopHeader(4u)
+//   [1] = kNopPayloadTag
+//   [2] = Op::TimestampQuery | (query_op << 16)
+//           query_op == 0 -> BeginQuery case 3: writes gpuData[2] (+0x10) = GpuClock64()
+//           query_op == 1 -> EndQuery case 2/3: writes gpuData[1] (+0x08) = GpuClock64(),
+//                                               then gpuData[0] (+0x00) = 1ULL
+//   [3] = lo32(results_va)
+//   [4] = hi32(results_va)
+inline bool TryDirectTimestampQuery(void* dcb_raw,
+                                    uint32_t query_op,
+                                    const void* results_gpu_addr) noexcept {
+    if (!EnabledV6Sub(kV6Sub_StageARingBypass) || !dcb_raw || query_op > 1u) {
+        return false;
+    }
+    const uint64_t addr = reinterpret_cast<uint64_t>(results_gpu_addr);
+    if (addr == 0ULL || (addr & 0x7ULL) != 0ULL) {
+        return true;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 5u);
+    if (!pkt) {
+        return false;
+    }
+    pkt[0] = MakeNopHeader(4u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::TimestampQuery) | ((query_op & 0xFFFFu) << 16);
     pkt[3] = static_cast<uint32_t>(addr);
     pkt[4] = static_cast<uint32_t>(addr >> 32);
     return true;
