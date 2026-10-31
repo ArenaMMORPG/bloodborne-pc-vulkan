@@ -14,6 +14,7 @@
 #include "upscale/vk_scene_resolution.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
 
@@ -174,14 +175,34 @@ void Runtime::FlushBarriers() {
     if (!memory && image_barriers.empty()) {
         return;
     }
+    static const bool scoped_barriers =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_GpuBarrierCoalesce);
+    static constexpr vk::PipelineStageFlags2 AllBufferStages =
+        Stage::eDrawIndirect | Stage::eIndexInput | Stage::eVertexAttributeInput |
+        Stage::eVertexShader | Stage::eTessellationControlShader |
+        Stage::eTessellationEvaluationShader | Stage::eGeometryShader |
+        Stage::eFragmentShader | Stage::eComputeShader | Stage::eCopy | Stage::eClear;
+    static constexpr vk::AccessFlags2 AllBufferReadWriteAccesses =
+        AccessBit::eIndirectCommandRead | AccessBit::eIndexRead |
+        AccessBit::eVertexAttributeRead | AccessBit::eUniformRead |
+        AccessBit::eShaderRead | AccessBit::eShaderWrite |
+        AccessBit::eTransferRead | AccessBit::eTransferWrite;
+    const bool use_scoped_buffer_barrier = scoped_barriers && !global_write;
+    const vk::PipelineStageFlags2 dst_stages =
+        use_scoped_buffer_barrier
+            ? AllBufferStages
+            : (Stage::eAllGraphics | Stage::eComputeShader | Stage::eTransfer);
+    const vk::AccessFlags2 dst_access =
+        !has_writes ? AccessBit::eNone
+                    : (use_scoped_buffer_barrier
+                           ? AllBufferReadWriteAccesses
+                           : (AccessBit::eMemoryRead | AccessBit::eMemoryWrite));
     scheduler.EndRendering();
     scheduler.Record([barrier = vk::MemoryBarrier2{
                           .srcStageMask = src_stages,
                           .srcAccessMask = pending_writes,
-                          .dstStageMask = Stage::eAllGraphics | Stage::eComputeShader | Stage::eTransfer,
-                          .dstAccessMask = has_writes
-                                               ? (AccessBit::eMemoryRead | AccessBit::eMemoryWrite)
-                                               : AccessBit::eNone,
+                          .dstStageMask = dst_stages,
+                          .dstAccessMask = dst_access,
                       },
                       memory,
                       images = scheduler.RecordData(std::span<const vk::ImageMemoryBarrier2>(
@@ -252,7 +273,9 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
     scheduler.EndRendering();
     // Many regions (HLE copy shaders) are tracked as one bounding range per buffer:
     // conservative for barriers, and two lookups instead of two per region.
-    const bool bounded = copies.size() > 64;
+    static const size_t bounded_threshold =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_GpuBarrierCoalesce) ? 8 : 64;
+    const bool bounded = copies.size() > bounded_threshold;
     u64 src_min = ~0ULL, src_max = 0, dst_min = ~0ULL, dst_max = 0;
     bool needs_flush = false;
     for (const auto& copy : copies) {

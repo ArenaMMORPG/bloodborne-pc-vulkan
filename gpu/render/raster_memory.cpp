@@ -8,6 +8,7 @@
 // the CPU does it in decode order.
 
 #include "render/raster_internal.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 #include <xxhash.h>
 
@@ -15,6 +16,12 @@ namespace Vulkan {
 
 namespace {
 using BufferSlice = std::pair<const VideoCore::Buffer*, u64>;
+
+bool GpuBarrierCoalesce() noexcept {
+    static const bool on =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_GpuBarrierCoalesce);
+    return on;
+}
 } // namespace
 
 /// Whether the GPU's view of [address, address + size) is not the game's memory alone: used in
@@ -45,8 +52,9 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
             return;
         }
     }
-    const auto [buffer, offset] = is_gds ? BufferSlice{buffer_cache.GetGdsBuffer(), address}
-                                         : buffer_cache.ObtainBuffer(address, num_bytes, true);
+    const auto [buffer, offset] =
+        is_gds ? BufferSlice{buffer_cache.GetGdsBuffer(), address}
+               : buffer_cache.ObtainBuffer(address, num_bytes, true, false, GpuBarrierCoalesce());
     runtime.FillBuffer(buffer, offset, num_bytes, value);
 }
 
@@ -84,7 +92,8 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
     const auto [src_buffer, src_offset] =
         src_gds ? BufferSlice{gds, src} : buffer_cache.ObtainBuffer(src, num_bytes, false, true);
     const auto [dst_buffer, dst_offset] =
-        dst_gds ? BufferSlice{gds, dst} : buffer_cache.ObtainBuffer(dst, num_bytes, true, true);
+        dst_gds ? BufferSlice{gds, dst}
+                : buffer_cache.ObtainBuffer(dst, num_bytes, true, true, GpuBarrierCoalesce());
     const vk::BufferCopy copy{.srcOffset = src_offset, .dstOffset = dst_offset, .size = num_bytes};
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
 }
@@ -171,13 +180,14 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         }
     }
 
+    const bool full_ov = GpuBarrierCoalesce();
     const auto flush_resolved = [&] {
         if (resolved_copies.empty()) {
             return;
         }
         const VideoCore::Buffer* batch_src = nullptr;
         const VideoCore::Buffer* batch_dst = nullptr;
-        std::array<vk::BufferCopy, 64> batch_copies{};
+        std::array<vk::BufferCopy, 128> batch_copies{};
         u32 batch_count = 0;
         const auto flush_batch = [&] {
             if (batch_count != 0) {
@@ -187,8 +197,8 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             }
         };
         for (const auto& item : resolved_copies) {
-            bool can_coalesce = (batch_count > 0 && batch_count < batch_copies.size() &&
-                                 item.src_buf == batch_src && item.dst_buf == batch_dst);
+            bool can_coalesce =
+                (batch_count > 0 && item.src_buf == batch_src && item.dst_buf == batch_dst);
             if (item.src_buf == item.dst_buf &&
                 ranges_overlap(item.src_off, item.size, item.dst_off, item.size)) {
                 can_coalesce = false;
@@ -206,7 +216,15 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                     }
                 }
             }
-            if (!can_coalesce) {
+            if (can_coalesce && full_ov) {
+                auto& last = batch_copies[batch_count - 1];
+                if (last.srcOffset + last.size == item.src_off &&
+                    last.dstOffset + last.size == item.dst_off) {
+                    last.size += item.size;
+                    continue;
+                }
+            }
+            if (!can_coalesce || batch_count >= batch_copies.size()) {
                 flush_batch();
                 batch_src = item.src_buf;
                 batch_dst = item.dst_buf;
@@ -234,7 +252,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             texture_cache.InvalidateMemoryFromGPU(reg.dst_va, reg.byte_size);
             buffer_cache.force_writes_in_place = true;
             const auto [dst_buf, dst_off] =
-                buffer_cache.ObtainBuffer(reg.dst_va, reg.byte_size, true);
+                buffer_cache.ObtainBuffer(reg.dst_va, reg.byte_size, true, false, full_ov);
             buffer_cache.force_writes_in_place = false;
             if (!dst_buf) {
                 continue;
@@ -290,7 +308,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                             const auto [tail_src_buf, tail_src_off] =
                                 buffer_cache.ObtainBuffer(src_tail, u32(tail), false);
                             const auto [tail_dst_buf, tail_dst_off] =
-                                buffer_cache.ObtainBuffer(dst_tail, u32(tail), true);
+                                buffer_cache.ObtainBuffer(dst_tail, u32(tail), true, false, full_ov);
                             const vk::BufferCopy tcopy{tail_src_off, tail_dst_off, tail};
                             runtime.CopyBuffer(tail_src_buf, tail_dst_buf, std::span{&tcopy, 1});
                             texture_cache.InvalidateMemoryFromGPU(dst_tail, tail);
@@ -304,7 +322,8 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         texture_cache.InvalidateMemoryFromGPU(reg.dst_va, reg.byte_size);
         buffer_cache.force_writes_in_place = true;
         const auto [src_buf, src_off] = buffer_cache.ObtainBuffer(reg.src_va, reg.byte_size, false);
-        const auto [dst_buf, dst_off] = buffer_cache.ObtainBuffer(reg.dst_va, reg.byte_size, true);
+        const auto [dst_buf, dst_off] =
+            buffer_cache.ObtainBuffer(reg.dst_va, reg.byte_size, true, false, full_ov);
         buffer_cache.force_writes_in_place = false;
         if (!src_buf || !dst_buf) {
             continue;
@@ -407,7 +426,8 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
     }
 
     // 3. Regular GPU buffer clear (marks gpu_modified_ranges via ObtainBuffer(..., true)).
-    const auto [dst_buf, dst_off] = buffer_cache.ObtainBuffer(dst, num_bytes, true);
+    const auto [dst_buf, dst_off] =
+        buffer_cache.ObtainBuffer(dst, num_bytes, true, false, GpuBarrierCoalesce());
     if (dst_buf) {
         runtime.FillBuffer(dst_buf, dst_off, num_bytes, value);
     }

@@ -1136,7 +1136,8 @@ void PrintBufferStats() {
 } // namespace
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
-                                                        bool is_written, bool is_texel_buffer) {
+                                                        bool is_written, bool is_texel_buffer,
+                                                        bool full_overwrite) {
     BB_SECTION(ObtainBuffer);
     const bool stats = BufferStatsEnabled();
     if (stats) {
@@ -1444,7 +1445,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     }
     const u64 tex_gen_before = texture_cache.RegistryGeneration();
     const bool synced_from_image =
-        SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
+        SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer, full_overwrite);
     if (!GuestInPlace() && !is_written &&
         (!is_texel_buffer || (allow_texel_memo && !synced_from_image)) &&
         !stats && size > STREAM_THRESHOLD && BindMemoOn()) {
@@ -3709,7 +3710,7 @@ bool BufferCache::IsInPlace(VAddr addr, u64 size) const {
 }
 
 bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 size,
-                                    bool is_written, bool is_texel_buffer) {
+                                    bool is_written, bool is_texel_buffer, bool full_overwrite) {
     boost::container::small_vector<std::pair<vk::Buffer, vk::BufferCopy>, 4> chunk_copies;
     // bbport BB_GUEST_IN_PLACE: the arena is the game's memory there: nothing to upload, no
     // write tracking, and GPU writes need no readback. Images aliasing it still sync.
@@ -3729,7 +3730,7 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
                 const VAddr to = std::min<VAddr>(end, last << block_shift);
                 if (from < to) {
                     image |= SynchronizeMemory(arena, from, static_cast<u32>(to - from),
-                                               is_written, is_texel_buffer);
+                                               is_written, is_texel_buffer, full_overwrite);
                 }
             });
         return image;
@@ -3747,6 +3748,16 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
             total_size_bytes += size;
         },
         [&] {
+            if (is_written && full_overwrite && TwinsEnabled()) {
+                const VAddr full_begin = (device_addr + 4095ULL) & ~4095ULL;
+                const VAddr full_end = (device_addr + size) & ~4095ULL;
+                if (full_begin < full_end) {
+                    std::scoped_lock lk{twins_mutex};
+                    if (!twins.empty()) {
+                        EraseTwins(full_begin, full_end);
+                    }
+                }
+            }
             // bbport (BB_GPU_WRITE_TWINS): bytes whose guest copy still matches its twin keep the
             // GPU's data in the arena; twin bytes the guest wrote since are uploaded and no
             // longer GPU-modified.
@@ -3806,7 +3817,8 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
                 total_size_bytes = staged_bytes;
             }
             src_buffer = UploadCopies(arena, copies, total_size_bytes);
-        });
+        },
+        full_overwrite);
 
     if (src_buffer) {
         runtime.CopyBuffer(src_buffer, arena, copies);

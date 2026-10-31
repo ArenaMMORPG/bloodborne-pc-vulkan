@@ -306,6 +306,9 @@ void TextureCache::WatchImage(const Image& image, const char* what) {
 }
 
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
+    if (!registry.AnyPageActive(address, 1)) {
+        return;
+    }
     std::scoped_lock lock{mutex};
     // Only fully overwritten images starting at `address` can be refreshed wholesale.
     // A partial overwrite must preserve the image's other GPU-only texels.

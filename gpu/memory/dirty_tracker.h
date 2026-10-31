@@ -340,7 +340,7 @@ public:
     /// clears them, then `on_upload()`. `is_written` (a GPU write binding): the pages become
     /// GPU-modified, under the regions' locks until after `on_upload`.
     void ForEachUploadRange(VAddr address, u64 size, bool is_written, auto&& func,
-                            auto&& on_upload) {
+                            auto&& on_upload, bool full_overwrite = false) {
         const bool lock_free = !BbToggle::Disabled(BbToggle::LockFreeUploadCheck);
         // A write binding over pages the CPU did not change and the GPU already owns needs
         // neither an upload nor a state change.
@@ -355,6 +355,13 @@ public:
                 return;
             }
         }
+        const VAddr full_begin = (is_written && full_overwrite)
+                                     ? ((address + PageSize - 1) & ~(u64(PageSize) - 1))
+                                     : 0;
+        const VAddr full_end = (is_written && full_overwrite)
+                                   ? ((address + size) & ~(u64(PageSize) - 1))
+                                   : 0;
+        const bool skip_full = full_begin < full_end;
         ForEachRegion<true>(address, size, [&](Region& r, u64 offset, u64 bytes) {
             // Read bindings skip the lock when no page is CPU-modified: a guest write sets its
             // bit in the fault handler before the store, and the draw that uses the data
@@ -369,7 +376,19 @@ public:
                         EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled) {
                         r.Change<Side::Gpu, false>(up_addr, up_size);
                     }
-                    func(up_addr, up_size);
+                    if (!skip_full) {
+                        func(up_addr, up_size);
+                        return;
+                    }
+                    const VAddr up_end = up_addr + up_size;
+                    if (up_addr < full_begin) {
+                        const VAddr head_end = std::min(up_end, full_begin);
+                        func(up_addr, head_end - up_addr);
+                    }
+                    if (up_end > full_end) {
+                        const VAddr tail_begin = std::max(up_addr, full_end);
+                        func(tail_begin, up_end - tail_begin);
+                    }
                 });
             if (!is_written) {
                 r.lock.unlock();
