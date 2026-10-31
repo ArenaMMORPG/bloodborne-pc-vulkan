@@ -38,6 +38,8 @@ public:
     ~IndirectGuard();
 
     static bool Enabled();
+    static bool DrawEnabled();
+    static bool DispatchEnabled();
 
     /// Records the check of the arguments at `offset` in `args` (outside a render pass); returns
     /// the buffer and offset to dispatch from.

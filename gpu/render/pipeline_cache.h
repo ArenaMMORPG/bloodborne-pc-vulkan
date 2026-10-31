@@ -8,11 +8,10 @@
 // at the next start (pipeline_store.cpp).
 #pragma once
 
-#include <chrono>
-
-#include <functional>
-
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
@@ -191,11 +190,14 @@ private:
 
     // The pipeline cache on disk (pipeline_store.cpp).
     void WarmUp();
+    bool InitDriverPipelineCache(bool load_from_store, size_t* loaded_bytes = nullptr);
+    void SaveDriverPipelineCache();
+    void NoteDriverPipelineCacheDirty();
     void SaveProfile();
     void DropPreloaded();
-    bool LoadComputePipeline(Serialization::Archive& ar);
-    bool LoadGraphicsPipeline(Serialization::Archive& ar);
-    bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
+    bool PreloadStage(Serialization::Archive& ar, const Shader::Info*& out_info,
+                      vk::ShaderModule& out_module, Shader::RuntimeInfo& out_runtime,
+                      std::optional<Shader::Gcn::FetchShaderData>& out_fetch);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -243,6 +245,8 @@ private:
     u64 frame_start_draws = 0, last_frame_draws = 0;
     u32 stats_printed = 0;
     u64 async_started = 0, async_skipped = 0, async_waited = 0; ///< statistics
+    std::atomic<bool> driver_cache_dirty{false};
+    u32 last_driver_cache_save_sec = 0;
     std::unique_ptr<PipelineCompiler> compiler; ///< last: its threads are joined first
 };
 

@@ -1012,7 +1012,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     // render pass.
     vk::Buffer checked_args = buffer->Handle();
     u64 checked_offset = base;
-    if (IndirectGuard::Enabled()) {
+    if (IndirectGuard::DrawEnabled()) {
         if (!indirect_guard) {
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }
@@ -1296,7 +1296,7 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     // pipeline's bindings, which the check's own pipeline would disturb.
     vk::Buffer args = buffer->Handle();
     u64 args_offset = base;
-    if (IndirectGuard::Enabled()) {
+    if (IndirectGuard::DispatchEnabled()) {
         if (!indirect_guard) {
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }

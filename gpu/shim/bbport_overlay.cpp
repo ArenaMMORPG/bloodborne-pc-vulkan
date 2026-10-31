@@ -58,6 +58,7 @@ namespace {
 std::mutex imgui_mutex; // the ImGui context: window thread (input) and present thread
 bool initialized = false;
 std::atomic<bool> menu_open{false};
+std::atomic<bool> reset_hud_avg{false};
 bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
 float base_scale = 1.0f;
@@ -820,6 +821,12 @@ void Menu() {
     }
     ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
+    if (s.show_fps) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(BbSettings::MenuText("Reset Avg", "Сбросить Avg"))) {
+            reset_hud_avg.store(true, std::memory_order_relaxed);
+        }
+    }
 
     ImGui::Spacing();
     if (ImGui::Button(BbSettings::MenuText("Close", "Закрыть"))) {
@@ -849,41 +856,66 @@ void Menu() {
     }
 }
 
+struct HudAvgAccum {
+    std::uint64_t frames = 0;
+    double time_s = 0.0;
+    double idle_a_ms = 0.0;
+    double gnm_wait_ms = 0.0;
+    double a_pm4_pipe_ms = 0.0;
+    double a_ring_ms = 0.0;
+    double a_drain_ms = 0.0;
+    double b_total_ms = 0.0;
+    double b_buffers_ms = 0.0;
+    double b_vram_ms = 0.0;
+    double b_tex_desc_ms = 0.0;
+    double b_state_pass_ms = 0.0;
+    double b_tasks_ms = 0.0;
+    double b_motion_hle_ms = 0.0;
+    double gpu_wait_ms = 0.0;
+
+    void Reset() noexcept { *this = HudAvgAccum{}; }
+};
+
 struct HudBreakdown {
     float fps = 0.0f;
     float frame_ms = 0.0f;
+    float avg_fps = 0.0f;
+    float avg_frame_ms = 0.0f;
+    bool has_avg = false;
+    float b_busy_pct = 0.0f;
     float draws_pf = 0.0f;
     float dispatches_pf = 0.0f;
     float submits_pf = 0.0f;
     float drains_pf = 0.0f;
     // Stage 0: Game CPU / Gnm
-    float idle_a_ms = 0.0f;
-    float gnm_wait_ms = 0.0f;
-    // Stage A: bb:GpuComm (PM4 Decoder)
+    float idle_a_ms = 0.0f, avg_idle_a_ms = 0.0f;
+    float gnm_wait_ms = 0.0f, avg_gnm_wait_ms = 0.0f;
+    // Stage A: bb:GpuComm (RHI / PM4 + PSO)
     float a_total_ms = 0.0f;
-    float a_pm4_pipe_ms = 0.0f;
-    float a_ring_ms = 0.0f;
-    float a_drain_ms = 0.0f;
+    float a_pm4_pipe_ms = 0.0f, avg_a_pm4_pipe_ms = 0.0f;
+    float a_ring_ms = 0.0f, avg_a_ring_ms = 0.0f;
+    float a_drain_ms = 0.0f, avg_a_drain_ms = 0.0f;
     float a_flush_ms = 0.0f;
-    // Stage B: bb:DrawRec (Draw Recording)
-    float b_total_ms = 0.0f;
-    float b_buffers_ms = 0.0f;
+    // Stage B: bb:DrawRec (Vulkan Recording)
+    float b_total_ms = 0.0f, avg_b_total_ms = 0.0f;
+    float b_buffers_ms = 0.0f, avg_b_buffers_ms = 0.0f;
     float b_obtain_ms = 0.0f;
-    float b_vram_ms = 0.0f;
-    float b_tex_desc_ms = 0.0f;
-    float b_state_pass_ms = 0.0f;
-    float b_motion_hle_ms = 0.0f;
-    float b_tasks_ms = 0.0f;
+    float b_vram_ms = 0.0f, avg_b_vram_ms = 0.0f;
+    float b_tex_desc_ms = 0.0f, avg_b_tex_desc_ms = 0.0f;
+    float b_state_pass_ms = 0.0f, avg_b_state_pass_ms = 0.0f;
+    float b_motion_hle_ms = 0.0f, avg_b_motion_hle_ms = 0.0f;
+    float b_tasks_ms = 0.0f, avg_b_tasks_ms = 0.0f;
     float b_flush_ms = 0.0f;
     // Stage C: GPU / Sync Wait
     float gpu_present_ms = 0.0f;
     float sync_rec_ms = 0.0f;
     float host_copy_ms = 0.0f;
+    float avg_gpu_wait_ms = 0.0f;
     // Bottleneck summary
     const char* bottleneck_ru = "Ожидание данных...";
     const char* bottleneck_en = "Collecting data...";
     float bottleneck_ms = 0.0f;
-    int bottleneck_kind = 0; // 0=ok/gpu, 1=game cpu, 2=stage A, 3=stage B
+    int bottleneck_kind = 0; // 0=gpu, 1=game cpu, 2=stage A, 3=stage B, 4=gnm serialized
 };
 
 void UpdateHudBreakdown(HudBreakdown& h) {
@@ -1016,20 +1048,94 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                                   dcb[BbSections::Preupload] + dcb[BbSections::DispatchRecord]);
     h.b_tasks_ms = std::max(0.0f, cyc_to_ms(dcb[BbSections::Task]) - h.gpu_present_ms);
     h.b_flush_ms = cyc_to_ms(dcb[BbSections::Flush]);
+    h.b_busy_pct =
+        h.frame_ms > 0.01f ? std::clamp(100.0f * h.b_total_ms / h.frame_ms, 0.0f, 100.0f) : 0.0f;
+
+    // O(1) cumulative gameplay average (zero growing arrays; ignores <300-draw loading screens).
+    static HudAvgAccum accum{};
+    if (reset_hud_avg.exchange(false, std::memory_order_relaxed)) {
+        accum.Reset();
+    }
+    const float gpu_wait_now_ms = h.gpu_present_ms + h.sync_rec_ms + h.host_copy_ms;
+    if (h.draws_pf >= 300.0f) {
+        const double f_weight = double(df);
+        accum.frames += df;
+        accum.time_s += dt;
+        accum.idle_a_ms += double(h.idle_a_ms) * f_weight;
+        accum.gnm_wait_ms += double(h.gnm_wait_ms) * f_weight;
+        accum.a_pm4_pipe_ms += double(h.a_pm4_pipe_ms) * f_weight;
+        accum.a_ring_ms += double(h.a_ring_ms) * f_weight;
+        accum.a_drain_ms += double(h.a_drain_ms) * f_weight;
+        accum.b_total_ms += double(h.b_total_ms) * f_weight;
+        accum.b_buffers_ms += double(h.b_buffers_ms) * f_weight;
+        accum.b_vram_ms += double(h.b_vram_ms) * f_weight;
+        accum.b_tex_desc_ms += double(h.b_tex_desc_ms) * f_weight;
+        accum.b_state_pass_ms += double(h.b_state_pass_ms) * f_weight;
+        accum.b_tasks_ms += double(h.b_tasks_ms) * f_weight;
+        accum.b_motion_hle_ms += double(h.b_motion_hle_ms) * f_weight;
+        accum.gpu_wait_ms += double(gpu_wait_now_ms) * f_weight;
+    }
+    if (accum.frames > 0 && accum.time_s > 0.0) {
+        const double inv_af = 1.0 / double(accum.frames);
+        h.has_avg = true;
+        h.avg_fps = float(double(accum.frames) / accum.time_s);
+        h.avg_frame_ms = float((accum.time_s * 1000.0) * inv_af);
+        h.avg_idle_a_ms = float(accum.idle_a_ms * inv_af);
+        h.avg_gnm_wait_ms = float(accum.gnm_wait_ms * inv_af);
+        h.avg_a_pm4_pipe_ms = float(accum.a_pm4_pipe_ms * inv_af);
+        h.avg_a_ring_ms = float(accum.a_ring_ms * inv_af);
+        h.avg_a_drain_ms = float(accum.a_drain_ms * inv_af);
+        h.avg_b_total_ms = float(accum.b_total_ms * inv_af);
+        h.avg_b_buffers_ms = float(accum.b_buffers_ms * inv_af);
+        h.avg_b_vram_ms = float(accum.b_vram_ms * inv_af);
+        h.avg_b_tex_desc_ms = float(accum.b_tex_desc_ms * inv_af);
+        h.avg_b_state_pass_ms = float(accum.b_state_pass_ms * inv_af);
+        h.avg_b_tasks_ms = float(accum.b_tasks_ms * inv_af);
+        h.avg_b_motion_hle_ms = float(accum.b_motion_hle_ms * inv_af);
+        h.avg_gpu_wait_ms = float(accum.gpu_wait_ms * inv_af);
+    } else {
+        h.has_avg = false;
+        h.avg_fps = h.fps;
+        h.avg_frame_ms = h.frame_ms;
+        h.avg_idle_a_ms = h.idle_a_ms;
+        h.avg_gnm_wait_ms = h.gnm_wait_ms;
+        h.avg_a_pm4_pipe_ms = h.a_pm4_pipe_ms;
+        h.avg_a_ring_ms = h.a_ring_ms;
+        h.avg_a_drain_ms = h.a_drain_ms;
+        h.avg_b_total_ms = h.b_total_ms;
+        h.avg_b_buffers_ms = h.b_buffers_ms;
+        h.avg_b_vram_ms = h.b_vram_ms;
+        h.avg_b_tex_desc_ms = h.b_tex_desc_ms;
+        h.avg_b_state_pass_ms = h.b_state_pass_ms;
+        h.avg_b_tasks_ms = h.b_tasks_ms;
+        h.avg_b_motion_hle_ms = h.b_motion_hle_ms;
+        h.avg_gpu_wait_ms = gpu_wait_now_ms;
+    }
 
     // Determine primary bottleneck across parallel stages:
-    // - If GPU Present wait > 0.3 ms, Stage B finished early and waited for the GPU (total GPU time ~ b_total + gpu_present).
-    // - If Stage B CPU work is highest, Stage B (recording thread) is the bottleneck.
-    // - If Idle A is high and Stage B is NOT saturated, the Game CPU (Gnm submit rate) is the bottleneck.
+    // 1. If Guest GnmWait blocks the render thread while Stage B is <78% busy and GPU Present wait
+    //    is low, CPU and GPU work are serialized across frame boundaries (targeted by V5.2).
+    // 2. If GPU Present wait >= 0.5 ms, Stage B finished early and waited on GPU execution.
+    // 3. Otherwise compare saturated Stage B, Stage A, or Game Engine CPU work.
     const float game_cpu_bound_ms = std::max(0.0f, h.idle_a_ms - h.a_drain_ms);
     const float stage_a_work_ms = h.a_pm4_pipe_ms + h.a_ring_ms;
     const float stage_b_work_ms = h.b_total_ms;
-    const float gpu_sync_ms = h.gpu_present_ms > 0.30f
+    const float gpu_sync_ms = h.gpu_present_ms >= 0.50f
                                   ? (h.b_total_ms + h.gpu_present_ms + h.sync_rec_ms)
-                                  : (h.gpu_present_ms + h.sync_rec_ms + h.host_copy_ms);
+                                  : gpu_wait_now_ms;
 
-    if (stage_b_work_ms >= game_cpu_bound_ms && stage_b_work_ms >= stage_a_work_ms &&
-        stage_b_work_ms >= gpu_sync_ms) {
+    if (h.gnm_wait_ms >= 1.50f && h.b_busy_pct < 78.0f && h.gpu_present_ms < 0.50f) {
+        h.bottleneck_kind = 4;
+        h.bottleneck_ms = h.gnm_wait_ms;
+        h.bottleneck_ru = "Очередь CPU↔GPU (GnmWait -> V5.2)";
+        h.bottleneck_en = "CPU+GPU Serialized (GnmWait -> V5.2)";
+    } else if (h.gpu_present_ms >= 0.50f && gpu_sync_ms >= stage_b_work_ms) {
+        h.bottleneck_kind = 0;
+        h.bottleneck_ms = gpu_sync_ms;
+        h.bottleneck_ru = "Видеокарта (GPU Present / Sync)";
+        h.bottleneck_en = "GPU Execution (Present / Sync)";
+    } else if (stage_b_work_ms >= game_cpu_bound_ms && stage_b_work_ms >= stage_a_work_ms &&
+               stage_b_work_ms >= gpu_sync_ms) {
         h.bottleneck_kind = 3;
         h.bottleneck_ms = stage_b_work_ms;
         if (h.b_buffers_ms >= h.b_tex_desc_ms && h.b_buffers_ms >= h.b_tasks_ms &&
@@ -1037,14 +1143,14 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             h.bottleneck_ru = "Stage B: Буферы / ObtainBuffer";
             h.bottleneck_en = "Stage B: Buffers / ObtainBuffer";
         } else if (h.b_tex_desc_ms >= h.b_tasks_ms && h.b_tex_desc_ms >= h.b_state_pass_ms) {
-            h.bottleneck_ru = "Stage B: Текстуры + Дескрипторы";
-            h.bottleneck_en = "Stage B: Textures + Descriptors";
+            h.bottleneck_ru = "Stage B: Views + Дескрипторы (V3)";
+            h.bottleneck_en = "Stage B: Views + Descriptors (V3)";
         } else if (h.b_tasks_ms >= h.b_state_pass_ms) {
-            h.bottleneck_ru = "Stage B: Задачи / Fences / Flush";
-            h.bottleneck_en = "Stage B: Tasks / Fences / Flush";
+            h.bottleneck_ru = "Stage B: Задачи / Fences / Copy (V1)";
+            h.bottleneck_en = "Stage B: Tasks / Fences / Copy (V1)";
         } else {
-            h.bottleneck_ru = "Stage B: Рендер-пасс / DynamicState";
-            h.bottleneck_en = "Stage B: RenderPass / DynamicState";
+            h.bottleneck_ru = "Stage B: Рендер-пасс / Draw (V2)";
+            h.bottleneck_en = "Stage B: RenderPass / Draw (V2)";
         }
     } else if (game_cpu_bound_ms >= stage_a_work_ms && game_cpu_bound_ms >= gpu_sync_ms) {
         h.bottleneck_kind = 1;
@@ -1054,17 +1160,17 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             h.bottleneck_en = "Game CPU + Gnm SubmitDone Wait";
         } else {
             h.bottleneck_ru = "Потоки движка игры (CPU между батчами)";
-            h.bottleneck_en = "Game Engine CPU (between Gnm submits)";
+            h.bottleneck_en = "Game Engine CPU (between submits)";
         }
     } else if (stage_a_work_ms >= gpu_sync_ms) {
         h.bottleneck_kind = 2;
         h.bottleneck_ms = stage_a_work_ms;
         if (h.a_ring_ms > h.a_pm4_pipe_ms) {
-            h.bottleneck_ru = "Stage A: Кольцо констант (ConstRing)";
-            h.bottleneck_en = "Stage A: Constant Ring (ConstRing)";
+            h.bottleneck_ru = "Stage A: Поток констант (ConstRing)";
+            h.bottleneck_en = "Stage A: Constant Stream (ConstRing)";
         } else {
-            h.bottleneck_ru = "Stage A: Декодер PM4 / Пайплайны";
-            h.bottleneck_en = "Stage A: PM4 Decoder / Pipelines";
+            h.bottleneck_ru = "Stage A: RHI / PM4 + Пайплайны (V4)";
+            h.bottleneck_en = "Stage A: RHI / PM4 + Pipelines (V4)";
         }
     } else {
         h.bottleneck_kind = 0;
@@ -1145,22 +1251,44 @@ void FpsCounter() {
         : s.upscaler == BbSettings::UpscalerDlss   ? "DLSS"
                                                    : "Off";
 
-    ImGui::TextColored(ImVec4(0.95f, 0.92f, 0.78f, 1.0f),
-                       BbSettings::MenuText("%.0f FPS  %.2f ms  [%s]", "%.0f FPS  %.2f мс  [%s]"),
-                       frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg,
-                       upscaler_str);
-    ImGui::TextDisabled(BbSettings::MenuText("Scene: %dx%d -> %dx%d%s", "Сцена: %dx%d -> %dx%d%s"),
-                        rw, rh, out.width, out.height,
-                        BbSettings::ResolutionNeedsRestart()
-                            ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
-                            : "");
-    ImGui::TextDisabled("Draws: %.0f | Disp: %.0f | Subm: %.0f | Drains: %.1f",
-                        h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf);
+    const float now_fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : h.fps;
+    const float now_ms = frame_ms_avg > 0.0f ? frame_ms_avg : h.frame_ms;
+    if (h.has_avg) {
+        ImGui::TextColored(
+            ImVec4(0.95f, 0.92f, 0.78f, 1.0f),
+            BbSettings::MenuText("%.0f FPS (Avg %.0f)  %.2f ms (Avg %.2f)  [%s]",
+                                 "%.0f FPS (Avg %.0f)  %.2f мс (Avg %.2f)  [%s]"),
+            now_fps, h.avg_fps, now_ms, h.avg_frame_ms, upscaler_str);
+    } else {
+        ImGui::TextColored(ImVec4(0.95f, 0.92f, 0.78f, 1.0f),
+                           BbSettings::MenuText("%.0f FPS  %.2f ms  [%s]",
+                                                "%.0f FPS  %.2f мс  [%s]"),
+                           now_fps, now_ms, upscaler_str);
+    }
+    ImGui::TextDisabled(
+        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V4.2%s",
+                             "Сцена: %dx%d -> %dx%d | RHI V1-V4.2%s"),
+        rw, rh, out.width, out.height,
+        BbSettings::ResolutionNeedsRestart()
+            ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
+            : "");
+    ImGui::TextDisabled(
+        BbSettings::MenuText("Draws: %.0f | Disp: %.0f | Subm: %.0f | B busy: %.0f%%",
+                             "Draws: %.0f | Disp: %.0f | Subm: %.0f | B занят: %.0f%%"),
+        h.draws_pf, h.dispatches_pf, h.submits_pf, h.b_busy_pct);
 
     ImGui::Separator();
-    if (ImGui::BeginTable("##hud_breakdown", 2,
+    if (ImGui::BeginTable("##hud_breakdown", 3,
                           ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
-        const auto row = [&](const char* label_en, const char* label_ru, float ms,
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V4.2)", "Этап (V1-V4.2)"));
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("%s", BbSettings::MenuText("   Now", "Сейчас"));
+        ImGui::TableSetColumnIndex(2);
+        ImGui::TextDisabled("  Avg");
+
+        const auto row = [&](const char* label_en, const char* label_ru, float ms, float avg_ms,
                              bool highlight = false) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -1171,39 +1299,52 @@ void FpsCounter() {
             ImGui::TextColored(col, "%s", BbSettings::MenuText(label_en, label_ru));
             ImGui::TableSetColumnIndex(1);
             ImGui::TextColored(col, BbSettings::MenuText("%5.2f ms", "%5.2f мс"), ms);
+            ImGui::TableSetColumnIndex(2);
+            if (h.has_avg) {
+                ImGui::TextDisabled("%5.2f", avg_ms);
+            } else {
+                ImGui::TextDisabled("  -- ");
+            }
         };
 
         // 1. Game CPU / Gnm
-        row("Game CPU (Idle A wait)", "1. Игра CPU (ожид. батчей)", h.idle_a_ms,
+        row("1. Game CPU (Idle A)", "1. Игра CPU (ожид. батчей)", h.idle_a_ms, h.avg_idle_a_ms,
             h.bottleneck_kind == 1);
-        if (h.gnm_wait_ms >= 0.05f) {
-            row("  Guest GnmWait", "  Блок Gnm SubmitDone", h.gnm_wait_ms);
+        if (h.gnm_wait_ms >= 0.05f || h.avg_gnm_wait_ms >= 0.05f) {
+            row("  Guest GnmWait (Sync)", "  Блок GnmWait (CPU<->GPU)", h.gnm_wait_ms,
+                h.avg_gnm_wait_ms, h.bottleneck_kind == 4);
         }
 
         // 2. Stage A (bb:GpuComm)
-        row("Stage A: PM4 + Pipelines", "2. Stage A: PM4 + Пайплайны", h.a_pm4_pipe_ms,
-            h.bottleneck_kind == 2 && h.a_pm4_pipe_ms >= h.a_ring_ms);
-        row("  ConstRing Copy/Check", "  Кольцо констант (Ring)", h.a_ring_ms,
+        row("2. Stage A: RHI/PM4 + PSO", "2. Stage A: RHI/PM4 + PSO", h.a_pm4_pipe_ms,
+            h.avg_a_pm4_pipe_ms, h.bottleneck_kind == 2 && h.a_pm4_pipe_ms >= h.a_ring_ms);
+        row("  ConstRing Stream", "  Поток констант (Ring)", h.a_ring_ms, h.avg_a_ring_ms,
             h.bottleneck_kind == 2 && h.a_ring_ms > h.a_pm4_pipe_ms);
-        row("  Wait Stage B (Drain)", "  Ожидание Stage B (Drain)", h.a_drain_ms);
+        row("  Wait Stage B (Drain)", "  Ожидание Stage B (Drain)", h.a_drain_ms, h.avg_a_drain_ms);
 
         // 3. Stage B (bb:DrawRec)
-        row("Stage B: Total Record", "3. Stage B: Запись (всего)", h.b_total_ms,
-            h.bottleneck_kind == 3);
-        row("  Buffers (Vtx/Idx/CB)", "  Буферы (Vtx/Idx/Const)", h.b_buffers_ms);
-        if (h.b_vram_ms >= 0.05f) {
-            row("    VRAM Sync / Upload", "    Синхр. VRAM (Obtain)", h.b_vram_ms);
+        row("3. Stage B: Vulkan Record", "3. Stage B: Запись Vulkan", h.b_total_ms,
+            h.avg_b_total_ms, h.bottleneck_kind == 3);
+        row("  Buffers (Vtx/Idx/CB)", "  Буферы (Vtx/Idx/Const)", h.b_buffers_ms,
+            h.avg_b_buffers_ms);
+        if (h.b_vram_ms >= 0.05f || h.avg_b_vram_ms >= 0.05f) {
+            row("    VRAM Sync / Upload", "    Синхр. VRAM (Obtain)", h.b_vram_ms, h.avg_b_vram_ms);
         }
-        row("  Textures + Descriptors", "  Текстуры + Дескрипторы", h.b_tex_desc_ms);
-        row("  RenderPass + DynState", "  Рендер-пасс + Состояние", h.b_state_pass_ms);
-        row("  Tasks / Fences / Flush", "  Задачи / Fences / Flush", h.b_tasks_ms);
-        if (h.b_motion_hle_ms >= 0.05f) {
-            row("  Motion + Compute HLE", "  Motion + Compute HLE", h.b_motion_hle_ms);
+        row("  Views + Descriptors (V3)", "  Views + Дескрипторы (V3)", h.b_tex_desc_ms,
+            h.avg_b_tex_desc_ms);
+        row("  RenderPass + Draw (V2)", "  Рендер-пасс + Draw (V2)", h.b_state_pass_ms,
+            h.avg_b_state_pass_ms);
+        row("  Tasks / Fences / Copy (V1)", "  Задачи / Fences / Copy (V1)", h.b_tasks_ms,
+            h.avg_b_tasks_ms);
+        if (h.b_motion_hle_ms >= 0.05f || h.avg_b_motion_hle_ms >= 0.05f) {
+            row("  Motion + Compute HLE", "  Motion + Compute HLE", h.b_motion_hle_ms,
+                h.avg_b_motion_hle_ms);
         }
 
         // 4. GPU / Sync
-        row("GPU Present / Sync Wait", "4. Ожидание GPU / Синхр.",
-            h.gpu_present_ms + h.sync_rec_ms + h.host_copy_ms, h.bottleneck_kind == 0);
+        row("4. GPU Present / Sync", "4. Ожидание GPU / Синхр.",
+            h.gpu_present_ms + h.sync_rec_ms + h.host_copy_ms, h.avg_gpu_wait_ms,
+            h.bottleneck_kind == 0);
 
         ImGui::EndTable();
     }

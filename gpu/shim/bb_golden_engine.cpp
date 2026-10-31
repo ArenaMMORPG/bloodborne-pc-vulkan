@@ -401,7 +401,7 @@ void PatchImage(unsigned char* image, u64 size) {
                 (env_mods && env_mods[0]) ? env_mods : "all");
     Vulkan::DirectShaders::InitializeManifestLibrary();
     std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s, V2_DrawDispatch=%s, "
-                "V3_ResourceViews=%s, V4_NativeShaders=%s)\n",
+                "V3_ResourceViews=%s, V4_NativeShadersAndPrewarmedPSO=%s)\n",
                 gx_direct_vk::ActiveMask(),
                 gx_direct_vk::EnabledV1() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV2() ? "ON" : "OFF",

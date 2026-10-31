@@ -305,14 +305,26 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
       desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes},
       profile{MakeProfile(instance_, sparse_page_shift)} {
     sel.regs = &liverpool->regs;
-    auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
-    ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
-               vk::to_string(cache_result));
-    pipeline_cache = std::move(cache);
     WarmUp();
+
+    const char* async_env = std::getenv("BB_ASYNC_PIPELINES");
+    if (!(async_env && async_env[0] == '0') && instance.IsVertexInputDynamicState()) {
+        const char* thr_env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
+        const u32 threads = std::max(
+            thr_env && *thr_env ? u32(std::strtoul(thr_env, nullptr, 10))
+                                : std::clamp(std::thread::hardware_concurrency() / 3, 2u, 6u),
+            1u);
+        compiler = std::make_unique<PipelineCompiler>(threads);
+        std::printf("[bb_vulkan] V4.2 Async PipelineCompiler prewarmed with %u worker threads\n",
+                    threads);
+    }
 }
 
 PipelineCache::~PipelineCache() {
+    compiler.reset();
+    if (driver_cache_dirty.load(std::memory_order_relaxed)) {
+        SaveDriverPipelineCache();
+    }
     const auto tel = DirectShaders::ReadTelemetry();
     if (tel.registered_binaries != 0 || tel.stage_a_direct_hits != 0 ||
         tel.worker_direct_hits != 0) {
@@ -755,6 +767,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                                               sel.runtime_infos, sel.fetch_shader, sel.modules,
                                               sdata, false);
     PipelineStore::SaveGraphics(sel.graphics_key, pipeline_hash, sdata);
+    NoteDriverPipelineCacheDirty();
     sel.fetch_shader.reset();
     return slot.get();
 }
@@ -764,7 +777,7 @@ const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelecti
         const char* env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
         const u32 threads =
             std::max(env && *env ? u32(std::strtoul(env, nullptr, 10))
-                                 : std::clamp(std::thread::hardware_concurrency() / 4, 1u, 4u),
+                                 : std::clamp(std::thread::hardware_concurrency() / 3, 2u, 6u),
                      1u);
         compiler = std::make_unique<PipelineCompiler>(threads);
         std::printf("GPU: new pipelines of passes drawn every frame compile on %u threads "
@@ -795,6 +808,7 @@ const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelecti
 const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey& key,
                                                       PendingPipeline& job) {
     PipelineStore::SaveGraphics(key, std::hash<GraphicsPipelineKey>{}(key), job.sdata);
+    NoteDriverPipelineCacheDirty();
     auto& slot = graphics_pipelines[key];
     slot = std::move(job.pipeline);
     return slot.get();
@@ -863,6 +877,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
         PipelineStore::SaveCompute(compute_key, sdata);
+        NoteDriverPipelineCacheDirty();
     }
     return it->second.get();
 }
@@ -1295,6 +1310,9 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
         return {};
     }
     auto& info = worker.infos.try_emplace(program, *program->info_template).first->second;
+    if (program->info_template->uses_paged_buffers && !info.uses_paged_buffers) {
+        info = *program->info_template;
+    }
     info.pgm_base = params.Base();
     info.user_data = params.user_data;
     // The walk of resource tables and the fetch shader parse read guest memory through pointers
@@ -1413,7 +1431,12 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
             info.uses_paged_buffers = true;
             info.buffers = new_info.buffers;
             program.info_template = std::make_unique<Shader::Info>(info);
+            if (!modules.empty() && modules[0].spec.Valid()) {
+                PipelineStore::SaveShaderMeta(info, modules[0].spec, HashCombine(params.hash, 0),
+                                              0);
+            }
         }
+        spec.info = &info;
         PipelineStore::SaveShaderMeta(new_info, spec, HashCombine(params.hash, perm_idx), perm_idx);
         program.AddPermut(module, std::move(spec));
     }

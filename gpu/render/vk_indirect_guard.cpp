@@ -44,10 +44,33 @@ s64 NowNs() {
 }
 } // namespace
 
-bool IndirectGuard::Enabled() {
+bool IndirectGuard::DrawEnabled() {
     static const bool enabled = [] {
         const char* v = std::getenv("BB_INDIRECT_GUARD");
         return v && v[0] == '1';
+    }();
+    return enabled;
+}
+
+bool IndirectGuard::Enabled() {
+    return DrawEnabled();
+}
+
+bool IndirectGuard::DispatchEnabled() {
+    // Compute DispatchIndirect already runs outside any render pass (scheduler.EndRendering() is
+    // unconditionally called before DispatchIndirectRecord), so checking indirect dispatch group
+    // counts never breaks graphics render passes and prevents uninitialized particle group counts
+    // (1.2B-3.8B groups on map load) from hanging the GPU even when BB_INDIRECT_GUARD=0.
+    static const bool enabled = [] {
+        if (const char* d = std::getenv("BB_INDIRECT_DISPATCH_GUARD")) {
+            return d[0] != '0';
+        }
+        if (const char* v = std::getenv("BB_INDIRECT_GUARD")) {
+            if (std::strcmp(v, "off") == 0 || std::strcmp(v, "none") == 0) {
+                return false;
+            }
+        }
+        return true;
     }();
     return enabled;
 }

@@ -225,6 +225,11 @@ struct StageSpecialization {
             return false;
         }
 
+        if (buffers.size() != other.buffers.size() || images.size() != other.images.size() ||
+            samplers.size() != other.samplers.size()) {
+            return false;
+        }
+
         u32 binding{};
         for (u32 i = 0; i < buffers.size(); i++) {
             if (other.bitset[binding++] && buffers[i] != other.buffers[i]) {
