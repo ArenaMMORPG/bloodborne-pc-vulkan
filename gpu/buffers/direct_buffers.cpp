@@ -453,7 +453,8 @@ void DrainEvents(std::vector<Event>& out) {
 
 Manager::Manager(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                  Vulkan::Runtime& runtime_)
-    : instance{instance_}, scheduler{scheduler_}, runtime{runtime_} {}
+    : instance{instance_}, scheduler{scheduler_}, runtime{runtime_},
+      bitmap_64k(kBitmapWords, 0ULL) {}
 
 Manager::~Manager() = default;
 

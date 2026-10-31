@@ -24,7 +24,7 @@ namespace Vulkan::DirectShaders {
 
 namespace {
 
-constexpr u64 kMaxGuestVa = 1ULL << 36; // 64 GiB guest VA coverage
+constexpr u64 kMaxGuestVa = 1ULL << 40; // 1 TiB (40-bit PS4 VA space, matches BbMem::AddressBits = 40)
 constexpr u32 kPageShift64K = 16u;
 constexpr size_t kBitmapWords = static_cast<size_t>((kMaxGuestVa >> kPageShift64K) / 64ULL);
 
@@ -551,7 +551,7 @@ void bb_direct_vk_register_shader_binary(const void* gpu_ucode_addr, uint32_t uc
         return;
     }
     const VAddr base = reinterpret_cast<VAddr>(gpu_ucode_addr);
-    if (base == 0 || (base & 0xFFULL) != 0ULL || base >= (1ULL << 36)) {
+    if (base == 0 || (base & 0xFFULL) != 0ULL || base >= Vulkan::DirectShaders::kMaxGuestVa) {
         return;
     }
     const u32* code = static_cast<const u32*>(gpu_ucode_addr);

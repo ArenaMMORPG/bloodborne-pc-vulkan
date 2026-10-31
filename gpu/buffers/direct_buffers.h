@@ -112,10 +112,10 @@ public:
     /// stale immutable data can never shadow subsequent GPU-written bytes.
     void OnGpuWrite(VAddr addr, u64 size) noexcept;
 
-    static constexpr u64 kMaxGuestVa = 1ULL << 36; // 64 GiB guest VA coverage
+    static constexpr u64 kMaxGuestVa = 1ULL << 40; // 1 TiB (40-bit PS4 VA space, matches BbMem::AddressBits = 40)
     static constexpr u32 kPageShift64K = 16u;
     static constexpr size_t kBitmapWords =
-        static_cast<size_t>((kMaxGuestVa >> kPageShift64K) / 64ULL); // 16384 u64s = 128 KiB
+        static_cast<size_t>((kMaxGuestVa >> kPageShift64K) / 64ULL); // 262144 u64s = 2 MiB
 
 private:
 
@@ -147,7 +147,7 @@ private:
     static constexpr size_t kMruSlots = 32;
     std::map<VAddr, Entry> entries_by_base;
     std::deque<std::pair<u64, std::unique_ptr<Buffer>>> retired;
-    std::array<u64, kBitmapWords> bitmap_64k{};
+    std::vector<u64> bitmap_64k;
     std::array<MruSlot, kMruSlots> mru{};
     u32 mru_hand{0};
 };

@@ -23,6 +23,7 @@
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "vulkan/instance.h"
+#include "render/direct_shaders.h"
 #include "render/scheduler.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
@@ -1283,9 +1284,11 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         if (FILE* f = std::fopen("/tmp/bb_frame_hud.txt", "w")) {
             const auto& s = BbSettings::Get();
             const auto out = BbSettings::CurrentOutput();
+            const auto shd = Vulkan::DirectShaders::ReadTelemetry();
             std::fprintf(f,
                          "FPS: %.1f (%.2f ms/f) | Avg: %.1f FPS (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
                          "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%%\n"
+                         "DirectShaders: reg %llu | manifest %llu/%u | stageA_hits %llu | worker_hits %llu\n"
                          "1. Game CPU / Gnm: IdleA %.2f ms | GnmWait %.2f ms\n"
                          "2. Stage A (GpuComm): PM4+Pipe %.2f ms | ConstRing %.2f ms | WaitDrainB %.2f ms (FlushA %.2f ms)\n"
                          "3. Stage B (DrawRec): Total %.2f ms | Buffers %.2f ms (Obtain %.2f, VRAM %.2f) | Tex+Desc %.2f ms | State+Pass %.2f ms | Tasks %.2f ms (FlushB %.2f) | Motion+HLE %.2f ms | Packet+Regs %.2f ms\n"
@@ -1299,6 +1302,11 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                          BbSettings::ResolutionNeedsRestart() ? " [NEEDS RESTART]" : "",
                          h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf,
                          h.faults_ps, h.eop_pf, h.native_buf_pct,
+                         static_cast<unsigned long long>(shd.registered_binaries),
+                         static_cast<unsigned long long>(shd.manifest_binaries_bound),
+                         shd.manifest_total,
+                         static_cast<unsigned long long>(shd.stage_a_direct_hits),
+                         static_cast<unsigned long long>(shd.worker_direct_hits),
                          h.idle_a_ms, h.gnm_wait_ms,
                          h.a_pm4_pipe_ms, h.a_ring_ms, h.a_drain_ms, h.a_flush_ms,
                          h.b_total_ms, h.b_buffers_ms, h.b_obtain_ms, h.b_vram_ms,

@@ -25,14 +25,19 @@ const char* TypeName(MemoryType type) {
 }
 
 /// VMA's view of a memory type: where it should live and how the host touches it.
-VmaAllocationCreateInfo AllocationInfo(MemoryType type, bool device_address) {
+/// Note: `instance.cpp` initializes VMA with `VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`, so
+/// all 64 MiB VMA pool blocks support `vkGetBufferDeviceAddress` without requiring dedicated
+/// `VkDeviceMemory` allocations. Only huge buffers (>= 64 MiB) request dedicated memory so
+/// thousands of native `.flver` / `GXGnmBuffer` `VkBuffer`s sub-allocate cleanly from VMA pools
+/// instead of exhausting NVIDIA's `maxMemoryAllocationCount = 4096`.
+VmaAllocationCreateInfo AllocationInfo(MemoryType type, bool device_address, u64 size_bytes) {
     VmaAllocationCreateInfo info{
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_UNKNOWN,
         .preferredFlags = type != MemoryType::DeviceLocal ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                                                           : VkMemoryPropertyFlags{},
     };
-    if (device_address) {
+    if (device_address && size_bytes >= (64ULL << 20)) {
         info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
     switch (type) {
@@ -145,7 +150,8 @@ void BufferAllocation::Create(vk::BufferCreateInfo& create_info, MemoryType type
     if (type == MemoryType::Sparse) {
         buffer = CreateArena(device, allocator, create_info);
     } else {
-        const VmaAllocationCreateInfo alloc_info = AllocationInfo(type, device_address);
+        const VmaAllocationCreateInfo alloc_info =
+            AllocationInfo(type, device_address, create_info.size);
         const VkBufferCreateInfo vk_info = create_info;
         VkBuffer handle{};
         const VkResult result =

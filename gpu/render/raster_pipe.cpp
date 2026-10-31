@@ -557,10 +557,15 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
             continue;
         }
+        static const bool n1_native_buf =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
         const Gcn::Buffer vsharp = prepared_stage ? prepared_stage->buffer_sharps[index]
                                                   : desc.GetSharp(stage);
         const VAddr address = vsharp.base_address;
-        const u64 raw_size = vsharp.GetSize();
+        const u64 raw_size =
+            (!desc.is_written && n1_native_buf)
+                ? VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, vsharp.GetSize())
+                : vsharp.GetSize();
         if (address == 0 || raw_size == 0) {
             continue;
         }
