@@ -1223,7 +1223,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         size != 0 &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
         (size <= STREAM_THRESHOLD ||
-         (size <= 4_MB && IsRegionCpuModified(device_addr, size))) &&
+         (size <= 2_MB && IsRegionCpuModified(device_addr, size))) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
         struct CueStreamMemo {

@@ -103,7 +103,8 @@ void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size, bool is_nat
 void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept;
 [[nodiscard]] bool IsExactNativeOwnedBuffer(VAddr addr) noexcept;
 [[nodiscard]] VAddr LookupExactBufferEnd(VAddr addr) noexcept;
-[[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept;
+[[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size,
+                                         bool for_write = false) noexcept;
 
 class Manager {
 public:

@@ -992,11 +992,12 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                     const auto buffer = attrib.GetSharp(vs);
                     vsharps.push_back(buffer);
                     if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                        const u64 vb_bytes = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                            buffer.base_address, buffer.GetSize());
                         if (BbCeStats::Enabled()) {
-                            BbCeStats::Check(BbCeStats::Vertex, buffer.base_address,
-                                             buffer.GetSize());
+                            BbCeStats::Check(BbCeStats::Vertex, buffer.base_address, vb_bytes);
                         }
-                        note_stage_b_read(buffer.base_address, buffer.GetSize());
+                        note_stage_b_read(buffer.base_address, vb_bytes);
                     }
                 }
             }

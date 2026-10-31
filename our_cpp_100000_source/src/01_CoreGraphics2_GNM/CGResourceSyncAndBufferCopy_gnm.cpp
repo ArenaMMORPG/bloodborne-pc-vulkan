@@ -146,10 +146,13 @@ GpuRangeNode* GpuHeap_AllocateRange(GpuRangeAllocator* alloc, uint64_t size, uin
 
                 const uint64_t new_start = next_addr_node->start_va - (back_pad + aligned_size);
                 new_node->start_va = new_start;
+                const uint64_t new_bytes = new_node->next_node->start_va - new_start;
                 alloc->free_bytes += (new_start - new_node->next_node->start_va);
                 new_node->next_free = nullptr;
                 new_node->prev_free = nullptr;
                 new_node->vtable_or_color = 2;
+                gx_direct_vk::NoteDirectFreshGpuRange(
+                    reinterpret_cast<const void*>(new_start), new_bytes);
                 return new_node;
             }
         }
@@ -159,10 +162,13 @@ GpuRangeNode* GpuHeap_AllocateRange(GpuRangeAllocator* alloc, uint64_t size, uin
         GpuRangeNode* nf = cand->next_free;
         pf->next_free = nf;
         nf->prev_free = pf;
+        const uint64_t cand_bytes = cand->next_node->start_va - cand->start_va;
         alloc->free_bytes += (cand->start_va - cand->next_node->start_va);
         cand->next_free = nullptr;
         cand->prev_free = nullptr;
         cand->vtable_or_color = 2;
+        gx_direct_vk::NoteDirectFreshGpuRange(
+            reinterpret_cast<const void*>(cand->start_va), cand_bytes);
         return cand;
     }
 }

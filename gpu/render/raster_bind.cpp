@@ -999,8 +999,9 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         }
         bound_buffers.emplace_back(nullptr, 0, 0, desc.is_written);
         if (desc.is_written) {
-            texture_cache.InvalidateMemoryFromGPU(
-                address, memory->ClampRangeSize(address, vsharp.GetSize()));
+            const u64 inv_sz = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                address, memory->ClampRangeSize(address, vsharp.GetSize()), true);
+            texture_cache.InvalidateMemoryFromGPU(address, inv_sz);
         }
         needs_barrier |= runtime.IsGlobalAccessed(desc.is_written);
         return;
@@ -1010,9 +1011,8 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
                   clamped_mem_size, stage.pgm_hash);
     }
-    u64 size = desc.is_written
-                   ? clamped_mem_size
-                   : VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, clamped_mem_size);
+    u64 size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+        address, clamped_mem_size, desc.is_written);
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
         FlushPendingHleCopies(*this);
     }

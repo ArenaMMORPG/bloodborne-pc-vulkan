@@ -697,7 +697,7 @@ void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept {
     }
 }
 
-u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
+u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size, bool for_write) noexcept {
     u64 clamped = ClampTransientCueReadSize(addr, requested_size);
     static const bool n1_enabled =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
@@ -717,7 +717,7 @@ u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
                     const u32 alloc_sz = static_cast<u32>(sizes >> 32);
                     if (alloc_sz != 0) {
                         if (clamped > alloc_sz) {
-                            return req_sz != 0 ? req_sz : alloc_sz;
+                            return for_write ? alloc_sz : (req_sz != 0 ? req_sz : alloc_sz);
                         }
                         return clamped;
                     }
@@ -734,12 +734,29 @@ u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
     if (rel >= kNativeDirMaxBytes) {
         return clamped;
     }
-    const u32 end_rel4 =
-        g_native_page_end_rel4[static_cast<size_t>(rel >> kNativePageShift)].load(
-            std::memory_order_acquire);
+    const size_t cur_page = static_cast<size_t>(rel >> kNativePageShift);
+    const u32 end_rel4 = g_native_page_end_rel4[cur_page].load(std::memory_order_acquire);
     const u64 end_rel = static_cast<u64>(end_rel4) << 2;
     if (end_rel > rel) {
         clamped = std::min<u64>(clamped, end_rel - rel);
+        return clamped;
+    }
+    // N1.2d: Unbounded 0xFFFFFFFF V# descriptor on an unrecorded system/bump range: scan forward
+    // up to 4 MiB (1024 pages) to the next recorded allocation boundary and cap unknown whole-heap
+    // mmap tails so a single 0xFFFFFFFF UAV/SRV never sweeps 3.95 GiB / 2.56 GiB into BufferCache
+    // or wipes out neighboring DirectBuffers via OnGpuWrite.
+    if (requested_size > kNativeMaxSingleBlockBytes) {
+        const size_t max_scan = std::min<size_t>(kNativeDirPages, cur_page + 1024u);
+        for (size_t p = cur_page + 1u; p < max_scan; ++p) {
+            const u64 page_rel = static_cast<u64>(p) << kNativePageShift;
+            const u32 p_end4 = g_native_page_end_rel4[p].load(std::memory_order_relaxed);
+            if (p_end4 != 0u && (static_cast<u64>(p_end4) << 2) > page_rel) {
+                clamped = std::min<u64>(clamped, page_rel - rel);
+                break;
+            }
+        }
+        constexpr u64 kUnboundedUnknownCap = 16ULL << 20;
+        clamped = std::min<u64>(clamped, kUnboundedUnknownCap);
     }
     return clamped;
 }
@@ -926,7 +943,7 @@ void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
 
 std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
                                                              u64& inout_size) noexcept {
-    if (inout_size == 0 || addr >= kMaxGuestVa) {
+    if (inout_size == 0 || addr >= kMaxGuestVa || IsTransientCueHeap(addr, inout_size)) {
         return {nullptr, 0};
     }
     const auto note_hit = []() noexcept {
