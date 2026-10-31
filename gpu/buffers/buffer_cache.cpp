@@ -1862,9 +1862,6 @@ bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, 
 }
 
 void BufferCache::FlushInPassShadows() {
-    if (direct_buffers_mgr) {
-        direct_buffers_mgr->FlushPendingWritebacks();
-    }
     if (inpass_shadows.empty()) {
         return;
     }

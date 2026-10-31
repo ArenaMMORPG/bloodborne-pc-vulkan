@@ -36,6 +36,9 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     if (!is_gds && HasPendingHleCopies() && PendingHleCopiesConflict(address, num_bytes, true)) {
         FlushPendingHleCopies(*this);
     }
+    if (!is_gds && direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     ASSERT_MSG(address % 4 == 0 && num_bytes % 4 == 0,
                "FillBuffer address and size must be a multiple of 4 bytes");
     static const bool n1_native_bufs =
@@ -82,6 +85,9 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         ((!dst_gds && PendingHleCopiesConflict(dst, num_bytes, true)) ||
          (!src_gds && PendingHleCopiesConflict(src, num_bytes, false)))) {
         FlushPendingHleCopies(*this);
+    }
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
     }
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
@@ -163,42 +169,56 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         }
     }
 
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
+
     static const bool v7_inpass_rename =
         gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_StageAFastConstAndPrep);
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
 
-    // N1.2: Zero-RenderPass-break native VkBuffer renaming for FlushBufferUpdates_A/B
-    // (`DEFAULT` ConstantBuffers and `DYNAMIC` buffers updated from CPU / cueHeap).
-    u32 native_handled_mask = 0;
-    if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive() &&
-        regions.size() <= 32) {
-        std::array<VideoCore::DirectBuffers::NativeCopyRegion, 32> nat_regs{};
-        u32 active_mask = 0;
+    // N1.2b: Zero-RenderPass-break native VkBuffer renaming for FlushBufferUpdates_A/B
+    // (`DEFAULT` ConstantBuffers and `DEFAULT` buffers updated from CPU / cueHeap).
+    static thread_local std::vector<u8> native_handled;
+    static thread_local std::vector<VideoCore::DirectBuffers::NativeCopyRegion> nat_regs;
+    native_handled.assign(regions.size(), 0u);
+    if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive()) {
+        nat_regs.resize(regions.size());
+        size_t active_count = 0;
         for (size_t idx = 0; idx < regions.size(); ++idx) {
             const auto& reg = regions[idx];
+            const u32 sz = (reg.dst_va && reg.src_va) ? reg.byte_size : 0u;
             nat_regs[idx] = {
                 .dst_va = reg.dst_va,
                 .src_va = reg.src_va,
-                .byte_size = (reg.dst_va && reg.src_va) ? reg.byte_size : 0u,
+                .byte_size = sz,
             };
-            if (nat_regs[idx].byte_size != 0) {
-                active_mask |= (1u << idx);
+            if (sz != 0) {
+                ++active_count;
             }
         }
-        if (active_mask == 0) {
+        if (active_count == 0) {
             return;
         }
-        direct_buffers.StageNativeCpuCopyBatch(std::span{nat_regs.data(), regions.size()},
-                                               native_handled_mask, buffer_cache, texture_cache,
-                                               memory);
-        if ((native_handled_mask & active_mask) == active_mask) {
+        direct_buffers.StageNativeCpuCopyBatch(
+            std::span<const VideoCore::DirectBuffers::NativeCopyRegion>{nat_regs.data(),
+                                                                        nat_regs.size()},
+            std::span<u8>{native_handled.data(), native_handled.size()}, buffer_cache,
+            texture_cache, memory);
+        size_t handled_count = 0;
+        for (size_t idx = 0; idx < regions.size(); ++idx) {
+            if (nat_regs[idx].byte_size != 0 && native_handled[idx] != 0u) {
+                ++handled_count;
+            }
+        }
+        if (handled_count == active_count) {
             return;
         }
     }
 
-    const auto is_native_handled = [native_handled_mask](size_t idx) noexcept {
-        return idx < 32 && ((native_handled_mask & (1u << idx)) != 0u);
+    const auto is_native_handled = [](size_t idx) noexcept {
+        return idx < native_handled.size() && native_handled[idx] != 0u;
     };
 
     struct ResolvedBufCopy {
@@ -631,6 +651,10 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
                 return;
             }
         }
+    }
+
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
     }
 
     static const bool n1_native_bufs =

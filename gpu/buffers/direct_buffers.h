@@ -95,7 +95,9 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept;
 void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept;
 void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size, bool is_native_owned) noexcept;
+void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept;
 [[nodiscard]] bool IsExactNativeOwnedBuffer(VAddr addr) noexcept;
+[[nodiscard]] VAddr LookupExactBufferEnd(VAddr addr) noexcept;
 [[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept;
 
 class Manager {
@@ -107,9 +109,16 @@ public:
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;
 
-    /// Stage B: drains pending RegisterImmutable / RegisterNative / RetireRange events, creates
-    /// VMA sub-allocated DEVICE_LOCAL VkBuffers outside render passes, and reclaims retired
-    /// buffers whose GPU tick has completed.
+    [[nodiscard]] bool NeedsProcessEvents(bool is_rendering) const noexcept {
+        return HasPendingEvents() || (!is_rendering && !deferred_events.empty());
+    }
+    [[nodiscard]] bool HasPendingWritebacks() const noexcept {
+        return !dirty_writeback_bases.empty();
+    }
+
+    /// Stage B: drains pending RegisterImmutable / RegisterNative / RetireRange events in exact
+    /// stream order without breaking active RenderPasses, and reclaims retired buffers whose GPU
+    /// tick has completed.
     void ProcessEvents(Core::MemoryManager* memory);
 
     /// N1.1 / N1.2 (~2 ns fast path): resolves a read-only [addr, addr + inout_size) binding
@@ -126,19 +135,19 @@ public:
     /// partially crosses buffer boundaries, retires the entry and returns {nullptr, 0}.
     [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(VAddr addr, u64 size);
 
-    /// N1.2: Renames full-buffer CPU-source `DirectCopyBuffers` updates (`FlushBufferUpdates_A/B`)
-    /// of native `DEFAULT`/`DYNAMIC` `GXGnmBuffer`s directly into `stream_buffer` without calling
+    /// N1.2b: Renames full-buffer CPU-source `DirectCopyBuffers` updates (`FlushBufferUpdates_A/B`)
+    /// of native `DEFAULT` `GXGnmBuffer`s directly into `stream_buffer` without calling
     /// `EndRendering()` or `BufferCache::ObtainBuffer`, coalescing the final deduplicated writeback
-    /// into the persistent native `VkBuffer` at `EndRendering()` / `OnSubmit()`.
-    /// Sets bit `(1u << idx)` in `out_handled_mask` for each handled region (up to 32 regions).
+    /// into the persistent native `VkBuffer` once per command submission (`Flush()` / `OnSubmit()`).
+    /// Sets `out_handled[idx] = 1` for each handled region (supports arbitrary batch sizes).
     void StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
-                                 u32& out_handled_mask,
+                                 std::span<u8> out_handled,
                                  BufferCache& buf_cache,
                                  TextureCache& tex_cache,
                                  Core::MemoryManager* memory);
 
-    /// N1.2: Writes the latest deduplicated `stream_buffer` version of each dirty native buffer
-    /// back into its persistent `DEVICE_LOCAL` `VkBuffer` outside any active RenderPass.
+    /// N1.2b: Writes the latest deduplicated `stream_buffer` version of each dirty native buffer
+    /// back into its persistent `DEVICE_LOCAL` `VkBuffer` once per submission outside RenderPasses.
     void FlushPendingWritebacks();
 
     /// Stage B: invalidates any native VkBuffer overlapping an external/UAV GPU write.
@@ -156,6 +165,7 @@ private:
         u32 bind_flags{0};
         u8 usage_type{1};
         bool dirty_writeback{false};
+        bool needs_zero_init{false};
         u64 raw_size{0};
         u64 alloc_size{0};
         const Buffer* stream_override_buf{nullptr};
@@ -184,8 +194,11 @@ private:
     Vulkan::Runtime& runtime;
 
     static constexpr size_t kMruSlots = 32;
+    static constexpr u64 kSharedZeroBytes = 1ULL << 20; // 1 MiB shared zero-filled VkBuffer
+    std::unique_ptr<Buffer> zero_buffer;
     std::map<VAddr, Entry> entries_by_base;
     std::vector<VAddr> dirty_writeback_bases;
+    std::vector<Event> deferred_events;
     std::deque<std::pair<u64, std::unique_ptr<Buffer>>> retired;
     std::vector<u64> bitmap_64k;
     std::array<MruSlot, kMruSlots> mru{};

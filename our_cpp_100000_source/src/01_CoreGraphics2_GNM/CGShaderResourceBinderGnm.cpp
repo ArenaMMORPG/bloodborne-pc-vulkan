@@ -499,8 +499,9 @@ void CGShaderResourceBinderGnm_BindVertexBuffersAndFetchShader(
     const uint32_t table_dirty  = dirty_vb & self->eud_table_vb_mask;
     const uint32_t direct_dirty = dirty_vb & self->direct_sgpr_vb_mask;
 
-    const bool native_vsharp = gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeVsharp);
-    const bool direct_ud     = gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_StageUserData);
+    const bool native_vsharp  = gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeVsharp);
+    const bool direct_ud      = gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_StageUserData);
+    const bool n1_native_bufs = gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     gx_direct_vk::StageUserDataBatch ud_batch{};
 
     auto fn_resolveDyn = reinterpret_cast<uint64_t(*)(void*, const void*)>(GX_VMA(0x26d0ff0ULL));
@@ -532,14 +533,17 @@ void CGShaderResourceBinderGnm_BindVertexBuffersAndFetchShader(
                 continue;
             }
             const uint32_t stride      = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x120 + slot * 4);
-            const uint32_t num_records = *reinterpret_cast<const uint32_t*>(vb_res + 0x2c) / stride;
+            const uint64_t vb_offset   = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x1a0 + slot * 4);
+            const uint32_t vb_bytes    = *reinterpret_cast<const uint32_t*>(vb_res + 0x2c);
+            const uint32_t eff_bytes   = !n1_native_bufs ? vb_bytes
+                                         : (vb_offset < vb_bytes ? (vb_bytes - static_cast<uint32_t>(vb_offset)) : 0u);
+            const uint32_t num_records = (stride != 0u) ? (eff_bytes / stride) : 0u;
             const uint32_t elem_range  = self->vb_slot_element_range[slot];
             const uint32_t elem_start  = elem_range & 0xFFu;
             const uint32_t elem_count  = (elem_range >> 8) & 0xFFu;
             if (elem_count == 0u) {
                 continue;
             }
-            const uint64_t vb_offset = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x1a0 + slot * 4);
             for (uint32_t i = 0; i < elem_count; ++i) {
                 const uint32_t elem_idx    = elem_start + i;
                 const uint32_t sgpr_packed = self->input_elem_to_sgpr[elem_idx];
@@ -591,14 +595,17 @@ void CGShaderResourceBinderGnm_BindVertexBuffersAndFetchShader(
                 continue;
             }
             const uint32_t stride      = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x120 + slot * 4);
-            const uint32_t num_records = *reinterpret_cast<const uint32_t*>(vb_res + 0x2c) / stride;
+            const uint64_t vb_offset   = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x1a0 + slot * 4);
+            const uint32_t vb_bytes    = *reinterpret_cast<const uint32_t*>(vb_res + 0x2c);
+            const uint32_t eff_bytes   = !n1_native_bufs ? vb_bytes
+                                         : (vb_offset < vb_bytes ? (vb_bytes - static_cast<uint32_t>(vb_offset)) : 0u);
+            const uint32_t num_records = (stride != 0u) ? (eff_bytes / stride) : 0u;
             const uint32_t elem_range  = self->vb_slot_element_range[slot];
             const uint32_t elem_start  = elem_range & 0xFFu;
             const uint32_t elem_count  = (elem_range >> 8) & 0xFFu;
             if (elem_count == 0u) {
                 continue;
             }
-            const uint64_t vb_offset = *reinterpret_cast<const uint32_t*>(pipeline_state + 0x1a0 + slot * 4);
             for (uint32_t i = 0; i < elem_count; ++i) {
                 const uint32_t elem_idx    = elem_start + i;
                 const uint32_t staged_idx  = self->input_elem_to_sgpr[elem_idx] & 0xFFu;

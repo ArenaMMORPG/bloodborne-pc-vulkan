@@ -479,6 +479,9 @@ void Rasterizer::EmitVertexBuffers() {
 void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                                       const PreparedDraw* prepared) {
     BB_SECTION(ResolveVertexBuffers);
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     const auto& regs = Regs();
     auto& v = vertex_binds;
     v.num_buffers = 0;
@@ -576,15 +579,33 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         VertexInputs<Range> streams;
         for (const auto& buffer : guest_buffers) {
             if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                u64 raw_span = buffer.GetSize();
+                const u64 stride = buffer.GetStride();
+                if (stride > 0 && buffer.num_records > 0) {
+                    const auto dfmt = buffer.GetDataFmt();
+                    if (dfmt != Gcn::DataFormat::FormatInvalid &&
+                        u32(dfmt) <= u32(Gcn::DataFormat::FormatBc7)) {
+                        const u64 elem_bytes = Gcn::NumBitsPerBlock(dfmt) / 8u;
+                        if (elem_bytes > 0 && elem_bytes <= stride) {
+                            raw_span = (u64(buffer.num_records) - 1ULL) * stride + elem_bytes;
+                        }
+                    }
+                }
                 const u64 stream_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-                    buffer.base_address, buffer.GetSize());
+                    buffer.base_address, raw_span);
                 streams.push_back({buffer.base_address, buffer.base_address + stream_size});
             }
         }
         std::ranges::sort(streams, {}, &Range::begin);
-        for (const auto& stream : streams) {
+        VAddr cur_exact_end = 0;
+        for (const auto& raw_stream : streams) {
+            auto stream = raw_stream;
+            if (cur_exact_end != 0 && stream.begin < cur_exact_end && stream.end > cur_exact_end) {
+                stream.end = cur_exact_end;
+            }
             if (ranges.empty() || ranges.back().end <= stream.begin) {
                 ranges.push_back(stream);
+                cur_exact_end = VideoCore::DirectBuffers::LookupExactBufferEnd(stream.begin);
             } else {
                 ranges.back().end = std::max(ranges.back().end, stream.end);
             }
@@ -710,6 +731,9 @@ void Rasterizer::EmitIndexBuffer() {
 
 void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     BB_SECTION(ResolveIndexBuffer);
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     const auto& regs = Regs();
     const bool index16 = regs.index_buffer_type.index_type == Gcn::IndexType::Index16;
     const u32 index_size = index16 ? sizeof(u16) : sizeof(u32);
@@ -1059,6 +1083,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
     BB_SECTION(BindBuffers);
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     const u64 alignment = instance.StorageMinAlignment();
     const RingStage* ring_stage = nullptr;
     for (u32 i = 0; i < num_ring_stages; ++i) {

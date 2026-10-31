@@ -212,15 +212,33 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
         });
         buffers.push_back(buffer);
         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+            u64 raw_span = buffer.GetSize();
+            const u64 stride = buffer.GetStride();
+            if (stride > 0 && buffer.num_records > 0) {
+                const auto dfmt = buffer.GetDataFmt();
+                if (dfmt != Gcn::DataFormat::FormatInvalid &&
+                    u32(dfmt) <= u32(Gcn::DataFormat::FormatBc7)) {
+                    const u64 elem_bytes = Gcn::NumBitsPerBlock(dfmt) / 8u;
+                    if (elem_bytes > 0 && elem_bytes <= stride) {
+                        raw_span = (u64(buffer.num_records) - 1ULL) * stride + elem_bytes;
+                    }
+                }
+            }
             const u64 stream_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-                buffer.base_address, buffer.GetSize());
+                buffer.base_address, raw_span);
             ranges.push_back({buffer.base_address, buffer.base_address + stream_size});
         }
     }
     std::ranges::sort(ranges, {}, &PreparedVertexInputs::Range::base);
-    for (const auto& range : ranges) {
+    VAddr cur_exact_end = 0;
+    for (const auto& raw_range : ranges) {
+        auto range = raw_range;
+        if (cur_exact_end != 0 && range.base < cur_exact_end && range.end > cur_exact_end) {
+            range.end = cur_exact_end;
+        }
         if (merged.empty() || merged.back().end <= range.base) {
             merged.push_back(range);
+            cur_exact_end = VideoCore::DirectBuffers::LookupExactBufferEnd(range.base);
         } else {
             merged.back().end = std::max(merged.back().end, range.end);
         }

@@ -1008,6 +1008,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     if (HasPendingHleCopies() && PendingHleCopiesConflict(indirect.args, stride * max_count)) {
         FlushPendingHleCopies(*this);
     }
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     const VideoCore::Buffer* buffer = nullptr;
     u64 base = 0;
     {
@@ -1296,6 +1299,9 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     if (!BindResources(pipeline)) {
         return;
     }
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     const VideoCore::Buffer* buffer = nullptr;
     u64 base = 0;
     {
@@ -1358,6 +1364,10 @@ u64 Rasterizer::Flush() {
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);
     }
+    direct_buffers.FlushPendingWritebacks();
+    if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+        direct_buffers.ProcessEvents(memory);
+    }
     PublishSignals(); // the recording thread's (it is idle here, or this is it)
     last_flush_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(),
                         std::memory_order_relaxed);
@@ -1369,7 +1379,8 @@ u64 Rasterizer::Flush() {
 }
 
 bool Rasterizer::HasPendingWork() {
-    return scheduler.HasPendingWork() || HasPendingHleCopies() || HasUnsubmittedSignals();
+    return scheduler.HasPendingWork() || HasPendingHleCopies() || HasUnsubmittedSignals() ||
+           direct_buffers.HasPendingWritebacks();
 }
 
 void Rasterizer::Finish() {
