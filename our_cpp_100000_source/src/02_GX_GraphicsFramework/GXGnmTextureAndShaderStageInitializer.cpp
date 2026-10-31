@@ -3722,6 +3722,7 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
     if (gpuMem == nullptr) {
         return 9;
     }
+    gx_direct_vk::NoteDirectFreshGpuRange(gpuMem, allocSize);
 
     if (hasCounterTail != 0) {
         uint8_t* tailEnd = static_cast<uint8_t*>(gpuMem) + allocSize;

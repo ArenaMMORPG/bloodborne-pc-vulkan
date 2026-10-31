@@ -576,14 +576,14 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         VertexInputs<Range> streams;
         for (const auto& buffer : guest_buffers) {
             if (buffer.base_address != 0 && buffer.GetSize() > 0) {
-                const u64 stream_size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+                const u64 stream_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
                     buffer.base_address, buffer.GetSize());
                 streams.push_back({buffer.base_address, buffer.base_address + stream_size});
             }
         }
         std::ranges::sort(streams, {}, &Range::begin);
         for (const auto& stream : streams) {
-            if (ranges.empty() || ranges.back().end < stream.begin) {
+            if (ranges.empty() || ranges.back().end <= stream.begin) {
                 ranges.push_back(stream);
             } else {
                 ranges.back().end = std::max(ranges.back().end, stream.end);
@@ -591,16 +591,29 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         }
     }
     for (auto& range : ranges) {
-        const u64 size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+        u64 size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
             range.begin, memory->ClampRangeSize(range.begin, range.end - range.begin));
+        u64 min_stream_span = 1;
+        for (const auto& b : guest_buffers) {
+            if (b.base_address >= range.begin && b.base_address < range.end) {
+                min_stream_span =
+                    std::max<u64>(min_stream_span,
+                                  (b.base_address - range.begin) + std::max<u64>(1, b.GetStride()));
+            }
+        }
         if (HasPendingHleCopies() && PendingHleCopiesConflict(range.begin, size)) {
             FlushPendingHleCopies(*this);
         }
         bool is_direct_buf = false;
-        std::tie(range.buffer, range.offset) = direct_buffers.TryResolveRead(range.begin, size);
-        if (range.buffer) {
+        u64 direct_size = size;
+        std::tie(range.buffer, range.offset) =
+            direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+        if (range.buffer && direct_size >= min_stream_span) {
+            size = direct_size;
             is_direct_buf = true;
         } else {
+            range.buffer = nullptr;
+            range.offset = 0;
             std::tie(range.buffer, range.offset) =
                 buffer_cache.ObtainBuffer(range.begin, size, false);
         }
@@ -659,6 +672,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     // Each stream at its offset in its range's buffer (null for streams without memory).
     u32 stream_with_memory = 0;
     for (const auto& buffer : guest_buffers) {
+        u64 host_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+            buffer.base_address, buffer.GetSize());
         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
             const auto range =
                 ready ? ranges.begin() + ready->range_index[stream_with_memory++]
@@ -666,14 +681,16 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                             return buffer.base_address >= r.begin && buffer.base_address < r.end;
                         });
             ASSERT(range != ranges.end());
+            const u64 host_off = range->offset + buffer.base_address - range->begin;
             v.host_buffers.push_back(range->buffer->Handle());
-            v.host_offsets.push_back(range->offset + buffer.base_address - range->begin);
+            v.host_offsets.push_back(host_off);
+            const u64 buf_bytes = range->buffer->SizeBytes();
+            host_size = std::min<u64>(host_size, buf_bytes > host_off ? (buf_bytes - host_off) : 0ULL);
         } else {
             v.host_buffers.push_back(VK_NULL_HANDLE);
             v.host_offsets.push_back(0);
         }
-        v.host_sizes.push_back(VideoCore::DirectBuffers::ClampTransientCueReadSize(
-            buffer.base_address, buffer.GetSize()));
+        v.host_sizes.push_back(host_size);
         v.host_strides.push_back(buffer.GetStride());
     }
     v.num_buffers = static_cast<u32>(guest_buffers.size());
@@ -702,10 +719,13 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
         FlushPendingHleCopies(*this);
     }
     bool is_direct_buf = false;
-    auto [buffer, offset] = direct_buffers.TryResolveRead(address, size);
-    if (buffer) {
+    u64 idx_size = size;
+    auto [buffer, offset] = direct_buffers.TryResolveReadClamped(address, idx_size);
+    if (buffer && idx_size >= size) {
         is_direct_buf = true;
     } else {
+        buffer = nullptr;
+        offset = 0;
         std::tie(buffer, offset) = buffer_cache.ObtainBuffer(address, size, false);
     }
     if (!is_direct_buf && InPlaceReads::Enabled()) {
@@ -966,10 +986,9 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
                   clamped_mem_size, stage.pgm_hash);
     }
-    const u64 size = desc.is_written
-                         ? clamped_mem_size
-                         : VideoCore::DirectBuffers::ClampTransientCueReadSize(address,
-                                                                               clamped_mem_size);
+    u64 size = desc.is_written
+                   ? clamped_mem_size
+                   : VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, clamped_mem_size);
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
         FlushPendingHleCopies(*this);
     }
@@ -979,8 +998,11 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     bool is_direct_buf = false;
     const VideoCore::Buffer* buffer = nullptr;
     u64 offset = 0;
-    if (!desc.is_written && !desc.is_formatted) {
-        std::tie(buffer, offset) = direct_buffers.TryResolveRead(address, size);
+    static const bool n1_native_bufs =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if (!desc.is_written &&
+        (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address)))) {
+        std::tie(buffer, offset) = direct_buffers.TryResolveReadClamped(address, size);
         is_direct_buf = (buffer != nullptr);
     }
     if (!buffer) {

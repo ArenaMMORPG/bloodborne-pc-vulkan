@@ -894,6 +894,7 @@ struct HudBreakdown {
     float drains_pf = 0.0f;
     float faults_ps = 0.0f;
     float eop_pf = 0.0f;
+    float native_buf_pct = 0.0f;
     // Stage 0: Game CPU / Gnm
     float idle_a_ms = 0.0f, avg_idle_a_ms = 0.0f;
     float gnm_wait_ms = 0.0f, avg_gnm_wait_ms = 0.0f;
@@ -941,6 +942,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     static std::uint64_t last_present_ns = 0, last_sync_rec_ns = 0, last_host_copy_ns = 0;
     static std::uint64_t last_pipe_drains = 0, last_pipe_drain_cyc = 0, last_pipe_busy_cyc = 0;
     static std::uint64_t last_faults = 0, last_eop = 0;
+    static std::uint64_t last_native_hits = 0, last_native_misses = 0;
     static std::uint64_t last_hw_busy_ns = 0, last_hw_gap_ns = 0, last_hw_frames = 0;
     static std::array<std::uint64_t, BbSections::Count> last_ca{}, last_cb{};
 
@@ -968,6 +970,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         last_pipe_busy_cyc = BbSections::pipe_busy_cycles.load(std::memory_order_relaxed);
         last_faults = BbStats::tracker_faults_total.load(std::memory_order_relaxed);
         last_eop = BbStats::legacy_eop_decoded.load(std::memory_order_relaxed);
+        last_native_hits = BbStats::native_buf_hits.load(std::memory_order_relaxed);
+        last_native_misses = BbStats::native_buf_misses.load(std::memory_order_relaxed);
         last_hw_busy_ns = BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
         last_hw_gap_ns = BbStats::hw_gpu_gap_ns.load(std::memory_order_relaxed);
         last_hw_frames = BbStats::hw_gpu_frames.load(std::memory_order_relaxed);
@@ -1013,6 +1017,10 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     const std::uint64_t cur_faults =
         BbStats::tracker_faults_total.load(std::memory_order_relaxed);
     const std::uint64_t cur_eop = BbStats::legacy_eop_decoded.load(std::memory_order_relaxed);
+    const std::uint64_t cur_native_hits =
+        BbStats::native_buf_hits.load(std::memory_order_relaxed);
+    const std::uint64_t cur_native_misses =
+        BbStats::native_buf_misses.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_busy_ns =
         BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_gap_ns =
@@ -1042,6 +1050,12 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     h.drains_pf = float(double(safe_delta(cur_pipe_drains, last_pipe_drains)) * inv_f);
     h.faults_ps = float(double(safe_delta(cur_faults, last_faults)) / dt);
     h.eop_pf = float(double(safe_delta(cur_eop, last_eop)) * inv_f);
+    {
+        const std::uint64_t dh = safe_delta(cur_native_hits, last_native_hits);
+        const std::uint64_t dm = safe_delta(cur_native_misses, last_native_misses);
+        h.native_buf_pct =
+            (dh + dm) > 0 ? float(100.0 * double(dh) / double(dh + dm)) : 0.0f;
+    }
 
     const std::uint64_t d_hw_frames = safe_delta(cur_hw_frames, last_hw_frames);
     if (d_hw_frames > 0) {
@@ -1256,6 +1270,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     last_pipe_busy_cyc = cur_pipe_busy_cyc;
     last_faults = cur_faults;
     last_eop = cur_eop;
+    last_native_hits = cur_native_hits;
+    last_native_misses = cur_native_misses;
     if (d_hw_frames > 0) {
         last_hw_busy_ns = cur_hw_busy_ns;
         last_hw_gap_ns = cur_hw_gap_ns;
@@ -1269,7 +1285,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             const auto out = BbSettings::CurrentOutput();
             std::fprintf(f,
                          "FPS: %.1f (%.2f ms/f) | Avg: %.1f FPS (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
-                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f\n"
+                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%%\n"
                          "1. Game CPU / Gnm: IdleA %.2f ms | GnmWait %.2f ms\n"
                          "2. Stage A (GpuComm): PM4+Pipe %.2f ms | ConstRing %.2f ms | WaitDrainB %.2f ms (FlushA %.2f ms)\n"
                          "3. Stage B (DrawRec): Total %.2f ms | Buffers %.2f ms (Obtain %.2f, VRAM %.2f) | Tex+Desc %.2f ms | State+Pass %.2f ms | Tasks %.2f ms (FlushB %.2f) | Motion+HLE %.2f ms | Packet+Regs %.2f ms\n"
@@ -1282,7 +1298,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                          BbSettings::PresetName(BbSettings::RenderPreset()),
                          BbSettings::ResolutionNeedsRestart() ? " [NEEDS RESTART]" : "",
                          h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf,
-                         h.faults_ps, h.eop_pf,
+                         h.faults_ps, h.eop_pf, h.native_buf_pct,
                          h.idle_a_ms, h.gnm_wait_ms,
                          h.a_pm4_pipe_ms, h.a_ring_ms, h.a_drain_ms, h.a_flush_ms,
                          h.b_total_ms, h.b_buffers_ms, h.b_obtain_ms, h.b_vram_ms,
@@ -1337,8 +1353,8 @@ void FpsCounter() {
                            now_fps, now_ms, upscaler_str);
     }
     ImGui::TextDisabled(
-        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V7%s",
-                             "Сцена: %dx%d -> %dx%d | RHI V1-V7%s"),
+        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V7 + N1%s",
+                             "Сцена: %dx%d -> %dx%d | RHI V1-V7 + N1%s"),
         rw, rh, out.width, out.height,
         BbSettings::ResolutionNeedsRestart()
             ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
@@ -1352,9 +1368,9 @@ void FpsCounter() {
                                   : ImVec4(1.0f, 0.72f, 0.38f, 1.0f);
     ImGui::TextColored(
         health_col,
-        BbSettings::MenuText("WriteFaults: %.0f/s | Legacy EoP: %.1f/f",
-                             "SIGSEGV-фолты: %.0f/с | Legacy EoP: %.1f/к"),
-        h.faults_ps, h.eop_pf);
+        BbSettings::MenuText("WriteFaults: %.0f/s | Legacy EoP: %.1f/f | NativeBuf: %.0f%%",
+                             "SIGSEGV-фолты: %.0f/с | Legacy EoP: %.1f/к | NativeBuf: %.0f%%"),
+        h.faults_ps, h.eop_pf, h.native_buf_pct);
 
     ImGui::Separator();
     if (ImGui::BeginTable("##hud_breakdown", 3,

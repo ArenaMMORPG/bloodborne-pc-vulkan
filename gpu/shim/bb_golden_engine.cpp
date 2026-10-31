@@ -547,6 +547,9 @@ void PatchImage(unsigned char* image, u64 size) {
                 gx_direct_vk::ActiveV6SubMask() & 0xFFu,
                 gx_direct_vk::EnabledV7() ? "ON" : "OFF",
                 gx_direct_vk::ActiveV7SubMask() & 0xFFu);
+    std::printf("[bb_vulkan] Native Vulkan Engine: mask=0x%08x (N1_NativeBuffers=%s)\n",
+                gx_direct_vk::ActiveNativeVkMask(),
+                gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) ? "ON" : "OFF");
     std::fflush(stdout);
 }
 

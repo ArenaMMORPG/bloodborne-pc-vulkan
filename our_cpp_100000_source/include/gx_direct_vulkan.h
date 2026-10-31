@@ -257,11 +257,15 @@ inline void UnwatchDirectTextureRange(const void* gpu_addr, uint64_t byte_size) 
 }
 
 inline void RetireDirectGpuRange(const void* gpu_addr, uint64_t byte_size) noexcept {
-    if (!EnabledV3Sub(kV3Sub_DirectAssetTextures) || !bb_direct_vk_retire_gpu_range ||
-        !gpu_addr || byte_size == 0) {
+    if (!gpu_addr || byte_size == 0) {
         return;
     }
-    bb_direct_vk_retire_gpu_range(gpu_addr, byte_size);
+    if (EnabledV3Sub(kV3Sub_DirectAssetTextures) && bb_direct_vk_retire_gpu_range) {
+        bb_direct_vk_retire_gpu_range(gpu_addr, byte_size);
+    }
+    if (EnabledV3Sub(kV3Sub_DirectBuffers) && bb_direct_vk_retire_buffer_range) {
+        bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
+    }
 }
 
 inline void RegisterDirectAssetTexture(uint32_t resource_id,
@@ -530,6 +534,29 @@ inline uint32_t ActiveV7SubMask() noexcept {
 
 inline bool EnabledV7Sub(uint32_t bit) noexcept {
     return EnabledV7() && ((ActiveV7SubMask() & bit) != 0u);
+}
+
+// ============================================================================
+// Stage N (N1..N4): True Native Vulkan Engine (PS4 Emulator Demolition)
+// ============================================================================
+inline constexpr uint32_t kN1_NativeBuffers   = 1u << 0; // N1: Global 16 GiB NativeAllocDirectory + Direct VkBuffer VB/IB/CB/SRV/Texel resolution + 0-break in-pass transfers
+inline constexpr uint32_t kN2_NativeTextures  = 1u << 1; // N2: Direct VkImageView / VkSampler handles on C++20 CGTextureGnm / CGRenderTargetGnm
+inline constexpr uint32_t kN3_NativeCmdStream = 1u << 2; // N3: Direct VkCommandBuffer recording without PS4 DCB/PM4/Gcn::Context/Stage A
+inline constexpr uint32_t kN4_NativeTimeline  = 1u << 3; // N4: Vulkan Timeline Semaphores replacing PS4 guest EoP memory polling
+
+inline uint32_t ActiveNativeVkMask() noexcept {
+    static const uint32_t mask = []() -> uint32_t {
+        const char* env_mask = std::getenv("BB_NATIVE_VK_MASK");
+        if (env_mask && env_mask[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_mask, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return mask;
+}
+
+inline bool EnabledNativeVk(uint32_t bit) noexcept {
+    return (ActiveNativeVkMask() & bit) != 0u;
 }
 
 inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) noexcept {

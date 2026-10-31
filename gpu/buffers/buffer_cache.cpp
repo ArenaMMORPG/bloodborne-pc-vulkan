@@ -1758,7 +1758,9 @@ bool BufferCache::OverlapsInPassShadow(VAddr addr, u64 size) const noexcept {
 }
 
 bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, u64 total_bytes) {
-    if (slices.empty() || total_bytes == 0 || total_bytes > 512_KB) {
+    static const u64 max_inpass_bytes =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) ? 4_MB : 512_KB;
+    if (slices.empty() || total_bytes == 0 || total_bytes > max_inpass_bytes) {
         return false;
     }
     const u64 align = std::max<u64>(

@@ -138,10 +138,14 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
     // once when the RenderPass naturally ends.
     static const bool v7_inpass_rename =
         gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_StageAFastConstAndPrep);
+    static const bool n1_native_bufs =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (v7_inpass_rename && scheduler.IsRendering() && !VideoCore::GuestInPlace() &&
         !VideoCore::BufferCache::LayerActive()) {
         static thread_local std::vector<VideoCore::BufferCache::InPassCopySlice> inpass_slices;
         inpass_slices.clear();
+        const u64 max_slice_bytes = n1_native_bufs ? 512_KB : 64_KB;
+        const u64 max_batch_bytes = n1_native_bufs ? 4_MB : 512_KB;
         u64 total_inpass_bytes = 0;
         bool all_eligible = true;
         for (size_t idx = 0; idx < regions.size(); ++idx) {
@@ -149,8 +153,10 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
                 continue;
             }
-            if (reg.byte_size > 64_KB ||
-                !VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
+            const bool valid_cpu_src =
+                VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
+                (n1_native_bufs && memory->ClampRangeSize(reg.src_va, reg.byte_size) == reg.byte_size);
+            if (reg.byte_size > max_slice_bytes || !valid_cpu_src ||
                 buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
                 texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
                 texture_cache.IsMeta(reg.dst_va)) {
@@ -169,7 +175,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                 break;
             }
             const u64 aligned_off = (total_inpass_bytes + 15ULL) & ~15ULL;
-            if (aligned_off + reg.byte_size > 512_KB) {
+            if (aligned_off + reg.byte_size > max_batch_bytes) {
                 all_eligible = false;
                 break;
             }

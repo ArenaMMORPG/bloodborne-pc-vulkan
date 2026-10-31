@@ -212,14 +212,14 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
         });
         buffers.push_back(buffer);
         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
-            const u64 stream_size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+            const u64 stream_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
                 buffer.base_address, buffer.GetSize());
             ranges.push_back({buffer.base_address, buffer.base_address + stream_size});
         }
     }
     std::ranges::sort(ranges, {}, &PreparedVertexInputs::Range::base);
     for (const auto& range : ranges) {
-        if (merged.empty() || merged.back().end < range.base) {
+        if (merged.empty() || merged.back().end <= range.base) {
             merged.push_back(range);
         } else {
             merged.back().end = std::max(merged.back().end, range.end);

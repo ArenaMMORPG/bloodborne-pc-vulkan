@@ -127,6 +127,8 @@ inline std::atomic<std::uint64_t> drain_flushes{0}; ///< submissions sent as the
 inline std::atomic<std::uint64_t> eop_decoded{0}, eop_written{0}, gpu_labels{0};
 /// True legacy PM4 EventWriteEopTask packets with data (excludes DirectVk label/query packets).
 inline std::atomic<std::uint64_t> legacy_eop_decoded{0};
+/// N1 Native VkBuffer direct hits vs BufferCache emulator fallback resolutions.
+inline std::atomic<std::uint64_t> native_buf_hits{0}, native_buf_misses{0};
 /// sceGnmAreSubmitsAllowed calls, and those that answered no (submission lock held).
 inline std::atomic<std::uint64_t> submits_allowed_queries{0}, submits_refused{0}, submit_done_calls{0};
 /// Guest time blocked in Gnm submissions on the previous frame (submission lock or BB_SUBMIT_LOCK=frame).

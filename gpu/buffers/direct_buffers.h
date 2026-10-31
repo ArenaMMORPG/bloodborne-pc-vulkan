@@ -77,6 +77,14 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 /// to the end of their live CGGpuFreeListAllocatorGnm allocation block.
 [[nodiscard]] u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept;
 
+/// N1.1: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)) tracking all
+/// live CGGpuFreeListAllocatorGnm & GXGnmBuffer blocks with 4-byte precision so unbounded
+/// 0xFFFFFFFF vertex/shader V# descriptors clamp to their exact native buffer block instead of
+/// spilling 2.5+ GiB into BufferCache + mprotect(PROT_READ).
+void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept;
+void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept;
+
 class Manager {
 public:
     Manager(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
@@ -91,10 +99,14 @@ public:
     /// has completed.
     void ProcessEvents(Core::MemoryManager* memory);
 
-    /// Stage B (~2 ns fast path): resolves a read-only [addr, addr + size) sub-range inside a
-    /// live DirectImmutableBuf. Returns {nullptr, 0} on miss so BufferCache handles dynamic/UAV
-    /// ranges normally.
-    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveRead(VAddr addr, u64 size) noexcept;
+    /// N1.1 (~2 ns fast path): resolves a read-only [addr, addr + inout_size) binding inside a
+    /// live native DirectImmutableBuf, clamping oversized/0xFFFFFFFF V# sizes to the exact end of
+    /// that GXGnmBuffer. Returns {nullptr, 0} on miss so BufferCache handles dynamic/UAV ranges.
+    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveReadClamped(VAddr addr,
+                                                                      u64& inout_size) noexcept;
+    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveRead(VAddr addr, u64 size) noexcept {
+        return TryResolveReadClamped(addr, size);
+    }
 
     /// Stage B: invalidates any DirectImmutableBuf overlapping a GPU write [addr, addr + size) so
     /// stale immutable data can never shadow subsequent GPU-written bytes.
@@ -132,10 +144,11 @@ private:
     Vulkan::Scheduler& scheduler;
     Vulkan::Runtime& runtime;
 
+    static constexpr size_t kMruSlots = 32;
     std::map<VAddr, Entry> entries_by_base;
     std::deque<std::pair<u64, std::unique_ptr<Buffer>>> retired;
     std::array<u64, kBitmapWords> bitmap_64k{};
-    std::array<MruSlot, 4> mru{};
+    std::array<MruSlot, kMruSlots> mru{};
     u32 mru_hand{0};
 };
 

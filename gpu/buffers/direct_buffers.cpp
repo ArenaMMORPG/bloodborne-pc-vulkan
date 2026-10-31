@@ -15,6 +15,7 @@
 #include "render/direct_shaders.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
+#include "shim/bbport_toggles.h"
 #include "textures/texture_cache.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
@@ -137,6 +138,20 @@ inline void AtomicMaxU32(std::atomic<u32>& cell, u32 val) noexcept {
     }
 }
 
+// N1.1: Global 16 GiB lock-free 4 KiB page directory over [0x1000000000, 0x1400000000)
+// (4,194,304 x 4 B = 16 MiB BSS). Stores `(rel_end + 3) >> 2` (4-byte precision, never overflows
+// u32) for every live GXGnmBuffer (DEFAULT/IMMUTABLE/DYNAMIC/STAGING) and CGGpuFreeListAllocatorGnm
+// block so unbounded 0xFFFFFFFF V# vertex/shader streams clamp to their exact buffer instead of
+// pulling 2.5..4.1 GiB mmaps into BufferCache + mprotect(PROT_READ).
+constexpr VAddr kNativeDirBase = 0x1000000000ULL;
+constexpr u64 kNativeDirSpan = 16ULL << 30;
+constexpr u64 kNativeDirMaxBytes = kNativeDirSpan - 4096ULL;
+constexpr u32 kNativePageShift = 12u;
+constexpr u64 kNativePageSize = 1ULL << kNativePageShift;
+constexpr size_t kNativeDirPages = static_cast<size_t>(kNativeDirSpan >> kNativePageShift);
+constexpr u64 kNativeMaxSingleBlockBytes = 128ULL << 20; // ignore whole-heap container carve-outs
+std::array<std::atomic<u32>, kNativeDirPages> g_native_page_end_rel4{};
+
 } // namespace
 
 void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
@@ -149,6 +164,9 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
         g_ever_registered.store(false, std::memory_order_release);
         for (auto& word : g_guest_immutable_64k) {
             word.store(0ULL, std::memory_order_relaxed);
+        }
+        for (auto& cell : g_native_page_end_rel4) {
+            cell.store(0u, std::memory_order_relaxed);
         }
     }
 }
@@ -319,6 +337,106 @@ u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept {
     return clamped;
 }
 
+void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0 || byte_size > kNativeMaxSingleBlockBytes || addr < kNativeDirBase) {
+        return;
+    }
+    const u64 rel_start = addr - kNativeDirBase;
+    if (rel_start >= kNativeDirMaxBytes) {
+        return;
+    }
+    const u64 rel_end = std::min<u64>(rel_start + byte_size, kNativeDirMaxBytes);
+    if (rel_end <= rel_start) {
+        return;
+    }
+    const u32 end_rel4 = static_cast<u32>((rel_end + 3ULL) >> 2);
+    const size_t first_p = static_cast<size_t>(rel_start >> kNativePageShift);
+    const size_t last_p = static_cast<size_t>((rel_end - 1ULL) >> kNativePageShift);
+    if (first_p == last_p) {
+        if ((rel_start & (kNativePageSize - 1ULL)) == 0ULL &&
+            (rel_end & (kNativePageSize - 1ULL)) == 0ULL) {
+            g_native_page_end_rel4[first_p].store(end_rel4, std::memory_order_release);
+        } else {
+            AtomicMaxU32(g_native_page_end_rel4[first_p], end_rel4);
+        }
+        return;
+    }
+    if ((rel_start & (kNativePageSize - 1ULL)) == 0ULL) {
+        g_native_page_end_rel4[first_p].store(end_rel4, std::memory_order_release);
+    } else {
+        AtomicMaxU32(g_native_page_end_rel4[first_p], end_rel4);
+    }
+    for (size_t p = first_p + 1u; p < last_p; ++p) {
+        g_native_page_end_rel4[p].store(end_rel4, std::memory_order_release);
+    }
+    if ((rel_end & (kNativePageSize - 1ULL)) == 0ULL) {
+        g_native_page_end_rel4[last_p].store(end_rel4, std::memory_order_release);
+    } else {
+        AtomicMaxU32(g_native_page_end_rel4[last_p], end_rel4);
+    }
+}
+
+void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0 || byte_size > kNativeMaxSingleBlockBytes || addr < kNativeDirBase) {
+        return;
+    }
+    const u64 rel_start = addr - kNativeDirBase;
+    if (rel_start >= kNativeDirMaxBytes) {
+        return;
+    }
+    const u64 rel_end = std::min<u64>(rel_start + byte_size, kNativeDirMaxBytes);
+    if (rel_end <= rel_start) {
+        return;
+    }
+    const u32 start_rel4 = static_cast<u32>((rel_start + 3ULL) >> 2);
+    const u32 end_rel4 = static_cast<u32>((rel_end + 3ULL) >> 2);
+    const u64 full_begin = (rel_start + kNativePageSize - 1ULL) & ~(kNativePageSize - 1ULL);
+    const u64 full_end = rel_end & ~(kNativePageSize - 1ULL);
+    if (full_begin < full_end) {
+        const size_t p_begin = static_cast<size_t>(full_begin >> kNativePageShift);
+        const size_t p_end = static_cast<size_t>(full_end >> kNativePageShift);
+        for (size_t p = p_begin; p < p_end; ++p) {
+            g_native_page_end_rel4[p].store(0u, std::memory_order_release);
+        }
+    }
+    if ((rel_start & (kNativePageSize - 1ULL)) != 0ULL) {
+        const size_t head_p = static_cast<size_t>(rel_start >> kNativePageShift);
+        u32 expected = end_rel4;
+        g_native_page_end_rel4[head_p].compare_exchange_strong(
+            expected, start_rel4, std::memory_order_release, std::memory_order_relaxed);
+    }
+    if ((rel_end & (kNativePageSize - 1ULL)) != 0ULL) {
+        const size_t tail_p = static_cast<size_t>((rel_end - 1ULL) >> kNativePageShift);
+        const u64 tail_page_start = static_cast<u64>(tail_p) << kNativePageShift;
+        if (rel_start <= tail_page_start) {
+            u32 expected = end_rel4;
+            g_native_page_end_rel4[tail_p].compare_exchange_strong(
+                expected, 0u, std::memory_order_release, std::memory_order_relaxed);
+        }
+    }
+}
+
+u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
+    u64 clamped = ClampTransientCueReadSize(addr, requested_size);
+    static const bool n1_enabled =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if (!n1_enabled || clamped == 0 || addr < kNativeDirBase) {
+        return clamped;
+    }
+    const u64 rel = addr - kNativeDirBase;
+    if (rel >= kNativeDirMaxBytes) {
+        return clamped;
+    }
+    const u32 end_rel4 =
+        g_native_page_end_rel4[static_cast<size_t>(rel >> kNativePageShift)].load(
+            std::memory_order_acquire);
+    const u64 end_rel = static_cast<u64>(end_rel4) << 2;
+    if (end_rel > rel) {
+        clamped = std::min<u64>(clamped, end_rel - rel);
+    }
+    return clamped;
+}
+
 void DrainEvents(std::vector<Event>& out) {
     out.clear();
     if (g_pending_count.load(std::memory_order_acquire) == 0) {
@@ -446,35 +564,72 @@ void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
     RetireOverlapping(addr, size);
 }
 
-std::pair<const Buffer*, u64> Manager::TryResolveRead(VAddr addr, u64 size) noexcept {
-    if (entries_by_base.empty() || size == 0 || addr >= kMaxGuestVa) {
+std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
+                                                             u64& inout_size) noexcept {
+    if (inout_size == 0 || addr >= kMaxGuestVa) {
+        return {nullptr, 0};
+    }
+    const auto note_hit = []() noexcept {
+        BbStats::native_buf_hits.store(
+            BbStats::native_buf_hits.load(std::memory_order_relaxed) + 1ULL,
+            std::memory_order_relaxed);
+    };
+    const auto note_miss = []() noexcept {
+        BbStats::native_buf_misses.store(
+            BbStats::native_buf_misses.load(std::memory_order_relaxed) + 1ULL,
+            std::memory_order_relaxed);
+    };
+    if (entries_by_base.empty()) {
+        note_miss();
         return {nullptr, 0};
     }
 
-    for (const auto& slot : mru) {
-        if (slot.buffer && addr >= slot.base_addr && size <= slot.alloc_size &&
-            (addr - slot.base_addr) <= (slot.alloc_size - size)) {
-            return {slot.buffer, addr - slot.base_addr};
+    static const bool n1_enabled =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const size_t h0 = static_cast<size_t>(((addr >> 12) ^ (addr >> 20)) & (kMruSlots - 1));
+    const size_t h1 = (h0 + 1u) & (kMruSlots - 1);
+    for (const size_t idx : {h0, h1}) {
+        const auto& slot = mru[idx];
+        if (slot.buffer && addr >= slot.base_addr && addr < slot.base_addr + slot.alloc_size) {
+            const u64 rem = slot.alloc_size - (addr - slot.base_addr);
+            if (inout_size <= rem || n1_enabled) {
+                if (inout_size > rem) {
+                    inout_size = rem;
+                }
+                note_hit();
+                return {slot.buffer, addr - slot.base_addr};
+            }
         }
     }
 
     const u64 page = addr >> kPageShift64K;
     if ((bitmap_64k[page >> 6] & (1ULL << (page & 63ULL))) == 0ULL) {
+        note_miss();
         return {nullptr, 0};
     }
 
     auto it = entries_by_base.upper_bound(addr);
     if (it == entries_by_base.begin()) {
+        note_miss();
         return {nullptr, 0};
     }
     --it;
     const VAddr base = it->first;
     const u64 alloc_size = it->second.alloc_size;
-    if (addr >= base && size <= alloc_size && (addr - base) <= (alloc_size - size)) {
-        Buffer* buf = it->second.buffer.get();
-        mru[mru_hand++ & 3u] = MruSlot{base, alloc_size, buf};
-        return {buf, addr - base};
+    if (addr >= base && addr < base + alloc_size) {
+        const u64 rem = alloc_size - (addr - base);
+        if (inout_size <= rem || n1_enabled) {
+            if (inout_size > rem) {
+                inout_size = rem;
+            }
+            Buffer* buf = it->second.buffer.get();
+            mru[h1] = mru[h0];
+            mru[h0] = MruSlot{base, alloc_size, buf};
+            note_hit();
+            return {buf, addr - base};
+        }
     }
+    note_miss();
     return {nullptr, 0};
 }
 
@@ -572,7 +727,9 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         entry.buffer = std::move(buf);
         entries_by_base[ev.addr] = std::move(entry);
         SetBitmapRange(ev.addr, ev.addr + guest_span);
-        mru[mru_hand++ & 3u] = MruSlot{ev.addr, guest_span, raw_ptr};
+        const size_t h0 = static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
+        mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
+        mru[h0] = MruSlot{ev.addr, guest_span, raw_ptr};
 
         uploaded_bytes_since_flush += vk_alloc_size;
         if (uploaded_bytes_since_flush >= (32ULL << 20)) {
@@ -598,6 +755,7 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     VideoCore::DirectBuffers::NoteTransientCueHeapAlloc(addr, byte_size);
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, byte_size);
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->NoteFreshRange(addr, byte_size);
     }
@@ -643,6 +801,7 @@ void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
     VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
     VideoCore::DirectBuffers::Event ev{};
@@ -662,6 +821,7 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     VideoCore::DirectBuffers::NoteTransientCueHeapFree(addr, byte_size);
+    VideoCore::DirectBuffers::NoteNativeGpuBlockFree(addr, byte_size);
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->DisarmWatchedRange(addr, byte_size);
     }
