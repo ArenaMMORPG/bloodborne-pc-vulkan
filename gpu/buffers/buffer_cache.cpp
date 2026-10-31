@@ -1529,18 +1529,33 @@ std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
     }
 
     if (total_bytes <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
-        const auto recorded = scheduler.RecordData(slices);
-        scheduler.RecordHostCopy([recorded, staging, mem = memory, precise] {
-            for (const auto& s : recorded) {
-                u8* dst = staging.mapped + s.staging_rel_offset;
-                if (!precise) {
-                    std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
-                } else {
-                    mem->CopySparseMemory(s.src_va, dst, s.byte_size);
-                }
-            }
-            staging.Flush();
-        });
+        // NOTE: RecordHostCopy pushes into OrderedChunk() (which runs AFTER CurrentChunk() has
+        // finished and been recycled), so slices must be captured by value inside OrderedChunk()
+        // rather than via RecordData() (which allocates inside CurrentChunk()).
+        constexpr size_t kInlineChunk = 32;
+        for (size_t offset = 0; offset < slices.size(); offset += kInlineChunk) {
+            const u32 chunk_count =
+                static_cast<u32>(std::min(kInlineChunk, slices.size() - offset));
+            const bool flush_now = (offset + chunk_count >= slices.size());
+            std::array<TransientHostSlice, kInlineChunk> batch_slices{};
+            std::memcpy(batch_slices.data(), slices.data() + offset,
+                        chunk_count * sizeof(TransientHostSlice));
+            scheduler.RecordHostCopy(
+                [batch_slices, chunk_count, flush_now, staging, mem = memory, precise] {
+                    for (u32 i = 0; i < chunk_count; ++i) {
+                        const auto& s = batch_slices[i];
+                        u8* dst = staging.mapped + s.staging_rel_offset;
+                        if (!precise) {
+                            std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
+                        } else {
+                            mem->CopySparseMemory(s.src_va, dst, s.byte_size);
+                        }
+                    }
+                    if (flush_now) {
+                        staging.Flush();
+                    }
+                });
+        }
         scheduler.NoteHostCopySources(host_ranges);
         return {staging.buffer, staging.offset};
     }
