@@ -131,7 +131,11 @@ constexpr u64 kMaxCueHeapBytes = 512ULL << 20;
 constexpr u32 kCuePageShift = 12u;
 constexpr u64 kCuePageSize = 1ULL << kCuePageShift;
 constexpr size_t kMaxCueHeapPages = static_cast<size_t>(kMaxCueHeapBytes >> kCuePageShift);
+constexpr u64 kMinBigCueBlockBytes = 64ULL << 10;
+constexpr u64 kMaxBigCueBlockBytes = 4ULL << 20;
 std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_end_rel{};
+std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_start_p1{};
+std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_end{};
 
 inline void AtomicMaxU32(std::atomic<u32>& cell, u32 val) noexcept {
     u32 cur = cell.load(std::memory_order_relaxed);
@@ -208,6 +212,16 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
             }
         }
         for (auto& cell : g_native_page_end_rel4) {
+            if (cell.load(std::memory_order_relaxed) != 0u) {
+                cell.store(0u, std::memory_order_relaxed);
+            }
+        }
+        for (auto& cell : g_cue_page_big_start_p1) {
+            if (cell.load(std::memory_order_relaxed) != 0u) {
+                cell.store(0u, std::memory_order_relaxed);
+            }
+        }
+        for (auto& cell : g_cue_page_big_end) {
             if (cell.load(std::memory_order_relaxed) != 0u) {
                 cell.store(0u, std::memory_order_relaxed);
             }
@@ -316,6 +330,18 @@ void NoteTransientCueHeapAlloc(VAddr addr, u64 byte_size) noexcept {
     } else {
         AtomicMaxU32(g_cue_page_end_rel[last_p], rel_end);
     }
+    if (byte_size > kMinBigCueBlockBytes && byte_size <= kMaxBigCueBlockBytes) {
+        const u32 start_p1 = rel_start + 1u;
+        for (size_t p = first_p; p < last_p; ++p) {
+            g_cue_page_big_end[p].store(rel_end, std::memory_order_relaxed);
+            g_cue_page_big_start_p1[p].store(start_p1, std::memory_order_release);
+        }
+        if ((rel_end & (kCuePageSize - 1u)) == 0u ||
+            g_cue_page_big_start_p1[last_p].load(std::memory_order_relaxed) == 0u) {
+            g_cue_page_big_end[last_p].store(rel_end, std::memory_order_relaxed);
+            g_cue_page_big_start_p1[last_p].store(start_p1, std::memory_order_release);
+        }
+    }
 }
 
 void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept {
@@ -341,6 +367,16 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept {
     }
     const u32 rel_start = static_cast<u32>(rel_start64);
     const u32 rel_end = static_cast<u32>(rel_end64);
+    if (byte_size > kMinBigCueBlockBytes && byte_size <= kMaxBigCueBlockBytes) {
+        const size_t first_p = static_cast<size_t>(rel_start >> kCuePageShift);
+        const size_t last_p = static_cast<size_t>((rel_end - 1u) >> kCuePageShift);
+        const u32 start_p1 = rel_start + 1u;
+        for (size_t p = first_p; p <= last_p; ++p) {
+            u32 expected = start_p1;
+            g_cue_page_big_start_p1[p].compare_exchange_strong(
+                expected, 0u, std::memory_order_release, std::memory_order_relaxed);
+        }
+    }
     const u64 full_begin = (rel_start64 + kCuePageSize - 1ULL) & ~(kCuePageSize - 1ULL);
     const u64 full_end = rel_end64 & ~(kCuePageSize - 1ULL);
     if (full_begin < full_end) {
@@ -385,6 +421,45 @@ u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept {
         }
     }
     return clamped;
+}
+
+bool LookupTransientCueBlock(VAddr addr, u64 size, VAddr& out_block_base,
+                             u32& out_block_size) noexcept {
+    if (size == 0) {
+        return false;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return false;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    if (addr < base || addr >= end) {
+        return false;
+    }
+    const u64 rel = addr - base;
+    if (rel >= kMaxCueHeapBytes || rel + size > std::min<u64>(end - base, kMaxCueHeapBytes)) {
+        return false;
+    }
+    const auto try_page = [&](size_t p) noexcept -> bool {
+        const u32 s_p1 = g_cue_page_big_start_p1[p].load(std::memory_order_acquire);
+        if (s_p1 == 0u) {
+            return false;
+        }
+        const u64 b_start = static_cast<u64>(s_p1 - 1u);
+        const u64 b_end = static_cast<u64>(g_cue_page_big_end[p].load(std::memory_order_relaxed));
+        if (b_end > b_start && (b_end - b_start) <= kMaxBigCueBlockBytes && rel >= b_start &&
+            rel + size <= b_end) {
+            out_block_base = base + b_start;
+            out_block_size = static_cast<u32>(b_end - b_start);
+            return true;
+        }
+        return false;
+    };
+    const size_t cur_p = static_cast<size_t>(rel >> kCuePageShift);
+    if (try_page(cur_p)) {
+        return true;
+    }
+    return cur_p > 0u && try_page(cur_p - 1u);
 }
 
 void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept {
@@ -943,7 +1018,7 @@ void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
 
 std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
                                                              u64& inout_size) noexcept {
-    if (inout_size == 0 || addr >= kMaxGuestVa || IsTransientCueHeap(addr, inout_size)) {
+    if (inout_size == 0 || addr >= kMaxGuestVa) {
         return {nullptr, 0};
     }
     const auto note_hit = []() noexcept {
@@ -951,10 +1026,12 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
             BbStats::native_buf_hits.load(std::memory_order_relaxed) + 1ULL,
             std::memory_order_relaxed);
     };
-    const auto note_miss = []() noexcept {
-        BbStats::native_buf_misses.store(
-            BbStats::native_buf_misses.load(std::memory_order_relaxed) + 1ULL,
-            std::memory_order_relaxed);
+    const auto note_miss = [addr, &inout_size]() noexcept {
+        if (!IsTransientCueHeap(addr, inout_size)) {
+            BbStats::native_buf_misses.store(
+                BbStats::native_buf_misses.load(std::memory_order_relaxed) + 1ULL,
+                std::memory_order_relaxed);
+        }
     };
     if (entries_by_base.empty()) {
         note_miss();
@@ -1016,11 +1093,11 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
     return {nullptr, 0};
 }
 
-std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size) {
+std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, bool full_overwrite,
+                                                       bool track_access) {
     if (size == 0 || addr >= kMaxGuestVa || entries_by_base.empty() || !AnyBitmap64k(addr, size)) {
         return {nullptr, 0};
     }
-    NoteTransientCueHeapGpuWrite(addr, size);
     Vulkan::DirectShaders::InvalidateRange(addr, size);
 
     auto it = entries_by_base.upper_bound(addr);
@@ -1039,24 +1116,27 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size) {
             const Buffer* dst_buf = it->second.buffer.get();
             if (it->second.needs_zero_init) {
                 it->second.needs_zero_init = false;
-                if (addr > base || size < dst_buf->SizeBytes()) {
+                if (!full_overwrite || addr > base || size < dst_buf->SizeBytes()) {
                     runtime.FillBuffer(dst_buf, 0, dst_buf->SizeBytes(), 0);
                     runtime.FlushBarriers();
                 }
                 UpdateMruEntry(base, alloc_size, dst_buf, 0);
             }
             const u64 dst_off = addr - base;
-            runtime.AccessBuffer(dst_buf, dst_off, size,
-                                 vk::PipelineStageFlagBits2::eAllGraphics |
-                                     vk::PipelineStageFlagBits2::eComputeShader,
-                                 vk::AccessFlagBits2::eShaderRead |
-                                     vk::AccessFlagBits2::eUniformRead |
-                                     vk::AccessFlagBits2::eVertexAttributeRead |
-                                     vk::AccessFlagBits2::eIndexRead |
-                                     vk::AccessFlagBits2::eIndirectCommandRead);
+            if (track_access) {
+                runtime.AccessBuffer(dst_buf, dst_off, size,
+                                     vk::PipelineStageFlagBits2::eAllGraphics |
+                                         vk::PipelineStageFlagBits2::eComputeShader,
+                                     vk::AccessFlagBits2::eShaderRead |
+                                         vk::AccessFlagBits2::eUniformRead |
+                                         vk::AccessFlagBits2::eVertexAttributeRead |
+                                         vk::AccessFlagBits2::eIndexRead |
+                                         vk::AccessFlagBits2::eIndirectCommandRead);
+            }
             return {dst_buf, dst_off};
         }
     }
+    NoteTransientCueHeapGpuWrite(addr, size);
     RetireOverlapping(addr, size);
     return {nullptr, 0};
 }

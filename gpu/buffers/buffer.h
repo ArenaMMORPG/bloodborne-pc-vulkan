@@ -106,6 +106,7 @@ struct Buffer {
     size_t size_bytes = 0;
     std::span<u8> mapped_data{};
     bool is_coherent{};
+    mutable bool uav_written{};
     MemoryType mem_type{MemoryType::DeviceLocal};
     BufferAllocation buffer;
 };

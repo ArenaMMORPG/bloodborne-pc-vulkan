@@ -252,7 +252,7 @@ void FlushPendingHleCopies(Rasterizer& rasterizer) {
             !texture_cache.HasActiveImagePages(g.dst_va, g.dst_size) &&
             !texture_cache.IsMeta(g.dst_va)) {
             std::tie(dst_buf, dst_buf_offset) =
-                direct_buffers.TryResolveWrite(g.dst_va, g.dst_size);
+                direct_buffers.TryResolveWrite(g.dst_va, g.dst_size, /*full_overwrite=*/true);
             if (dst_buf) {
                 buffer_cache.NoteExternalGpuModified(g.dst_va, g.dst_size);
                 wrote_native_buf = true;

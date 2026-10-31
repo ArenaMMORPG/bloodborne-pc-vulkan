@@ -198,6 +198,10 @@ public:
             gpu_modified_ranges.Add(addr, size);
         }
     }
+    void NoteTransientSubmitBoundary() noexcept {
+        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
+    }
+    [[nodiscard]] bool HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept;
 
     /// bbport BB_GUEST_IN_PLACE: where a command processor write (WRITE_DATA) the GPU performs in
     /// stream order lands: the arena over the game's memory, if the range is bound there in place.

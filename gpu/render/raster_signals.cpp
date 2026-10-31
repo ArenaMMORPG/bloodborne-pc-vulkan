@@ -8,6 +8,7 @@
 #include "bbport_copy.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 #include <pthread.h>
 
 namespace Vulkan {
@@ -153,7 +154,29 @@ bool Rasterizer::WriteDataOnGpu(VAddr address, const void* data, u32 size) {
         const char* env = std::getenv("BB_GPU_COMMAND_WRITES");
         return !env || env[0] != '0';
     }();
-    if (!enabled || !VideoCore::GuestInPlace() || size == 0 || (address | size) % 4 != 0) {
+    if (!enabled || size == 0 || (address | size) % 4 != 0) {
+        return false;
+    }
+    static const bool n1_native_bufs =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive() &&
+        !texture_cache.HasActiveImagePages(address, size) && !texture_cache.IsMeta(address)) {
+        if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
+            direct_buffers.ProcessEvents(memory);
+        }
+        const auto [nat_dst, nat_off] =
+            direct_buffers.TryResolveWrite(address, size, /*full_overwrite=*/true);
+        if (nat_dst) {
+            buffer_cache.NoteExternalGpuModified(address, size);
+            runtime.UpdateBuffer(nat_dst, nat_off, {static_cast<const u8*>(data), size});
+            runtime.FlushBarriers();
+            if (size <= sizeof(u64) && memory->IsValidGpuMapping(address, size)) {
+                std::memcpy(reinterpret_cast<void*>(address), data, size);
+            }
+            return true;
+        }
+    }
+    if (!VideoCore::GuestInPlace()) {
         return false;
     }
     // bbport BB_LAYER_MEMORY: a range whole in a mirror is written there too (asked first: the

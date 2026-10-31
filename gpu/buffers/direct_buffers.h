@@ -86,6 +86,11 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 /// V7.1: O(1) lock-free bounding of unbounded (0xFFFFFFFF) read-only V# descriptors inside cueHeap
 /// to the end of their live CGGpuFreeListAllocatorGnm allocation block.
 [[nodiscard]] u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept;
+/// N1.3: O(1) lock-free recovery of the enclosing live `> 64 KiB` (`<= 4 MiB`) `MapDynamicBuffer_B`
+/// `isDynamicRing` block `[out_block_base, out_block_base + out_block_size)` inside `cueHeap` so all
+/// `NO_OVERWRITE` sub-draws share one single `stream_buffer` upload instead of re-copying 3..4 MiB.
+[[nodiscard]] bool LookupTransientCueBlock(VAddr addr, u64 size, VAddr& out_block_base,
+                                           u32& out_block_size) noexcept;
 
 /// N1.1 / N1.2 / N1.2c: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)),
 /// lossless 4-byte-granule NativeOwnedBitmap (0 collisions, 0 evictions, O(1) interior-offset hit),
@@ -136,10 +141,13 @@ public:
         return TryResolveReadClamped(addr, size);
     }
 
-    /// N1.2: Resolves a non-stream GPU write [addr, addr + size) directly into a native VkBuffer
-    /// (flushing any active stream override first and arming WAR barrier tracking). If a write
-    /// partially crosses buffer boundaries, retires the entry and returns {nullptr, 0}.
-    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(VAddr addr, u64 size);
+    /// N1.2 / N1.3: Resolves a non-stream GPU write [addr, addr + size) directly into a native
+    /// VkBuffer (flushing any active stream override first and arming WAR barrier tracking when
+    /// `track_access` is true). If a write partially crosses buffer boundaries, retires the entry
+    /// and returns {nullptr, 0}.
+    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(VAddr addr, u64 size,
+                                                                bool full_overwrite = false,
+                                                                bool track_access = true);
 
     /// N1.2b: Renames full-buffer CPU-source `DirectCopyBuffers` updates (`FlushBufferUpdates_A/B`)
     /// of native `DEFAULT` `GXGnmBuffer`s directly into `stream_buffer` without calling

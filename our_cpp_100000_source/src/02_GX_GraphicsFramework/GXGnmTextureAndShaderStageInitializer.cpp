@@ -3773,14 +3773,16 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
         slotWords[0] = 0ULL;
     }
 
+    const bool is_uav_or_so = (desc->bindFlags & 0x90u) != 0u;
+    const bool is_gpu_only_uav =
+        desc->usageType == 0u && desc->cpuAccessFlags == 0u && (desc->bindFlags & 0x10u) == 0u;
     const bool n1_native_eligible =
         gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) &&
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) &&
-        ((desc->cpuAccessFlags == 0u &&
-          (desc->usageType == 0u || (desc->usageType == 1u && initialDataPtr != nullptr))) ||
-         (desc->usageType == 2u && (desc->cpuAccessFlags & ~1u) == 0u)) &&
-        (desc->bindFlags & 0x90u) == 0u && desc->byteSize > 0u &&
-        CGMemoryGnm_IsCpuReadableAddress(gpuMem);
+        (((desc->cpuAccessFlags == 0u && (desc->usageType == 0u || desc->usageType == 1u)) &&
+          (!is_uav_or_so || is_gpu_only_uav)) ||
+         (desc->usageType == 2u && (desc->cpuAccessFlags & ~1u) == 0u && !is_uav_or_so)) &&
+        desc->byteSize > 0u && CGMemoryGnm_IsCpuReadableAddress(gpuMem);
     gx_direct_vk::NoteDirectExactBufferAlloc(
         gpuMem,
         hasCounterTail != 0 ? allocSize : desc->byteSize,
@@ -3791,9 +3793,7 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
         if (CGMemoryGnm_IsCpuReadableAddress(gpuMem)) {
             if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers)) {
                 const uint32_t copySize = desc->byteSize;
-                const uint32_t noteSize = (hasCounterTail == 0 && allocSize > copySize)
-                                              ? allocSize
-                                              : copySize;
+                const uint32_t noteSize = (allocSize > copySize) ? allocSize : copySize;
                 gx_direct_vk::PrepareDirectBufferWrite(gpuMem, noteSize);
                 gx_direct_vk::NoteDirectAssetBufferWrite(gpuMem, noteSize);
                 if (copySize > 0u) {
@@ -3804,8 +3804,9 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
                 }
                 gx_direct_vk::NoteDirectAssetBufferWrite(gpuMem, noteSize);
                 if (n1_native_eligible) {
+                    const uint32_t initSpan = (hasCounterTail != 0) ? allocSize : copySize;
                     gx_direct_vk::RegisterDirectNativeBuffer(
-                        outBuf->resourceId, gpuMem, copySize, allocSize,
+                        outBuf->resourceId, gpuMem, initSpan, allocSize,
                         desc->bindFlags, desc->usageType, 1u);
                 } else if (desc->usageType == 1u && desc->cpuAccessFlags == 0u &&
                            (desc->bindFlags & 0x90u) == 0u && copySize > 0u) {

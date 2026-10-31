@@ -466,6 +466,15 @@ void EraseTwins(VAddr begin, VAddr end) {
 /// 0: off.
 int PreuploadMode() {
     static const int mode = [] {
+        const char* force_legacy = std::getenv("BB_FORCE_LEGACY_PREUPLOAD");
+        if (!(force_legacy && force_legacy[0] == '1') &&
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers)) {
+            // N1.3: Native DirectBuffers own GXGnmBuffer allocations in dedicated VMA VkBuffers and
+            // ObtainBufferForImage uploads textures asynchronously via DeferredUploads + staging_pool.
+            // Disabling whole-Garlic BufferCache pre-uploading prevents 6.66 GiB of duplicate arena
+            // VRAM allocation and thousands of mprotect(PROT_READ) write faults per second.
+            return 0;
+        }
         const char* env = std::getenv("BB_PREUPLOAD");
         if (GuestInPlace()) {
             return 0; // the GPU reads the game's memory itself: nothing to upload
@@ -1140,6 +1149,48 @@ void PrintBufferStats() {
 }
 } // namespace
 
+namespace {
+struct CueStreamMemoSlot {
+    VAddr addr = 0;
+    u32 size = 0;
+    u32 pad = 0;
+    u64 tick = ~0ULL;
+    u64 inv_gen = 0;
+    u64 offset = 0;
+};
+constexpr size_t kCueMemoSlots = 512;
+thread_local std::array<CueStreamMemoSlot, kCueMemoSlots> g_tls_cue_memo{};
+
+inline size_t CueMemoSlotIdx(VAddr base_addr, u32 block_size) noexcept {
+    return static_cast<size_t>(((base_addr >> 6) ^ (base_addr >> 15) ^ (u64(block_size) << 2)) &
+                               (kCueMemoSlots - 1));
+}
+} // namespace
+
+bool BufferCache::HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept {
+    if (size == 0 || GuestInPlace() || LayerMode() ||
+        !DirectBuffers::IsTransientCueHeap(device_addr, size)) {
+        return false;
+    }
+    const u64 cur_tick = scheduler.CurrentTick();
+    const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
+    const auto& exact = g_tls_cue_memo[CueMemoSlotIdx(device_addr, size)];
+    if (exact.addr == device_addr && exact.size == size && exact.tick == cur_tick &&
+        exact.inv_gen == cur_inv) {
+        return true;
+    }
+    VAddr blk_base = 0;
+    u32 blk_size = 0;
+    if (DirectBuffers::LookupTransientCueBlock(device_addr, size, blk_base, blk_size)) {
+        const auto& blk = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
+        if (blk.addr == blk_base && blk.size == blk_size && blk.tick == cur_tick &&
+            blk.inv_gen == cur_inv) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
                                                         bool is_written, bool is_texel_buffer,
                                                         bool full_overwrite) {
@@ -1223,34 +1274,42 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         size != 0 &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
         (size <= STREAM_THRESHOLD ||
-         (size <= 2_MB && IsRegionCpuModified(device_addr, size))) &&
+         (size <= 4_MB && IsRegionCpuModified(device_addr, size))) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
-        struct CueStreamMemo {
-            VAddr addr = 0;
-            u32 size = 0;
-            u32 pad = 0;
-            u64 tick = ~0ULL;
-            u64 inv_gen = 0;
-            u64 offset = 0;
-        };
-        static constexpr size_t kCueMemoSlots = 512;
-        thread_local std::array<CueStreamMemo, kCueMemoSlots> tls_cue_memo{};
         const u64 cur_tick = scheduler.CurrentTick();
         const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
-        const size_t memo_idx =
-            static_cast<size_t>(((device_addr >> 6) ^ (device_addr >> 15) ^ (u64(size) << 2)) &
-                                (kCueMemoSlots - 1));
-        auto& memo = tls_cue_memo[memo_idx];
-        if (memo.addr == device_addr && memo.size == size && memo.tick == cur_tick &&
+
+        // N1.3: Check whether the enclosing >64 KiB..4 MiB MapDynamicBuffer_B `isDynamicRing` block
+        // `[blk_base, blk_base + blk_size)` has already been uploaded in this submit, serving all
+        // `NO_OVERWRITE` sub-draws at `device_addr = blk_base + vb_offset` in O(1) without
+        // re-copying 3..4 MiB per draw or overflowing `stream_buffer`.
+        VAddr blk_base = 0;
+        u32 blk_size = 0;
+        const bool has_big_blk =
+            DirectBuffers::LookupTransientCueBlock(device_addr, size, blk_base, blk_size);
+        if (has_big_blk) {
+            const auto& blk_memo = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
+            if (blk_memo.addr == blk_base && blk_memo.size == blk_size &&
+                blk_memo.tick == cur_tick && blk_memo.inv_gen == cur_inv) {
+                TraceBinding(device_addr, size, false, 3);
+                return {&stream_buffer, blk_memo.offset + (device_addr - blk_base)};
+            }
+        }
+
+        const VAddr upload_addr = (size > STREAM_THRESHOLD && has_big_blk) ? blk_base : device_addr;
+        const u32 upload_size = (size > STREAM_THRESHOLD && has_big_blk) ? blk_size : size;
+        const u64 sub_off = device_addr - upload_addr;
+        auto& memo = g_tls_cue_memo[CueMemoSlotIdx(upload_addr, upload_size)];
+        if (memo.addr == upload_addr && memo.size == upload_size && memo.tick == cur_tick &&
             memo.inv_gen == cur_inv) {
             TraceBinding(device_addr, size, false, 3);
-            return {&stream_buffer, memo.offset};
+            return {&stream_buffer, memo.offset + sub_off};
         }
         if (stats) {
-            auto& region = Stats().regions[RegionKey(device_addr)];
+            auto& region = Stats().regions[RegionKey(upload_addr)];
             ++region.stream_count;
-            region.stream_bytes += size;
+            region.stream_bytes += upload_size;
         }
         const u64 align = std::max<u64>(
             16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
@@ -1258,27 +1317,28 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
         if (!stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
             !BbToggle::Disabled(BbToggle::DeferredStreamCopies)) {
-            if (const auto offset = stream_buffer.Reserve(size, align)) {
+            if (const auto offset = stream_buffer.Reserve(upload_size, align)) {
                 u8* const dst = stream_buffer.mapped_data.data() + *offset;
                 const u64 flush_off = *offset;
                 Buffer* const sbuf = &stream_buffer;
                 Core::MemoryManager* const mem = memory;
                 const bool precise = precise_readbacks;
-                if (size <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+                if (upload_size <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
                     scheduler.RecordHostCopy(
-                        [device_addr, dst, size, flush_off, sbuf, mem, precise] {
+                        [upload_addr, dst, upload_size, flush_off, sbuf, mem, precise] {
                             if (!precise) {
-                                std::memcpy(dst, reinterpret_cast<const void*>(device_addr), size);
+                                std::memcpy(dst, reinterpret_cast<const void*>(upload_addr),
+                                            upload_size);
                             } else {
-                                mem->CopySparseMemory(device_addr, dst, size);
+                                mem->CopySparseMemory(upload_addr, dst, upload_size);
                             }
-                            sbuf->Flush(flush_off, size);
+                            sbuf->Flush(flush_off, upload_size);
                         });
                 } else {
                     constexpr u32 kChunk = 1_MB;
-                    for (u32 rel = 0; rel < size; rel += kChunk) {
-                        const u32 chunk = std::min<u32>(kChunk, size - rel);
-                        const VAddr src_chunk = device_addr + rel;
+                    for (u32 rel = 0; rel < upload_size; rel += kChunk) {
+                        const u32 chunk = std::min<u32>(kChunk, upload_size - rel);
+                        const VAddr src_chunk = upload_addr + rel;
                         u8* const dst_chunk = dst + rel;
                         const u64 f_off = flush_off + rel;
                         BbCopy::Async([src_chunk, dst_chunk, chunk, f_off, sbuf, mem, precise] {
@@ -1292,22 +1352,22 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                         });
                     }
                 }
-                scheduler.NoteHostCopySource(device_addr, size);
-                memo = {device_addr, size, 0u, scheduler.CurrentTick(), cur_inv, *offset};
+                scheduler.NoteHostCopySource(upload_addr, upload_size);
+                memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, *offset};
                 TraceBinding(device_addr, size, false, 3);
-                return {&stream_buffer, *offset};
+                return {&stream_buffer, *offset + sub_off};
             }
         }
-        const auto [data, offset] = stream_buffer.Map(size, align);
+        const auto [data, offset] = stream_buffer.Map(upload_size, align);
         if (!precise_readbacks) {
-            std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);
+            std::memcpy(data, reinterpret_cast<const void*>(upload_addr), upload_size);
         } else {
-            memory->CopySparseMemory(device_addr, data, size);
+            memory->CopySparseMemory(upload_addr, data, upload_size);
         }
         stream_buffer.Commit();
-        memo = {device_addr, size, 0u, scheduler.CurrentTick(), cur_inv, offset};
+        memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, offset};
         TraceBinding(device_addr, size, false, 3);
-        return {&stream_buffer, offset};
+        return {&stream_buffer, offset + sub_off};
     }
     // bbport BB_LAYER_MEMORY: the game's memory in place through its chunk buffer (the module
     // says which); what is not whole in one chunk takes the paths below (VRAM copies).

@@ -1400,6 +1400,7 @@ void Rasterizer::ProcessDirectTextureEvents() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    buffer_cache.NoteTransientSubmitBoundary();
     direct_buffers.FlushPendingWritebacks();
     ProcessDirectTextureEvents();
     if (fault_process_pending) {

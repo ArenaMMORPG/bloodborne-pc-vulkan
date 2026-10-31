@@ -684,7 +684,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             }
         }
         if (!StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
-            (!is_direct_buf && range.buffer != &buffer_cache.GetStreamBuffer())) {
+            (!is_direct_buf && range.buffer != &buffer_cache.GetStreamBuffer()) ||
+            (is_direct_buf && range.buffer->uav_written)) {
             needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
             bound_buffers.emplace_back(range.buffer, range.offset, size, false);
         }
@@ -758,7 +759,8 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     // Tracked as a graphics read after the draw (ResetBindings): an upload into a mirrored index
     // range must not overtake the draw's fixed-function index fetches.
     if (!StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
-        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer())) {
+        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer()) ||
+        (is_direct_buf && buffer->uav_written)) {
         needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
         bound_buffers.emplace_back(buffer, offset, size, false);
     }
@@ -1016,16 +1018,28 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
         FlushPendingHleCopies(*this);
     }
-    if (desc.is_written) {
-        direct_buffers.OnGpuWrite(address, size);
-    }
     bool is_direct_buf = false;
     const VideoCore::Buffer* buffer = nullptr;
     u64 offset = 0;
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (!desc.is_written &&
-        (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address)))) {
+    if (desc.is_written) {
+        if (n1_native_bufs && !VideoCore::GuestInPlace() &&
+            !VideoCore::BufferCache::LayerActive() &&
+            !texture_cache.HasActiveImagePages(address, size) && !texture_cache.IsMeta(address)) {
+            std::tie(buffer, offset) =
+                direct_buffers.TryResolveWrite(address, size, /*full_overwrite=*/false,
+                                               /*track_access=*/false);
+            if (buffer) {
+                buffer->uav_written = true;
+                is_direct_buf = true;
+                buffer_cache.NoteExternalGpuModified(address, size);
+            }
+        }
+        if (!buffer) {
+            direct_buffers.OnGpuWrite(address, size);
+        }
+    } else if (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address))) {
         std::tie(buffer, offset) = direct_buffers.TryResolveReadClamped(address, size);
         is_direct_buf = (buffer != nullptr);
     }
@@ -1073,7 +1087,8 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         texture_cache.InvalidateMemoryFromGPU(address, size);
     }
     if (desc.is_written || !StageBFastBind() || VideoCore::BufferCache::LayerPagedActive() ||
-        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer())) {
+        (!is_direct_buf && buffer != &buffer_cache.GetStreamBuffer()) ||
+        (is_direct_buf && buffer->uav_written)) {
         bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
         needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
     }
