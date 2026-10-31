@@ -1211,14 +1211,19 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
     }
-    // V6.2 / V7.1: Direct zero-fault streaming for transient `cueHeap` read-only bindings up to
-    // 16 MiB (with 0xFFFFFFFF unbounded V# descriptors pre-bounded to their live allocation block
-    // via ClampTransientCueReadSize). Avoids creating a 512 MiB cueHeap VRAM arena mirror, avoids
-    // RenderPass breaks + vkCmdCopyBuffer + pipeline barriers, eliminates all SIGSEGV write faults
-    // on cueHeap, and deduplicates repeated shadow/G-buffer bindings within the same submission.
+    // V6.2 / V7.5: Direct zero-fault streaming for transient `cueHeap` read-only bindings:
+    // - Small bindings (`<= 64 KiB`) always stream directly into `stream_buffer`.
+    // - Medium dynamic bindings (`64 KiB < size <= 2 MiB`) that are CPU-modified (`IsRegionCpuModified`)
+    //   stream directly into `stream_buffer` without breaking active 2560x1440 6-MRT RenderPasses,
+    //   without emitting 4 MiB/2 MiB `vkCmdCopyBuffer` + `vk::MemoryBarrier2` GPU stalls, and
+    //   without re-arming `mprotect(PROT_READ)` on `cueHeap`.
+    // - Clean static `.flver` level meshes (`> 64 KiB && !IsRegionCpuModified`, `402.8 MiB`) skip
+    //   streaming completely (`0 B/frame` copied) and hit `BindMemo` in `DEVICE_LOCAL` VRAM `arena`.
     if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
-        size != 0 && size <= STREAM_THRESHOLD &&
+        size != 0 &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
+        (size <= STREAM_THRESHOLD ||
+         (size <= 2_MB && IsRegionCpuModified(device_addr, size))) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
         struct CueStreamMemo {

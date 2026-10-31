@@ -1312,6 +1312,13 @@ void CGGfxContextGnm_AllocateScratchFromCommandBuffer(
     uint8_t* self,
     uint32_t eventType)
 {
+    if (gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_BoundedCueAndQueries)) {
+        if (*reinterpret_cast<uintptr_t*>(self) == 0) {
+            (*reinterpret_cast<void(**)(void*, uint32_t, void*)>(self + 0x18))(
+                self, 0, *reinterpret_cast<void**>(self + 0x20));
+        }
+        return;
+    }
     uint64_t* labelPtr = static_cast<uint64_t*>(
         CGGfxContextGnm_AllocateFromCommandBufferAligned(self, 8, 8));
     *labelPtr = 0;
@@ -1333,6 +1340,13 @@ void CGGfxContextGnm_FlushShaderCachesAndWait(
     uint32_t eventType,
     uint32_t cacheAction)
 {
+    if (gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_BoundedCueAndQueries)) {
+        if (*reinterpret_cast<uintptr_t*>(self) == 0) {
+            (*reinterpret_cast<void(**)(void*, uint32_t, void*)>(self + 0x18))(
+                self, 0, *reinterpret_cast<void**>(self + 0x20));
+        }
+        return;
+    }
     uint64_t* labelPtr = static_cast<uint64_t*>(
         CGGfxContextGnm_AllocateFromCommandBufferAligned(self, 8, 8));
     *labelPtr = 0;
