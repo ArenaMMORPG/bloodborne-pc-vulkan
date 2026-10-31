@@ -197,7 +197,7 @@ bool LookupMappedEnd(VAddr address, uintptr_t& out_end) {
 
 } // namespace
 
-bool BbLookupMappedEnd(u64 address, uintptr_t& out_end) {
+extern "C" bool BbLookupMappedEnd(u64 address, uintptr_t& out_end) {
     return LookupMappedEnd(address, out_end);
 }
 
