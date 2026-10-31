@@ -238,6 +238,13 @@ void Scheduler::BeginRendering(const RenderState& state) {
 
 void Scheduler::EndRendering() {
     if (!is_rendering) {
+        if (has_end_rendering_work) [[unlikely]] {
+            resume_rendering = false;
+            has_end_rendering_work = false;
+            if (on_end_rendering) {
+                on_end_rendering(on_end_rendering_ctx);
+            }
+        }
         return;
     }
     static const bool trace = [] {
@@ -251,6 +258,12 @@ void Scheduler::EndRendering() {
     is_rendering = false;
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
     CarryResume(false);
+    if (has_end_rendering_work) {
+        has_end_rendering_work = false;
+        if (on_end_rendering) {
+            on_end_rendering(on_end_rendering_ctx);
+        }
+    }
 }
 
 void Scheduler::TracePassBreak(void* caller) {
@@ -330,7 +343,7 @@ std::unique_ptr<RecordChunk> Scheduler::AcquireChunk() {
     return chunk;
 }
 
-void Scheduler::SignalAfterHostCopies(std::function<void()> signal) {
+void Scheduler::SignalAfterHostCopies(std::function<void()> signal, bool force_kick) {
     // A direct segment queues it too: signals queued before it must not be overtaken.
     if (!IsRecordingDeferred() && !direct_segment) {
         WaitHostCopies();
@@ -355,7 +368,9 @@ void Scheduler::SignalAfterHostCopies(std::function<void()> signal) {
             done->fetch_add(1, std::memory_order_release);
         });
     });
-    KickRecording(true);
+    if (force_kick) {
+        KickRecording(true);
+    }
 }
 
 void Scheduler::WaitPendingFrame() {
@@ -963,9 +978,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     }
     EndRendering();
     CarrySuspend(false);
+    const bool is_frame_end = std::exchange(frame_end_submission, false);
+    GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
         // Until the next submission's first timestamp: mostly the GPU waiting for it.
-        if (std::exchange(frame_end_submission, false)) {
+        if (is_frame_end) {
             submission_in_frame = 0;
             profiler->Mark(0x5B319ull, [] {
                 return std::string{"(after a frame's last submission: presenter, GPU idle)"};
@@ -1004,6 +1021,7 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     // No semaphore query here (an ioctl per submission): PopPendingOperations asks when an
     // operation waits, the GPU signal thread on every fence.
     AllocateWorkerCommandBuffers();
+    GpuProfiler::HudBeginSubmission(this);
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
         profiler->Mark(0x5B318ull, [] { // as in SubmitAsync
             return std::string{"(submission start: copies and barriers before its first mark)"};
@@ -1020,8 +1038,10 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
     }
     EndRendering();
     CarrySuspend(false);
+    const bool is_frame_end = std::exchange(frame_end_submission, false);
+    GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        if (std::exchange(frame_end_submission, false)) {
+        if (is_frame_end) {
             submission_in_frame = 0;
             profiler->Mark(0x5B319ull, [] {
                 return std::string{"(after a frame's last submission: presenter, GPU idle)"};
@@ -1071,6 +1091,7 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
     });
     KickRecording(true);
     AllocateWorkerCommandBuffers();
+    GpuProfiler::HudBeginSubmission(this);
     // BB_GPU_PROFILE: the next submission's first command, so that the gap above holds only the
     // GPU's time between submissions; what comes before its first mark is the work recorded
     // outside passes and dispatches (copies, uploads, barriers).

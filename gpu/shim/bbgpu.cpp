@@ -195,6 +195,14 @@ bool LookupMappedEnd(VAddr address, uintptr_t& out_end) {
     return true;
 }
 
+} // namespace
+
+bool BbLookupMappedEnd(u64 address, uintptr_t& out_end) {
+    return LookupMappedEnd(address, out_end);
+}
+
+namespace {
+
 bool CachedMapped(VAddr address, u64 size) {
     uintptr_t contig_end = 0;
     return LookupMappedEnd(address, contig_end) && size <= (contig_end - address);

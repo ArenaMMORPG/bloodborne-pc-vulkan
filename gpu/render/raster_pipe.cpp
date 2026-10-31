@@ -6,6 +6,8 @@
 #include "buffers/direct_buffers.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
+bool BbLookupMappedEnd(u64 address, uintptr_t& out_end);
+
 namespace Vulkan {
 
 namespace {
@@ -18,6 +20,12 @@ inline bool FastNonCeRamSkip() noexcept {
 inline bool StageARingBypass() noexcept {
     static const bool on =
         gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageARingBypass);
+    return on;
+}
+
+inline bool StageAFastConst() noexcept {
+    static const bool on =
+        gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_StageAFastConstAndPrep);
     return on;
 }
 } // namespace
@@ -476,7 +484,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                 u64 frame = ~0ull;
                 u64 ring_pos = 0;
             };
-            static constexpr size_t kRingMemoSize = 256;
+            static constexpr size_t kRingMemoSize = 2048;
             thread_local std::array<RingMemo, kRingMemoSize> tls_ring_memo{};
             const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
             const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
@@ -532,6 +540,13 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     const bool constants_in_place = VideoCore::ConstantsInPlace();
     const bool stage_a_bypass =
         StageARingBypass() && !BbCeStats::Enabled() && !VideoCore::BufferCache::LayerPagedActive();
+    static const bool no_stream_constram_flag = std::getenv("BB_EXP_NO_STREAM") != nullptr;
+    static const bool any_cb_traced =
+        std::getenv("BB_TRACE_CB") != nullptr || std::getenv("BB_TRACE_CB_LIST") != nullptr;
+    const bool v7_fast_const = stage_a_bypass && StageAFastConst() && !precise_readbacks &&
+                               !no_stream_constram_flag && !VideoCore::BufferCache::LayerActive() &&
+                               !any_cb_traced;
+    const bool is_copy_shader = (stage.pgm_hash == Game::BufferCopyShader());
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
         if (desc.IsSpecial()) {
@@ -555,6 +570,42 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                     if (!buffer_cache.IsConstRamRange(address, raw_size)) {
                         continue;
                     }
+                } else if (v7_fast_const && !is_copy_shader &&
+                           !buffer_cache.IsConstRamRange(address, raw_size)) {
+                    if (VideoCore::DirectBuffers::IsTransientCueHeap(address, raw_size) &&
+                        !VideoCore::DirectBuffers::IsCueHeapEverGpuModified()) {
+                        if (resolvers) {
+                            out.push_back({index, static_cast<u32>(raw_size), RingPending, address,
+                                           0, u32(hle_candidate)});
+                            continue;
+                        }
+                        if (copy(index, nullptr, address, raw_size)) {
+                            if (hle_candidate) {
+                                NotePendingRead(address, raw_size, true);
+                            }
+                            continue;
+                        }
+                    } else {
+                        uintptr_t mapped_end = 0;
+                        if (BbLookupMappedEnd(address, mapped_end) &&
+                            raw_size <= (mapped_end - address)) {
+                            if (resolvers) {
+                                out.push_back({index, static_cast<u32>(raw_size), RingPending,
+                                               address, 0, u32(hle_candidate)});
+                                continue;
+                            }
+                            if (!buffer_cache.IsRegionGpuModified(address, raw_size) &&
+                                !PendingWriteOverlaps(address, raw_size) &&
+                                copy(index, nullptr, address, raw_size)) {
+                                if (hle_candidate) {
+                                    NotePendingRead(address, raw_size, true);
+                                }
+                                continue;
+                            }
+                            NotePendingRead(address, raw_size, true);
+                            continue;
+                        }
+                    }
                 } else if (resolvers &&
                            VideoCore::DirectBuffers::IsTransientCueHeap(address, raw_size) &&
                            !buffer_cache.IsConstRamRange(address, raw_size)) {
@@ -564,12 +615,22 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                 }
             } else {
                 const u64 ce_check_len = std::min<u64>(raw_size, 16_MB);
-                if (!buffer_cache.IsConstRamRange(address, ce_check_len) &&
-                    (VideoCore::DirectBuffers::IsTransientCueHeap(
-                         address, VideoCore::BufferCache::STREAM_THRESHOLD + 1) ||
-                     memory->ClampRangeSize(address, VideoCore::BufferCache::STREAM_THRESHOLD + 1) >
-                         VideoCore::BufferCache::STREAM_THRESHOLD)) {
-                    continue;
+                if (!buffer_cache.IsConstRamRange(address, ce_check_len)) {
+                    if (VideoCore::DirectBuffers::IsTransientCueHeap(
+                            address, VideoCore::BufferCache::STREAM_THRESHOLD + 1)) {
+                        continue;
+                    }
+                    uintptr_t mapped_end = 0;
+                    if (v7_fast_const && BbLookupMappedEnd(address, mapped_end)) {
+                        if (std::min<u64>(raw_size, mapped_end - address) >
+                            VideoCore::BufferCache::STREAM_THRESHOLD) {
+                            continue;
+                        }
+                    } else if (memory->ClampRangeSize(
+                                   address, VideoCore::BufferCache::STREAM_THRESHOLD + 1) >
+                               VideoCore::BufferCache::STREAM_THRESHOLD) {
+                        continue;
+                    }
                 }
             }
         }
@@ -1279,7 +1340,13 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
                 offset = ring.Allocate(size, alignment);
             }
             if (offset) {
-                self.memory->CopySparseMemory(address, ring.Data(*offset), size);
+                uintptr_t mapped_end = 0;
+                if (fast_cue_resolve && StageAFastConst() &&
+                    BbLookupMappedEnd(address, mapped_end) && size <= (mapped_end - address)) {
+                    std::memcpy(ring.Data(*offset), reinterpret_cast<const void*>(address), size);
+                } else {
+                    self.memory->CopySparseMemory(address, ring.Data(*offset), size);
+                }
                 ring.Flush(*offset, size);
                 binding.offset = *offset;
                 binding.ring = 1 + worker;

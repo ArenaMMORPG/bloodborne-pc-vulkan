@@ -722,7 +722,9 @@ void GXGnmCommandContext_EndQuery(void* context, void* unused, void* queryObj) {
     switch (queryType) {
         case 0: {
             *reinterpret_cast<std::uint64_t*>(gpuBuf) = 0;
-            CGCommandBufferGnm_WriteEndOfPipeImmediate(gfxCtx, 4, gpuBuf, 1, 0);
+            if (!gx_direct_vk::TryDirectTimestampQuery(gfxCtx, 2u, gpuBuf)) {
+                CGCommandBufferGnm_WriteEndOfPipeImmediate(gfxCtx, 4, gpuBuf, 1, 0);
+            }
             break;
         }
         case 1:

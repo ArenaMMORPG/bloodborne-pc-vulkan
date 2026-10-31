@@ -464,16 +464,19 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     }
                 } else if (vk_op == DirectVk::Op::TimestampQuery) {
                     const u32 query_op = op_word >> 16;
-                    if (body_words == 4u && query_op <= 1u) {
+                    if (body_words == 4u && query_op <= 2u) {
                         VAddr base_addr = 0;
                         std::memcpy(&base_addr, body + 2u, sizeof(VAddr));
                         base_addr &= 0xFFFFFFFFFFULL;
                         if (base_addr != 0 && (base_addr & 0x7ULL) == 0ULL) {
-                            const VAddr ts_addr = base_addr + (query_op == 0u ? 0x10ULL : 0x08ULL);
                             if (BbFreeCheck::Enabled()) {
-                                BbFreeCheck::NoteFenceDecoded(ts_addr, 0ULL, packet, packet,
-                                                              work.seq);
-                                if (query_op == 1u) {
+                                if (query_op <= 1u) {
+                                    const VAddr ts_addr =
+                                        base_addr + (query_op == 0u ? 0x10ULL : 0x08ULL);
+                                    BbFreeCheck::NoteFenceDecoded(ts_addr, 0ULL, packet, packet,
+                                                                  work.seq);
+                                }
+                                if (query_op >= 1u) {
                                     BbFreeCheck::NoteFenceDecoded(base_addr, 1ULL, packet, packet,
                                                                   work.seq);
                                 }
@@ -482,7 +485,7 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             if (rasterizer->RunInOrder(&Tasks::DirectVkTimestampQueryTask, &ev,
                                                        sizeof(ev), BbToggle::PipelinedTasks,
                                                        false) &&
-                                query_op == 1u) {
+                                query_op >= 1u) {
                                 DropReachedFences();
                                 NotePending(base_addr, 1ULL, 8u, true);
                             }

@@ -88,6 +88,7 @@ inline constexpr uint32_t kModuleV3_ResourceViews  = 1u << 2; // Direct Texture 
 inline constexpr uint32_t kModuleV4_NativeShaders  = 1u << 3; // Direct 752-shader SPIR-V pipeline cache
 inline constexpr uint32_t kModuleV5_NativePcFx     = 1u << 4; // Native C++ PC effect toggles
 inline constexpr uint32_t kModuleV6_FastPipeline   = 1u << 5; // V6: Zero-fault cueHeap staging & Stage-A/Stage-B/Barrier fast-paths
+inline constexpr uint32_t kModuleV7_ZeroOverhead   = 1u << 6; // V7: Exact cueHeap V# bounds, EndQuery case 0 fast-path, Stage-A CB & RenderPass copy batching
 
 inline uint32_t ActiveMask() noexcept {
     static const uint32_t mask = []() -> uint32_t {
@@ -506,6 +507,29 @@ inline uint32_t ActiveV6SubMask() noexcept {
 
 inline bool EnabledV6Sub(uint32_t bit) noexcept {
     return EnabledV6() && ((ActiveV6SubMask() & bit) != 0u);
+}
+
+inline bool EnabledV7() noexcept {
+    return (ActiveMask() & kModuleV7_ZeroOverhead) != 0u;
+}
+
+inline constexpr uint32_t kV7Sub_BoundedCueAndQueries  = 1u << 0; // V7.1: O(1) cueHeap V# block-end bounding (0 SIGSEGV) & EndQuery case 0 direct zero-kick signal
+inline constexpr uint32_t kV7Sub_StageAFastConstAndPrep = 1u << 1; // V7.2: Non-CeRam <=16 KiB CB Stage-A fast-path, in-pass small copy shadow & DrawPrep worker diet
+inline constexpr uint32_t kV7Sub_HudFullBreakdown      = 1u << 2; // V7.3: Complete HUD Stage-B accounting, Faults/s + EoP/f & GPU Busy ms
+
+inline uint32_t ActiveV7SubMask() noexcept {
+    static const uint32_t sub = []() -> uint32_t {
+        const char* env_sub = std::getenv("BB_DIRECT_V7_MASK");
+        if (env_sub && env_sub[0] != '\0') {
+            return static_cast<uint32_t>(std::strtoul(env_sub, nullptr, 0));
+        }
+        return 0xFFFFFFFFu;
+    }();
+    return sub;
+}
+
+inline bool EnabledV7Sub(uint32_t bit) noexcept {
+    return EnabledV7() && ((ActiveV7SubMask() & bit) != 0u);
 }
 
 inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) noexcept {
@@ -1644,7 +1668,7 @@ inline bool TryDirectOcclusionQuery(void* dcb_raw,
 }
 
 // ============================================================================
-// V6.2: Direct Timestamp / TimestampDisjoint Query (replaces ~339/frame EventWriteEop)
+// V6.2 / V7.1: Direct Timestamp / TimestampDisjoint / Event Query (0 legacy EventWriteEop)
 // ============================================================================
 // Packet layout (5 dwords, body_dwords = 4):
 //   [0] = MakeNopHeader(4u)
@@ -1653,12 +1677,17 @@ inline bool TryDirectOcclusionQuery(void* dcb_raw,
 //           query_op == 0 -> BeginQuery case 3: writes gpuData[2] (+0x10) = GpuClock64()
 //           query_op == 1 -> EndQuery case 2/3: writes gpuData[1] (+0x08) = GpuClock64(),
 //                                               then gpuData[0] (+0x00) = 1ULL
+//           query_op == 2 -> EndQuery case 0 (D3D11_QUERY_EVENT): writes gpuData[0] (+0x00) = 1ULL
+//                            ordered after host copies without premature KickRecording(true)
 //   [3] = lo32(results_va)
 //   [4] = hi32(results_va)
 inline bool TryDirectTimestampQuery(void* dcb_raw,
                                     uint32_t query_op,
                                     const void* results_gpu_addr) noexcept {
-    if (!EnabledV6Sub(kV6Sub_StageARingBypass) || !dcb_raw || query_op > 1u) {
+    if (!EnabledV6Sub(kV6Sub_StageARingBypass) || !dcb_raw || query_op > 2u) {
+        return false;
+    }
+    if (query_op == 2u && !EnabledV7Sub(kV7Sub_BoundedCueAndQueries)) {
         return false;
     }
     const uint64_t addr = reinterpret_cast<uint64_t>(results_gpu_addr);

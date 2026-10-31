@@ -311,8 +311,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     if (!(async_env && async_env[0] == '0') && instance.IsVertexInputDynamicState()) {
         const char* thr_env = std::getenv("BB_ASYNC_PIPELINE_THREADS");
         const u32 threads = std::max(
-            thr_env && *thr_env ? u32(std::strtoul(thr_env, nullptr, 10))
-                                : std::clamp(std::thread::hardware_concurrency() / 3, 2u, 6u),
+            thr_env && *thr_env ? u32(std::strtoul(thr_env, nullptr, 10)) : 2u,
             1u);
         compiler = std::make_unique<PipelineCompiler>(threads);
         std::printf("[bb_vulkan] V4.2 Async PipelineCompiler prewarmed with %u worker threads\n",

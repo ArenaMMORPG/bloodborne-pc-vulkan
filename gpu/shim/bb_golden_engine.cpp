@@ -530,7 +530,8 @@ void PatchImage(unsigned char* image, u64 size) {
     Vulkan::DirectShaders::InitializeManifestLibrary();
     std::printf("[bb_vulkan] Direct Vulkan RHI: mask=0x%08x (V1_BufferCopyFill=%s, V2_DrawDispatch=%s, "
                 "V3_ResourceViews=%s, V4_NativeShadersAndPrewarmedPSO=%s, V5_NativePcControls=%s "
-                "[v5_mask=0x%02x, gx_cmd_heap=%uKiB, intel_tonemap=%s, yebis_async_unreg=%s, decommission_pm4=%s])\n",
+                "[v5_mask=0x%02x, gx_cmd_heap=%uKiB, intel_tonemap=%s, yebis_async_unreg=%s, decommission_pm4=%s], "
+                "V6_PipelineCut=%s [0x%02x], V7_ZeroOverhead=%s [0x%02x])\n",
                 gx_direct_vk::ActiveMask(),
                 gx_direct_vk::EnabledV1() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV2() ? "ON" : "OFF",
@@ -541,7 +542,11 @@ void PatchImage(unsigned char* image, u64 size) {
                 bb_direct_vk_gx_command_heap_bytes() >> 10,
                 bb_direct_vk_intel_tonemap_fix() ? "ON" : "OFF",
                 gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline) ? "ON" : "OFF",
-                gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4) ? "ON" : "OFF");
+                gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4) ? "ON" : "OFF",
+                gx_direct_vk::EnabledV6() ? "ON" : "OFF",
+                gx_direct_vk::ActiveV6SubMask() & 0xFFu,
+                gx_direct_vk::EnabledV7() ? "ON" : "OFF",
+                gx_direct_vk::ActiveV7SubMask() & 0xFFu);
     std::fflush(stdout);
 }
 

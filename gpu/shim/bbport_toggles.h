@@ -104,6 +104,8 @@ inline bool Experiment(std::uint64_t bit) {
 namespace BbStats {
 /// Guest writes caught by page protection, and pages currently left unprotected as hot.
 inline std::atomic<std::uint64_t> tracker_faults{0};
+/// Monotonic write-fault counter for HUD deltas (never zeroed by BB_FRAME_STATS).
+inline std::atomic<std::uint64_t> tracker_faults_total{0};
 /// Writes the GPU side heard of from the writers (libc copies over watched pages, no write tracking).
 inline std::atomic<std::uint64_t> cpu_write_notes{0}, cpu_write_note_bytes{0};
 /// Ranges the game's GPU memory allocator handed out (guest hook, BB_GUEST_IN_PLACE).
@@ -182,6 +184,9 @@ inline std::atomic<std::uint64_t> sync_recording_ns{0}, host_copies_wait_ns{0}, 
 /// Wall time the frame preparation waited for the GPU to finish an earlier frame (BB_FRAMES_AHEAD):
 /// how GPU-bound the frames are (BB_FRAME_LOG).
 inline std::atomic<std::uint64_t> present_wait_ns{0};
+/// V7.3: Hardware GPU execution vs inter-submission idle gap nanoseconds (zero-RenderPass-break
+/// submission-boundary Vulkan timestamp queries, collected 7 frames behind without waiting).
+inline std::atomic<std::uint64_t> hw_gpu_busy_ns{0}, hw_gpu_gap_ns{0}, hw_gpu_frames{0};
 /// Frames shown (Presenter::PrepareFrame), and bytes the background pre-upload put into the arena.
 inline std::atomic<std::uint32_t> frame_number{0};
 inline std::atomic<std::uint64_t> preupload_bytes{0};

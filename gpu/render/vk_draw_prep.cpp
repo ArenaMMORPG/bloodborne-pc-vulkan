@@ -9,11 +9,13 @@
 
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
+#include "buffers/direct_buffers.h"
 #include "common/thread.h"
 #include "cp/command_processor.h"
 #include "cp/cp_packets.h"
 #include "render/vk_draw_prep.h"
 #include "render/gcn_to_vk.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 #include <xxhash.h>
 
 namespace Vulkan {
@@ -90,11 +92,16 @@ u32 DefaultWorkerCount() {
     if (const char* env = std::getenv("BB_PREP_WORKERS")) {
         return static_cast<u32>(std::clamp(std::atoi(env), 0, 16));
     }
-    // Workers are SCHED_IDLE and claim whole buffers, but more of them were slower: CPU-bound
-    // (docs/pipeline_4stage.ru.md, three interleaved runs each) 16 threads with 4 workers +5%
-    // over 8, 4 cores / 8 threads with 1 worker +4% over 4. A quarter of the hardware threads
-    // from 12 (16-thread desktop 4), else one (Steam Deck).
+    if (const char* env = std::getenv("BB_DRAW_PREP_WORKERS")) {
+        return static_cast<u32>(std::clamp(std::atoi(env), 0, 16));
+    }
     const u32 available = BbThreads::Available();
+    // V7.2: With LockMode::Decode (BB_SUBMIT_AHEAD = 2) and V4 prewarmed PSOs, at most 2
+    // submissions are ever ahead of the GPU thread at once; spawning 8 workers only created
+    // mutex contention and futex wakeups without additional parallelism.
+    if (gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_StageAFastConstAndPrep)) {
+        return available >= 8 ? std::min<u32>(available / 4, 2) : 1;
+    }
     return available >= 12 ? std::min<u32>(available / 4, 8) : 1;
 }
 
@@ -205,7 +212,9 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
         });
         buffers.push_back(buffer);
         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
-            ranges.push_back({buffer.base_address, buffer.base_address + buffer.GetSize()});
+            const u64 stream_size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+                buffer.base_address, buffer.GetSize());
+            ranges.push_back({buffer.base_address, buffer.base_address + stream_size});
         }
     }
     std::ranges::sort(ranges, {}, &PreparedVertexInputs::Range::base);
@@ -258,7 +267,8 @@ DrawPreparation::~DrawPreparation() {
     if (scanner.joinable()) {
         scanner.request_stop();
     }
-    cv.notify_all();
+    scanner_cv.notify_all();
+    worker_cv.notify_all();
     workers.clear();
     scanner = {};
 }
@@ -293,7 +303,9 @@ void DrawPreparation::Enqueue(u64 seq, std::shared_ptr<Submission> submission) {
     if (std::unique_lock lk{mutex, std::try_to_lock}; lk.owns_lock()) {
         TakeIntakeLocked();
     }
-    cv.notify_all();
+    // V7.2: Only the scanner can process unscanned intake submissions; waking all workers here
+    // caused a thundering herd on `mutex` where workers woke up only to see `scanned == false`.
+    scanner_cv.notify_one();
 }
 
 void DrawPreparation::TakeIntakeLocked() {
@@ -334,7 +346,8 @@ void DrawPreparation::BeginSubmission(u64 seq, const Gcn::Regs& regs, u64 reg_ch
         initial_checksum = tail_checksum = reg_checksum;
         baseline_seq = tail_seq = seq;
         baseline_ready = true;
-        cv.notify_all();
+        scanner_cv.notify_all();
+        worker_cv.notify_all();
     }
     // Idle helpers can starve on a busy CPU. Rather than queueing without bound, restart
     // them from the GPU thread's own state (one register copy) once the scanner lags.
@@ -348,7 +361,7 @@ void DrawPreparation::BeginSubmission(u64 seq, const Gcn::Regs& regs, u64 reg_ch
             submissions.pop_front();
         }
         ++rebases;
-        cv.notify_all();
+        scanner_cv.notify_one();
     }
 }
 
@@ -410,7 +423,7 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
     u64 next_seq = 0;
     {
         std::unique_lock lk{mutex};
-        cv.wait(lk, stop, [&] { return baseline_ready; });
+        scanner_cv.wait(lk, stop, [&] { return baseline_ready; });
         if (stop.stop_requested()) {
             return;
         }
@@ -423,9 +436,9 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
         std::shared_ptr<Submission> submission;
         {
             std::unique_lock lk{mutex};
-            // Woken by Enqueue (which tries `mutex` before notify), with a 150 us fallback when
+            // Woken by Enqueue (which tries `mutex` before notify), with a 500 us fallback when
             // `try_to_lock` raced with a helper releasing `mutex` into futex_wait.
-            while (!cv.wait_for(lk, stop, std::chrono::microseconds(150), [&] {
+            while (!scanner_cv.wait_for(lk, stop, std::chrono::microseconds(500), [&] {
                 TakeIntakeLocked();
                 return next_seq < tail_seq ||
                        (!submissions.empty() && submissions.back()->seq >= next_seq);
@@ -459,7 +472,8 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
             submission->scanned.store(true, std::memory_order_release);
         }
         ++next_seq;
-        cv.notify_all();
+        // V7.2: Exactly 1 submission became scanned -> wake 1 worker instead of a thundering herd.
+        worker_cv.notify_one();
     }
 }
 
@@ -491,22 +505,20 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
 
     while (!stop.stop_requested()) {
         std::shared_ptr<Submission> target;
+        bool more_claimable = false;
         {
             std::unique_lock lk{mutex};
             // gpu_seq moves without the lock: keep the candidate the predicate found.
-            while (!cv.wait_for(lk, stop, std::chrono::milliseconds(1), [&] {
+            worker_cv.wait(lk, stop, [&] {
                 TakeIntakeLocked();
                 target = baseline_ready ? claimable() : nullptr;
                 return target != nullptr;
-            })) {
-                if (stop.stop_requested()) {
-                    return;
-                }
-            }
+            });
             if (stop.stop_requested() || !target) {
                 return;
             }
             target->claimed.store(true, std::memory_order_relaxed);
+            more_claimable = (claimable() != nullptr);
             // Buffers between this worker's state and the target: their deltas. A position
             // already collected (or past the target) restarts from the queue's tail state.
             if (position == NoPosition || position < tail_seq || position > target->seq) {
@@ -518,6 +530,9 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
             for (u64 seq = position; seq < target->seq; ++seq) {
                 path.push_back(submissions[seq - front]);
             }
+        }
+        if (more_claimable) {
+            worker_cv.notify_one();
         }
         for (const auto& step : path) {
             step->delta.Apply(*regs);

@@ -872,7 +872,11 @@ struct HudAvgAccum {
     double b_state_pass_ms = 0.0;
     double b_tasks_ms = 0.0;
     double b_motion_hle_ms = 0.0;
+    double b_packet_misc_ms = 0.0;
     double gpu_wait_ms = 0.0;
+    double hw_gpu_busy_ms = 0.0;
+    double hw_gpu_gap_ms = 0.0;
+    std::uint64_t hw_gpu_frames = 0;
 
     void Reset() noexcept { *this = HudAvgAccum{}; }
 };
@@ -888,6 +892,8 @@ struct HudBreakdown {
     float dispatches_pf = 0.0f;
     float submits_pf = 0.0f;
     float drains_pf = 0.0f;
+    float faults_ps = 0.0f;
+    float eop_pf = 0.0f;
     // Stage 0: Game CPU / Gnm
     float idle_a_ms = 0.0f, avg_idle_a_ms = 0.0f;
     float gnm_wait_ms = 0.0f, avg_gnm_wait_ms = 0.0f;
@@ -906,12 +912,16 @@ struct HudBreakdown {
     float b_state_pass_ms = 0.0f, avg_b_state_pass_ms = 0.0f;
     float b_motion_hle_ms = 0.0f, avg_b_motion_hle_ms = 0.0f;
     float b_tasks_ms = 0.0f, avg_b_tasks_ms = 0.0f;
+    float b_packet_misc_ms = 0.0f, avg_b_packet_misc_ms = 0.0f;
     float b_flush_ms = 0.0f;
-    // Stage C: GPU / Sync Wait
+    // Stage C: GPU / Sync Wait + Hardware GPU Busy/Gap
     float gpu_present_ms = 0.0f;
     float sync_rec_ms = 0.0f;
     float host_copy_ms = 0.0f;
     float avg_gpu_wait_ms = 0.0f;
+    bool has_hw_gpu = false;
+    float hw_gpu_busy_ms = 0.0f, avg_hw_gpu_busy_ms = 0.0f;
+    float hw_gpu_gap_ms = 0.0f, avg_hw_gpu_gap_ms = 0.0f;
     // Bottleneck summary
     const char* bottleneck_ru = "Ожидание данных...";
     const char* bottleneck_en = "Collecting data...";
@@ -930,6 +940,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     static std::uint64_t last_idle_ns = 0, last_gnm_wait_ns = 0;
     static std::uint64_t last_present_ns = 0, last_sync_rec_ns = 0, last_host_copy_ns = 0;
     static std::uint64_t last_pipe_drains = 0, last_pipe_drain_cyc = 0, last_pipe_busy_cyc = 0;
+    static std::uint64_t last_faults = 0, last_eop = 0;
+    static std::uint64_t last_hw_busy_ns = 0, last_hw_gap_ns = 0, last_hw_frames = 0;
     static std::array<std::uint64_t, BbSections::Count> last_ca{}, last_cb{};
 
     const auto now = Clock::now();
@@ -954,6 +966,11 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         last_pipe_drains = BbSections::pipe_drains.load(std::memory_order_relaxed);
         last_pipe_drain_cyc = BbSections::pipe_drain_cycles.load(std::memory_order_relaxed);
         last_pipe_busy_cyc = BbSections::pipe_busy_cycles.load(std::memory_order_relaxed);
+        last_faults = BbStats::tracker_faults_total.load(std::memory_order_relaxed);
+        last_eop = BbStats::eop_decoded.load(std::memory_order_relaxed);
+        last_hw_busy_ns = BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
+        last_hw_gap_ns = BbStats::hw_gpu_gap_ns.load(std::memory_order_relaxed);
+        last_hw_frames = BbStats::hw_gpu_frames.load(std::memory_order_relaxed);
         for (std::size_t i = 0; i < BbSections::Count; ++i) {
             last_ca[i] = BbSections::cycles_a[i].load(std::memory_order_relaxed);
             last_cb[i] = BbSections::cycles_b[i].load(std::memory_order_relaxed);
@@ -992,6 +1009,15 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         BbSections::pipe_drain_cycles.load(std::memory_order_relaxed);
     const std::uint64_t cur_pipe_busy_cyc =
         BbSections::pipe_busy_cycles.load(std::memory_order_relaxed);
+    const std::uint64_t cur_faults =
+        BbStats::tracker_faults_total.load(std::memory_order_relaxed);
+    const std::uint64_t cur_eop = BbStats::eop_decoded.load(std::memory_order_relaxed);
+    const std::uint64_t cur_hw_busy_ns =
+        BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
+    const std::uint64_t cur_hw_gap_ns =
+        BbStats::hw_gpu_gap_ns.load(std::memory_order_relaxed);
+    const std::uint64_t cur_hw_frames =
+        BbStats::hw_gpu_frames.load(std::memory_order_relaxed);
 
     const auto safe_delta = [](std::uint64_t cur, std::uint64_t last) -> std::uint64_t {
         return cur >= last ? (cur - last) : cur;
@@ -1013,6 +1039,17 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     h.dispatches_pf = float(double(safe_delta(cur_dispatches, last_dispatches)) * inv_f);
     h.submits_pf = float(double(safe_delta(cur_submits, last_submits)) * inv_f);
     h.drains_pf = float(double(safe_delta(cur_pipe_drains, last_pipe_drains)) * inv_f);
+    h.faults_ps = float(double(safe_delta(cur_faults, last_faults)) / dt);
+    h.eop_pf = float(double(safe_delta(cur_eop, last_eop)) * inv_f);
+
+    const std::uint64_t d_hw_frames = safe_delta(cur_hw_frames, last_hw_frames);
+    if (d_hw_frames > 0) {
+        h.has_hw_gpu = true;
+        h.hw_gpu_busy_ms = float(double(safe_delta(cur_hw_busy_ns, last_hw_busy_ns)) * 1e-6 /
+                                 double(d_hw_frames));
+        h.hw_gpu_gap_ms =
+            float(double(safe_delta(cur_hw_gap_ns, last_hw_gap_ns)) * 1e-6 / double(d_hw_frames));
+    }
 
     h.idle_a_ms = ns_to_ms(safe_delta(cur_idle_ns, last_idle_ns));
     h.gnm_wait_ms = ns_to_ms(safe_delta(cur_gnm_wait_ns, last_gnm_wait_ns));
@@ -1048,6 +1085,9 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     h.b_motion_hle_ms = cyc_to_ms(dcb[BbSections::Motion] +
                                   dcb[BbSections::Preupload] + dcb[BbSections::DispatchRecord]);
     h.b_tasks_ms = std::max(0.0f, cyc_to_ms(dcb[BbSections::Task]) - h.gpu_present_ms);
+    h.b_packet_misc_ms =
+        std::max(0.0f, h.b_total_ms - (h.b_buffers_ms + h.b_tex_desc_ms + h.b_state_pass_ms +
+                                       h.b_tasks_ms + h.b_motion_hle_ms));
     h.b_flush_ms = cyc_to_ms(dcb[BbSections::Flush]);
     h.b_busy_pct =
         h.frame_ms > 0.01f ? std::clamp(100.0f * h.b_total_ms / h.frame_ms, 0.0f, 100.0f) : 0.0f;
@@ -1074,7 +1114,14 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         accum.b_state_pass_ms += double(h.b_state_pass_ms) * f_weight;
         accum.b_tasks_ms += double(h.b_tasks_ms) * f_weight;
         accum.b_motion_hle_ms += double(h.b_motion_hle_ms) * f_weight;
+        accum.b_packet_misc_ms += double(h.b_packet_misc_ms) * f_weight;
         accum.gpu_wait_ms += double(gpu_wait_now_ms) * f_weight;
+        if (d_hw_frames > 0) {
+            const double hw_weight = double(d_hw_frames);
+            accum.hw_gpu_frames += d_hw_frames;
+            accum.hw_gpu_busy_ms += double(h.hw_gpu_busy_ms) * hw_weight;
+            accum.hw_gpu_gap_ms += double(h.hw_gpu_gap_ms) * hw_weight;
+        }
     }
     if (accum.frames > 0 && accum.time_s > 0.0) {
         const double inv_af = 1.0 / double(accum.frames);
@@ -1093,7 +1140,16 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         h.avg_b_state_pass_ms = float(accum.b_state_pass_ms * inv_af);
         h.avg_b_tasks_ms = float(accum.b_tasks_ms * inv_af);
         h.avg_b_motion_hle_ms = float(accum.b_motion_hle_ms * inv_af);
+        h.avg_b_packet_misc_ms = float(accum.b_packet_misc_ms * inv_af);
         h.avg_gpu_wait_ms = float(accum.gpu_wait_ms * inv_af);
+        if (accum.hw_gpu_frames > 0) {
+            const double inv_hw = 1.0 / double(accum.hw_gpu_frames);
+            h.avg_hw_gpu_busy_ms = float(accum.hw_gpu_busy_ms * inv_hw);
+            h.avg_hw_gpu_gap_ms = float(accum.hw_gpu_gap_ms * inv_hw);
+        } else {
+            h.avg_hw_gpu_busy_ms = h.hw_gpu_busy_ms;
+            h.avg_hw_gpu_gap_ms = h.hw_gpu_gap_ms;
+        }
     } else {
         h.has_avg = false;
         h.avg_fps = h.fps;
@@ -1110,7 +1166,10 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         h.avg_b_state_pass_ms = h.b_state_pass_ms;
         h.avg_b_tasks_ms = h.b_tasks_ms;
         h.avg_b_motion_hle_ms = h.b_motion_hle_ms;
+        h.avg_b_packet_misc_ms = h.b_packet_misc_ms;
         h.avg_gpu_wait_ms = gpu_wait_now_ms;
+        h.avg_hw_gpu_busy_ms = h.hw_gpu_busy_ms;
+        h.avg_hw_gpu_gap_ms = h.hw_gpu_gap_ms;
     }
 
     // Determine primary bottleneck across parallel stages:
@@ -1194,6 +1253,13 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     last_pipe_drains = cur_pipe_drains;
     last_pipe_drain_cyc = cur_pipe_drain_cyc;
     last_pipe_busy_cyc = cur_pipe_busy_cyc;
+    last_faults = cur_faults;
+    last_eop = cur_eop;
+    if (d_hw_frames > 0) {
+        last_hw_busy_ns = cur_hw_busy_ns;
+        last_hw_gap_ns = cur_hw_gap_ns;
+        last_hw_frames = cur_hw_frames;
+    }
 
     if (std::chrono::duration<double>(now - last_file_dump).count() >= 1.0) {
         last_file_dump = now;
@@ -1201,25 +1267,28 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             const auto& s = BbSettings::Get();
             const auto out = BbSettings::CurrentOutput();
             std::fprintf(f,
-                         "FPS: %.1f (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
-                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f\n"
+                         "FPS: %.1f (%.2f ms/f) | Avg: %.1f FPS (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
+                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f\n"
                          "1. Game CPU / Gnm: IdleA %.2f ms | GnmWait %.2f ms\n"
                          "2. Stage A (GpuComm): PM4+Pipe %.2f ms | ConstRing %.2f ms | WaitDrainB %.2f ms (FlushA %.2f ms)\n"
-                         "3. Stage B (DrawRec): Total %.2f ms | Buffers %.2f ms (Obtain %.2f, VRAM %.2f) | Tex+Desc %.2f ms | State+Pass %.2f ms | Tasks %.2f ms (FlushB %.2f) | Motion+HLE %.2f ms\n"
-                         "4. GPU / Sync: Present %.2f ms | SyncRec %.2f ms | HostCopy %.2f ms\n"
+                         "3. Stage B (DrawRec): Total %.2f ms | Buffers %.2f ms (Obtain %.2f, VRAM %.2f) | Tex+Desc %.2f ms | State+Pass %.2f ms | Tasks %.2f ms (FlushB %.2f) | Motion+HLE %.2f ms | Packet+Regs %.2f ms\n"
+                         "4. GPU / Sync: Present %.2f ms | SyncRec %.2f ms | HostCopy %.2f ms | HwGpuBusy %.2f ms | HwGpuGap %.2f ms\n"
                          "BOTTLENECK: %s (%.2f ms/f)\n",
-                         h.fps, h.frame_ms, s.active_render_width.load(),
-                         s.active_render_height.load(), out.width, out.height,
+                         h.fps, h.frame_ms, h.avg_fps, h.avg_frame_ms,
+                         s.active_render_width.load(), s.active_render_height.load(),
+                         out.width, out.height,
                          BbSettings::UpscalerName(s.upscaler),
                          BbSettings::PresetName(BbSettings::RenderPreset()),
                          BbSettings::ResolutionNeedsRestart() ? " [NEEDS RESTART]" : "",
                          h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf,
+                         h.faults_ps, h.eop_pf,
                          h.idle_a_ms, h.gnm_wait_ms,
                          h.a_pm4_pipe_ms, h.a_ring_ms, h.a_drain_ms, h.a_flush_ms,
                          h.b_total_ms, h.b_buffers_ms, h.b_obtain_ms, h.b_vram_ms,
                          h.b_tex_desc_ms, h.b_state_pass_ms, h.b_tasks_ms, h.b_flush_ms,
-                         h.b_motion_hle_ms,
+                         h.b_motion_hle_ms, h.b_packet_misc_ms,
                          h.gpu_present_ms, h.sync_rec_ms, h.host_copy_ms,
+                         h.hw_gpu_busy_ms, h.hw_gpu_gap_ms,
                          h.bottleneck_en, h.bottleneck_ms);
             std::fclose(f);
         }
@@ -1267,8 +1336,8 @@ void FpsCounter() {
                            now_fps, now_ms, upscaler_str);
     }
     ImGui::TextDisabled(
-        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V5.2%s",
-                             "Сцена: %dx%d -> %dx%d | RHI V1-V5.2%s"),
+        BbSettings::MenuText("Scene: %dx%d -> %dx%d | RHI V1-V7%s",
+                             "Сцена: %dx%d -> %dx%d | RHI V1-V7%s"),
         rw, rh, out.width, out.height,
         BbSettings::ResolutionNeedsRestart()
             ? BbSettings::MenuText(" (restart!)", " (перезапуск!)")
@@ -1277,13 +1346,21 @@ void FpsCounter() {
         BbSettings::MenuText("Draws: %.0f | Disp: %.0f | Subm: %.0f | B busy: %.0f%%",
                              "Draws: %.0f | Disp: %.0f | Subm: %.0f | B занят: %.0f%%"),
         h.draws_pf, h.dispatches_pf, h.submits_pf, h.b_busy_pct);
+    const ImVec4 health_col = (h.faults_ps < 10.0f && h.eop_pf < 5.0f)
+                                  ? ImVec4(0.55f, 0.88f, 0.62f, 1.0f)
+                                  : ImVec4(1.0f, 0.72f, 0.38f, 1.0f);
+    ImGui::TextColored(
+        health_col,
+        BbSettings::MenuText("WriteFaults: %.0f/s | Legacy EoP: %.1f/f",
+                             "SIGSEGV-фолты: %.0f/с | Legacy EoP: %.1f/к"),
+        h.faults_ps, h.eop_pf);
 
     ImGui::Separator();
     if (ImGui::BeginTable("##hud_breakdown", 3,
                           ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V5.2)", "Этап (V1-V5.2)"));
+        ImGui::TextDisabled("%s", BbSettings::MenuText("Stage (V1-V7)", "Этап (V1-V7)"));
         ImGui::TableSetColumnIndex(1);
         ImGui::TextDisabled("%s", BbSettings::MenuText("   Now", "Сейчас"));
         ImGui::TableSetColumnIndex(2);
@@ -1337,15 +1414,24 @@ void FpsCounter() {
             h.avg_b_state_pass_ms);
         row("  Tasks / Fences / Copy (V1)", "  Задачи / Fences / Copy (V1)", h.b_tasks_ms,
             h.avg_b_tasks_ms);
-        if (h.b_motion_hle_ms >= 0.05f || h.avg_b_motion_hle_ms >= 0.05f) {
+        if (h.b_motion_hle_ms >= 0.02f || h.avg_b_motion_hle_ms >= 0.02f) {
             row("  Motion + Compute HLE", "  Motion + Compute HLE", h.b_motion_hle_ms,
                 h.avg_b_motion_hle_ms);
         }
+        row("  Packet + Regs + CmdPush", "  Пакет + Регистры + Стрим", h.b_packet_misc_ms,
+            h.avg_b_packet_misc_ms);
 
-        // 4. GPU / Sync
+        // 4. GPU / Sync + Hardware GPU Timestamps
         row("4. GPU Present / Sync", "4. Ожидание GPU / Синхр.",
             h.gpu_present_ms + h.sync_rec_ms + h.host_copy_ms, h.avg_gpu_wait_ms,
             h.bottleneck_kind == 0);
+        if (h.has_hw_gpu) {
+            row("  HW GPU Busy (Shaders)", "  Чистая работа GPU (Шейдеры)", h.hw_gpu_busy_ms,
+                h.avg_hw_gpu_busy_ms,
+                h.bottleneck_kind == 0 && h.hw_gpu_busy_ms >= h.b_total_ms);
+            row("  HW GPU Mid-Frame Gap", "  Паузы GPU между батчами", h.hw_gpu_gap_ms,
+                h.avg_hw_gpu_gap_ms);
+        }
 
         ImGui::EndTable();
     }

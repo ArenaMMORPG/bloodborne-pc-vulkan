@@ -201,6 +201,10 @@ public:
     /// The GPU wrote the memory of the image starting at `address` as a buffer.
     /// GPU buffer write: refresh images starting here and wholly covered by max_size.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
+    /// Lock-free check whether any registered image page overlaps [addr, addr + size).
+    [[nodiscard]] bool HasActiveImagePages(VAddr addr, size_t size) const noexcept {
+        return size != 0 && registry.AnyPageActive(addr, size);
+    }
     /// The range was unmapped: its images go.
     void UnmapMemory(VAddr cpu_addr, size_t size);
     /// Writes back the images queued for it (BB_READBACK_LINEAR_IMAGES).

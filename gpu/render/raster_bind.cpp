@@ -576,7 +576,9 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         VertexInputs<Range> streams;
         for (const auto& buffer : guest_buffers) {
             if (buffer.base_address != 0 && buffer.GetSize() > 0) {
-                streams.push_back({buffer.base_address, buffer.base_address + buffer.GetSize()});
+                const u64 stream_size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+                    buffer.base_address, buffer.GetSize());
+                streams.push_back({buffer.base_address, buffer.base_address + stream_size});
             }
         }
         std::ranges::sort(streams, {}, &Range::begin);
@@ -589,7 +591,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         }
     }
     for (auto& range : ranges) {
-        const u64 size = memory->ClampRangeSize(range.begin, range.end - range.begin);
+        const u64 size = VideoCore::DirectBuffers::ClampTransientCueReadSize(
+            range.begin, memory->ClampRangeSize(range.begin, range.end - range.begin));
         if (HasPendingHleCopies() && PendingHleCopiesConflict(range.begin, size)) {
             FlushPendingHleCopies(*this);
         }
@@ -669,7 +672,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             v.host_buffers.push_back(VK_NULL_HANDLE);
             v.host_offsets.push_back(0);
         }
-        v.host_sizes.push_back(buffer.GetSize());
+        v.host_sizes.push_back(VideoCore::DirectBuffers::ClampTransientCueReadSize(
+            buffer.base_address, buffer.GetSize()));
         v.host_strides.push_back(buffer.GetStride());
     }
     v.num_buffers = static_cast<u32>(guest_buffers.size());
@@ -957,11 +961,15 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         needs_barrier |= runtime.IsGlobalAccessed(desc.is_written);
         return;
     }
-    const u64 size = memory->ClampRangeSize(address, vsharp.GetSize());
-    if (size != vsharp.GetSize()) {
-        LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(), size,
-                  stage.pgm_hash);
+    const u64 clamped_mem_size = memory->ClampRangeSize(address, vsharp.GetSize());
+    if (clamped_mem_size != vsharp.GetSize()) {
+        LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
+                  clamped_mem_size, stage.pgm_hash);
     }
+    const u64 size = desc.is_written
+                         ? clamped_mem_size
+                         : VideoCore::DirectBuffers::ClampTransientCueReadSize(address,
+                                                                               clamped_mem_size);
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
         FlushPendingHleCopies(*this);
     }

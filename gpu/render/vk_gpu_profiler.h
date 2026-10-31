@@ -56,6 +56,10 @@ public:
     void BeginFrame();
     static void OnFrame();
 
+    /// V7.3: Zero-RenderPass-break submission-boundary GPU busy/gap meter for the HUD.
+    static void HudBeginSubmission(const Scheduler* sched);
+    static void HudEndSubmission(const Scheduler* sched, u64 tick, bool is_frame_end);
+
 private:
     GpuProfiler(const Instance& instance, Scheduler& scheduler);
     void StartCapture();
@@ -63,22 +67,35 @@ private:
     void WriteTimestamp(u64 key);
     void Collect(u32 slice);
     void Print(bool to_file = false);
+    [[nodiscard]] bool TryCollectHudSlice(u32 s);
 
     static constexpr u32 NumSlices = 4;
     static constexpr u32 SliceQueries = 4096;
+    static constexpr u32 HudSlices = 8;
+    static constexpr u32 HudSliceQueries = 128;
     static inline GpuProfiler* instance_ptr = nullptr;
     static inline GpuProfiler* stored_ptr = nullptr;
     bool permanent = false;
+    bool hud_enabled = false;
     u64 seen_frames = 0;
 
     vk::Device device;
     Scheduler& scheduler;
     vk::UniqueQueryPool pool;
+    vk::UniqueQueryPool hud_pool;
     double period_ns = 1.0;
     u32 slice = 0;
     std::array<std::vector<u64>, NumSlices> keys; ///< label of each timestamp but the last
     std::array<u32, NumSlices> used{};
     std::array<bool, NumSlices> pending{};
+    u32 hud_slice = 0;
+    bool hud_subm_open = false;
+    bool hud_slice_blocked = false;
+    bool hud_has_prev_end = false;
+    u64 hud_prev_end_stamp = 0;
+    std::array<u32, HudSlices> hud_used{};
+    std::array<u64, HudSlices> hud_last_tick{};
+    std::array<bool, HudSlices> hud_pending{};
     std::unordered_map<u64, std::string> described;
     struct Total {
         double ms = 0;

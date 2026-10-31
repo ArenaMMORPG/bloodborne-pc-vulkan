@@ -172,6 +172,20 @@ public:
     [[nodiscard]] std::pair<const Buffer*, u64> StageTransientHostBatch(
         std::span<const TransientHostSlice> slices, u64 total_bytes);
 
+    /// V7.2: Renames small in-RenderPass transient `cueHeap -> dst_va` copies into `stream_buffer`
+    /// without calling `scheduler.EndRendering()`, serving in-pass `ObtainBuffer(dst_va, ...)`
+    /// reads from `stream_buffer` and coalescing the physical `arena` writeback at `EndRendering()`.
+    struct InPassCopySlice {
+        VAddr src_va;
+        VAddr dst_va;
+        u32 byte_size;
+        u32 rel_offset;
+    };
+    [[nodiscard]] bool StageInPassCueCopies(std::span<const InPassCopySlice> slices,
+                                            u64 total_bytes);
+    void FlushInPassShadows();
+    [[nodiscard]] bool OverlapsInPassShadow(VAddr addr, u64 size) const noexcept;
+
     /// bbport BB_GUEST_IN_PLACE: where a command processor write (WRITE_DATA) the GPU performs in
     /// stream order lands: the arena over the game's memory, if the range is bound there in place.
     /// Not counted as a GPU write of the block (those move blocks to VRAM): it is CPU data, as a PC
@@ -376,6 +390,13 @@ private:
     std::unique_ptr<StreamBuffer> shadow_buffer;
     std::vector<Shadow> shadows; ///< this submission's copies
     u64 shadow_tick = 0;
+    struct InPassShadow {
+        VAddr dst_va;
+        u32 size;
+        u32 pad;
+        u64 stream_off;
+    };
+    std::vector<InPassShadow> inpass_shadows;
     /// BB_TRACE_SIZE=bytes (diagnostics): bindings over GPU-written buffers of that size, counted by
     /// the path they take, reported every 5 s.
     void TraceBinding(VAddr addr, u64 size, bool is_written, int kind);

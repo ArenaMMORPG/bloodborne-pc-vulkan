@@ -18,6 +18,10 @@
 #include "memory/page_lock.h"
 #include "memory/page_watch.h"
 
+namespace VideoCore::DirectBuffers {
+bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
+}
+
 namespace BbMem {
 
 enum class Side { Cpu, Gpu };
@@ -123,6 +127,17 @@ public:
         }
         const RegionPages mask(bits, first, last);
         if constexpr (clear) {
+            if constexpr (side == Side::Cpu) {
+                // V7.1: Never arm PageWatch (mprotect PROT_READ) on the transient CPU->GPU
+                // cueHeap staging/dynamic ring; keep pages permanently writable (0 SIGSEGV).
+                if (VideoCore::DirectBuffers::IsTransientCueHeap(
+                        base + first * PageSize, (last - first) * PageSize)) {
+                    for (const auto& [start, end] : mask) {
+                        func(base + start * PageSize, (end - start) * PageSize);
+                    }
+                    return;
+                }
+            }
             bits.UnsetRange(first, last);
             if constexpr (side == Side::Cpu) {
                 KeepHotPagesModified(first, last);
@@ -213,6 +228,7 @@ private:
                 continue; // not watched: no fault
             }
             BbStats::tracker_faults.fetch_add(1, std::memory_order_relaxed);
+            BbStats::tracker_faults_total.fetch_add(1, std::memory_order_relaxed);
             if (!hot_enabled) {
                 continue;
             }
@@ -302,6 +318,12 @@ public:
     void MarkRegionAsCpuModified(VAddr address, u64 size) {
         Locked(address, size, [](Region& r, VAddr at, u64 bytes) {
             r.Change<Side::Cpu, true>(at, bytes);
+        });
+    }
+    void MarkRegionAsGpuModified(VAddr address, u64 size) {
+        ForEachRegion<true>(address, size, [](Region& r, u64 offset, u64 bytes) {
+            std::scoped_lock lk{r.lock};
+            r.Change<Side::Gpu, true>(r.Base() + offset, bytes);
         });
     }
     void UnmarkRegionAsGpuModified(VAddr address, u64 size) {

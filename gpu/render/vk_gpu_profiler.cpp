@@ -8,6 +8,7 @@
 #include "render/vk_gpu_profiler.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
 
@@ -102,7 +103,116 @@ GpuProfiler::GpuProfiler(const Instance& instance, Scheduler& scheduler_)
     for (auto& k : keys) {
         k.reserve(SliceQueries);
     }
+    hud_enabled = gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_HudFullBreakdown);
+    if (hud_enabled) {
+        const vk::QueryPoolCreateInfo hud_info = {
+            .queryType = vk::QueryType::eTimestamp,
+            .queryCount = HudSlices * HudSliceQueries,
+        };
+        hud_pool = Check<"create HUD timestamp query pool">(device.createQueryPoolUnique(hud_info));
+        device.resetQueryPool(*hud_pool, 0, HudSlices * HudSliceQueries);
+        const u32 query = hud_slice * HudSliceQueries + hud_used[hud_slice]++;
+        hud_subm_open = true;
+        scheduler.Record([pool_h = *hud_pool, query](vk::CommandBuffer cmdbuf) {
+            cmdbuf.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, pool_h, query);
+        });
+    }
     std::printf("GPU profile: on (timestamp period %.2f ns)\n", period_ns);
+}
+
+bool GpuProfiler::TryCollectHudSlice(u32 s) {
+    if (!hud_pending[s]) {
+        return true;
+    }
+    if (!scheduler.IsFree(hud_last_tick[s])) {
+        return false;
+    }
+    const u32 raw_used = hud_used[s];
+    const u32 count = raw_used & ~1u;
+    if (count >= 2) {
+        std::array<u64, HudSliceQueries> stamps{};
+        const auto res = device.getQueryPoolResults(
+            *hud_pool, s * HudSliceQueries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
+            vk::QueryResultFlagBits::e64);
+        if (res == vk::Result::eSuccess) {
+            double busy_ns = 0.0;
+            double gap_ns = 0.0;
+            if (hud_has_prev_end && stamps[0] > hud_prev_end_stamp) {
+                const double cross_ns = double(stamps[0] - hud_prev_end_stamp) * period_ns;
+                if (cross_ns < 2e8) {
+                    gap_ns += cross_ns;
+                }
+            }
+            for (u32 i = 0; i + 1 < count; i += 2) {
+                if (stamps[i + 1] > stamps[i]) {
+                    busy_ns += double(stamps[i + 1] - stamps[i]) * period_ns;
+                }
+                if (i + 2 < count && stamps[i + 2] > stamps[i + 1]) {
+                    gap_ns += double(stamps[i + 2] - stamps[i + 1]) * period_ns;
+                }
+            }
+            hud_prev_end_stamp = stamps[count - 1];
+            hud_has_prev_end = true;
+            BbStats::hw_gpu_busy_ns.fetch_add(static_cast<u64>(busy_ns), std::memory_order_relaxed);
+            BbStats::hw_gpu_gap_ns.fetch_add(static_cast<u64>(gap_ns), std::memory_order_relaxed);
+            BbStats::hw_gpu_frames.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (raw_used > 0) {
+        device.resetQueryPool(*hud_pool, s * HudSliceQueries, raw_used);
+    }
+    hud_used[s] = 0;
+    hud_pending[s] = false;
+    return true;
+}
+
+void GpuProfiler::HudBeginSubmission(const Scheduler* sched) {
+    auto* self = stored_ptr;
+    if (!self || !self->hud_enabled || !self->Records(sched)) {
+        return;
+    }
+    if (self->hud_slice_blocked) {
+        if (!self->TryCollectHudSlice(self->hud_slice)) {
+            return;
+        }
+        self->hud_slice_blocked = false;
+    }
+    if (!self->hud_subm_open && self->hud_used[self->hud_slice] + 2 <= HudSliceQueries) {
+        const u32 query = self->hud_slice * HudSliceQueries + self->hud_used[self->hud_slice]++;
+        self->hud_subm_open = true;
+        self->scheduler.Record([pool_h = *self->hud_pool, query](vk::CommandBuffer cmdbuf) {
+            cmdbuf.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, pool_h, query);
+        });
+    }
+}
+
+void GpuProfiler::HudEndSubmission(const Scheduler* sched, u64 tick, bool is_frame_end) {
+    auto* self = stored_ptr;
+    if (!self || !self->hud_enabled || !self->Records(sched)) {
+        return;
+    }
+    if (self->hud_subm_open) {
+        const u32 query = self->hud_slice * HudSliceQueries + self->hud_used[self->hud_slice]++;
+        self->hud_subm_open = false;
+        self->hud_last_tick[self->hud_slice] = tick;
+        self->scheduler.Record([pool_h = *self->hud_pool, query](vk::CommandBuffer cmdbuf) {
+            cmdbuf.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, pool_h, query);
+        });
+    }
+    if (!is_frame_end) {
+        return;
+    }
+    if (self->hud_used[self->hud_slice] >= 2) {
+        self->hud_pending[self->hud_slice] = true;
+        self->hud_slice = (self->hud_slice + 1) % HudSlices;
+        if (self->hud_pending[self->hud_slice] && !self->TryCollectHudSlice(self->hud_slice)) {
+            self->hud_slice_blocked = true;
+        }
+    } else if (self->hud_slice_blocked && self->hud_pending[self->hud_slice]) {
+        if (self->TryCollectHudSlice(self->hud_slice)) {
+            self->hud_slice_blocked = false;
+        }
+    }
 }
 
 void GpuProfiler::WriteTimestamp(u64 key) {

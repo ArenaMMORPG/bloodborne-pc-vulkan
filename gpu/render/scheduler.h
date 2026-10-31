@@ -134,6 +134,14 @@ public:
 
     /// Closes the open render pass, if any.
     [[gnu::noinline]] void EndRendering();
+    using EndRenderingFunc = void (*)(void*);
+    void SetEndRenderingCallback(EndRenderingFunc fn, void* ctx) noexcept {
+        on_end_rendering = fn;
+        on_end_rendering_ctx = ctx;
+    }
+    void NoteEndRenderingWork() noexcept {
+        has_end_rendering_work = true;
+    }
     /// BB_PASS_BREAK_TRACE=1 (diagnostics): who ended a render pass that began again with the same
     /// state (a break: its attachments stored and loaded again), every 5 s.
     static void TracePassBreak(void* caller);
@@ -355,7 +363,7 @@ public:
     /// Runs `signal` once the guest memory copies issued so far are done, without
     /// waiting here: the recording thread reaches it after the copies queued before it and hands
     /// it to the copy threads' completion (BbCopy::AfterCopies).
-    void SignalAfterHostCopies(std::function<void()> signal);
+    void SignalAfterHostCopies(std::function<void()> signal, bool force_kick = true);
 
     /// Before a guest-visible write that is not deferred (WriteData, end-of-shader
     /// fences, flip): waits until every signal handed to SignalAfterHostCopies ran, so that
@@ -564,6 +572,9 @@ private:
     CommandPool command_pool;
     DynamicState dynamic_state;
     SubmitFunc on_submit{};
+    EndRenderingFunc on_end_rendering = nullptr;
+    void* on_end_rendering_ctx = nullptr;
+    bool has_end_rendering_work = false;
     vk::CommandBuffer current_cmdbuf;
     struct PendingOp {
         Common::UniqueFunction<void> callback;

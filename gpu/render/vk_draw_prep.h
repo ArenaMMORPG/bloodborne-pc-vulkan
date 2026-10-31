@@ -155,7 +155,8 @@ private:
     /// submit thread hands buffers over through `intake`, the GPU thread finds its buffer in
     /// `recent` and only tries `mutex` for collecting and rebasing.
     std::mutex mutex;
-    std::condition_variable_any cv;
+    std::condition_variable_any scanner_cv;
+    std::condition_variable_any worker_cv;
     std::deque<std::shared_ptr<Submission>> submissions; ///< ordered by seq
     /// Short critical sections only (a push, a move, a lookup): `intake` (buffers not yet in
     /// `submissions`) and `recent` (by seq: the GPU thread's lookup, cleared once it is done).

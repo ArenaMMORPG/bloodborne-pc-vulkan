@@ -132,6 +132,65 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         return a_off < (b_off + b_sz) && b_off < (a_off + a_sz);
     };
 
+    // V7.2: While inside an active RenderPass (e.g. 2560x1440 6-MRT G-Buffer or Lighting),
+    // rename small (<= 64 KiB) transient `cueHeap -> dst_va` UpdateSubresource buffer copies into
+    // `stream_buffer` without calling `scheduler.EndRendering()`, coalescing the `arena` writeback
+    // once when the RenderPass naturally ends.
+    static const bool v7_inpass_rename =
+        gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_StageAFastConstAndPrep);
+    if (v7_inpass_rename && scheduler.IsRendering() && !VideoCore::GuestInPlace() &&
+        !VideoCore::BufferCache::LayerActive()) {
+        static thread_local std::vector<VideoCore::BufferCache::InPassCopySlice> inpass_slices;
+        inpass_slices.clear();
+        u64 total_inpass_bytes = 0;
+        bool all_eligible = true;
+        for (size_t idx = 0; idx < regions.size(); ++idx) {
+            const auto& reg = regions[idx];
+            if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
+                continue;
+            }
+            if (reg.byte_size > 64_KB ||
+                !VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
+                buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
+                texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
+                texture_cache.IsMeta(reg.dst_va)) {
+                all_eligible = false;
+                break;
+            }
+            for (size_t prev = 0; prev < idx; ++prev) {
+                const auto& pr = regions[prev];
+                if (pr.dst_va && pr.byte_size != 0 &&
+                    ranges_overlap(reg.src_va, reg.byte_size, pr.dst_va, pr.byte_size)) {
+                    all_eligible = false;
+                    break;
+                }
+            }
+            if (!all_eligible) {
+                break;
+            }
+            const u64 aligned_off = (total_inpass_bytes + 15ULL) & ~15ULL;
+            if (aligned_off + reg.byte_size > 512_KB) {
+                all_eligible = false;
+                break;
+            }
+            inpass_slices.push_back(VideoCore::BufferCache::InPassCopySlice{
+                .src_va = reg.src_va,
+                .dst_va = reg.dst_va,
+                .byte_size = reg.byte_size,
+                .rel_offset = static_cast<u32>(aligned_off),
+            });
+            total_inpass_bytes = aligned_off + reg.byte_size;
+        }
+        if (all_eligible && !inpass_slices.empty()) {
+            for (const auto& s : inpass_slices) {
+                direct_buffers.OnGpuWrite(s.dst_va, s.byte_size);
+            }
+            if (buffer_cache.StageInPassCueCopies(inpass_slices, total_inpass_bytes)) {
+                return;
+            }
+        }
+    }
+
     static thread_local std::vector<VideoCore::BufferCache::TransientHostSlice> transient_slices;
     static thread_local std::vector<s32> transient_index_by_reg;
     transient_slices.clear();

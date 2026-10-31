@@ -120,6 +120,23 @@ void PushEvent(const Event& ev) {
     return a_start < b_end && b_start < a_end;
 }
 
+// V7.1: Lock-free 4 KiB page directory over the up-to-512 MiB transient cueHeap (131,072 x 4B = 512 KiB).
+// Stores the relative byte offset (from g_cue_heap_base) of the end of the highest live
+// CGGpuFreeListAllocatorGnm block covering each 4 KiB page, allowing O(1) lock-free bounding of
+// 0xFFFFFFFF unbounded V# shader/vertex descriptors inside cueHeap instead of clamping to 480+ MiB.
+constexpr u64 kMaxCueHeapBytes = 512ULL << 20;
+constexpr u32 kCuePageShift = 12u;
+constexpr u64 kCuePageSize = 1ULL << kCuePageShift;
+constexpr size_t kMaxCueHeapPages = static_cast<size_t>(kMaxCueHeapBytes >> kCuePageShift);
+std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_end_rel{};
+
+inline void AtomicMaxU32(std::atomic<u32>& cell, u32 val) noexcept {
+    u32 cur = cell.load(std::memory_order_relaxed);
+    while (cur < val && !cell.compare_exchange_weak(cur, val, std::memory_order_release,
+                                                    std::memory_order_relaxed)) {
+    }
+}
+
 } // namespace
 
 void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
@@ -183,6 +200,123 @@ void NoteTransientCueHeapGpuWrite(VAddr addr, u64 byte_size) noexcept {
 
 bool IsCueHeapEverGpuModified() noexcept {
     return g_cue_heap_gpu_modified.load(std::memory_order_acquire);
+}
+
+void NoteTransientCueHeapAlloc(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0) {
+        return;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    if (addr < base || addr >= end) {
+        return;
+    }
+    const u64 max_span = std::min<u64>(end - base, kMaxCueHeapBytes);
+    const u64 rel_start64 = addr - base;
+    if (rel_start64 >= max_span) {
+        return;
+    }
+    const u64 rel_end64 = std::min<u64>(rel_start64 + byte_size, max_span);
+    if (rel_end64 <= rel_start64) {
+        return;
+    }
+    const u32 rel_start = static_cast<u32>(rel_start64);
+    const u32 rel_end = static_cast<u32>(rel_end64);
+    const size_t first_p = static_cast<size_t>(rel_start >> kCuePageShift);
+    const size_t last_p = static_cast<size_t>((rel_end - 1u) >> kCuePageShift);
+    if (first_p == last_p) {
+        if ((rel_start & (kCuePageSize - 1u)) == 0u && (rel_end & (kCuePageSize - 1u)) == 0u) {
+            g_cue_page_end_rel[first_p].store(rel_end, std::memory_order_release);
+        } else {
+            AtomicMaxU32(g_cue_page_end_rel[first_p], rel_end);
+        }
+        return;
+    }
+    if ((rel_start & (kCuePageSize - 1u)) == 0u) {
+        g_cue_page_end_rel[first_p].store(rel_end, std::memory_order_release);
+    } else {
+        AtomicMaxU32(g_cue_page_end_rel[first_p], rel_end);
+    }
+    for (size_t p = first_p + 1u; p < last_p; ++p) {
+        g_cue_page_end_rel[p].store(rel_end, std::memory_order_release);
+    }
+    if ((rel_end & (kCuePageSize - 1u)) == 0u) {
+        g_cue_page_end_rel[last_p].store(rel_end, std::memory_order_release);
+    } else {
+        AtomicMaxU32(g_cue_page_end_rel[last_p], rel_end);
+    }
+}
+
+void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0) {
+        return;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    if (addr < base || addr >= end) {
+        return;
+    }
+    const u64 max_span = std::min<u64>(end - base, kMaxCueHeapBytes);
+    const u64 rel_start64 = addr - base;
+    if (rel_start64 >= max_span) {
+        return;
+    }
+    const u64 rel_end64 = std::min<u64>(rel_start64 + byte_size, max_span);
+    if (rel_end64 <= rel_start64) {
+        return;
+    }
+    const u32 rel_start = static_cast<u32>(rel_start64);
+    const u32 rel_end = static_cast<u32>(rel_end64);
+    const u64 full_begin = (rel_start64 + kCuePageSize - 1ULL) & ~(kCuePageSize - 1ULL);
+    const u64 full_end = rel_end64 & ~(kCuePageSize - 1ULL);
+    if (full_begin < full_end) {
+        const size_t p_begin = static_cast<size_t>(full_begin >> kCuePageShift);
+        const size_t p_end = static_cast<size_t>(full_end >> kCuePageShift);
+        for (size_t p = p_begin; p < p_end; ++p) {
+            g_cue_page_end_rel[p].store(0u, std::memory_order_release);
+        }
+    }
+    if ((rel_start & (kCuePageSize - 1u)) != 0u && rel_end64 >= full_begin) {
+        const size_t head_p = static_cast<size_t>(rel_start >> kCuePageShift);
+        u32 expected = rel_end;
+        g_cue_page_end_rel[head_p].compare_exchange_strong(
+            expected, rel_start, std::memory_order_release, std::memory_order_relaxed);
+    }
+}
+
+u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept {
+    static const bool enabled =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging) &&
+        gx_direct_vk::EnabledV7Sub(gx_direct_vk::kV7Sub_BoundedCueAndQueries);
+    if (!enabled || requested_size == 0) {
+        return requested_size;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return requested_size;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    if (addr < base || addr >= end) {
+        return requested_size;
+    }
+    const u64 heap_rem = end - addr;
+    u64 clamped = std::min<u64>(requested_size, heap_rem);
+    const u64 rel = addr - base;
+    if (rel < kMaxCueHeapBytes) {
+        const u32 end_rel =
+            g_cue_page_end_rel[static_cast<size_t>(rel >> kCuePageShift)].load(
+                std::memory_order_acquire);
+        if (end_rel > rel) {
+            clamped = std::min<u64>(clamped, static_cast<u64>(end_rel) - rel);
+        }
+    }
+    return clamped;
 }
 
 void DrainEvents(std::vector<Event>& out) {
@@ -463,6 +597,7 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    VideoCore::DirectBuffers::NoteTransientCueHeapAlloc(addr, byte_size);
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->NoteFreshRange(addr, byte_size);
     }
@@ -523,6 +658,7 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    VideoCore::DirectBuffers::NoteTransientCueHeapFree(addr, byte_size);
     if (!VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
         return;
     }

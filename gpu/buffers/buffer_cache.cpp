@@ -589,6 +589,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
       memory_semaphore{instance} {
     integrated_gpu = instance.IsIntegrated();
+    scheduler.SetEndRenderingCallback(
+        +[](void* ctx) { static_cast<BufferCache*>(ctx)->FlushInPassShadows(); }, this);
     // bbport: the PC memory model needs the game's direct memory in dma-buf chunks the runtime can
     // map at any offset (BbGuestMemory::Usable), and an AMD GPU for now (PcModelGpu). Without
     // them it is off, as BB_GUEST_IN_PLACE=0.
@@ -679,6 +681,9 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
 BufferCache::~BufferCache() = default;
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
+    if (!inpass_shadows.empty() && OverlapsInPassShadow(device_addr, size)) {
+        FlushInPassShadows();
+    }
     if (DirectBuffers::OverlapsTransientCueHeap(device_addr, size)) {
         transient_invalidate_gen.fetch_add(1, std::memory_order_release);
     }
@@ -1149,6 +1154,29 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     // decoded later (WriteData, constant RAM dumps) change them on the CPU in decode order, and
     // a draw decoded before must keep its values (buffer renaming). GPU writes are noted for
     // that: a range the GPU has yet to write is not copied.
+    if (!inpass_shadows.empty()) {
+        int match_idx = -1;
+        bool partial_or_write = false;
+        for (int i = static_cast<int>(inpass_shadows.size()) - 1; i >= 0; --i) {
+            const auto& s = inpass_shadows[static_cast<size_t>(i)];
+            if (device_addr < s.dst_va + s.size && s.dst_va < device_addr + size) {
+                if (!is_written && device_addr >= s.dst_va &&
+                    device_addr + size <= s.dst_va + s.size) {
+                    match_idx = i;
+                    break;
+                }
+                partial_or_write = true;
+                break;
+            }
+        }
+        if (partial_or_write) {
+            FlushInPassShadows();
+        } else if (match_idx >= 0) {
+            const auto& s = inpass_shadows[static_cast<size_t>(match_idx)];
+            TraceBinding(device_addr, size, false, 3);
+            return {&stream_buffer, s.stream_off + (device_addr - s.dst_va)};
+        }
+    }
     if (is_written) {
         DirectBuffers::NoteTransientCueHeapGpuWrite(device_addr, size);
         if (!shadows.empty()) {
@@ -1183,14 +1211,13 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
     }
-    // V6.2: Direct zero-fault streaming for transient `cueHeap` read-only bindings up to 2 MiB
-    // (dynamic vertex buffers, Havok Cloth Buffer<float4>, dynamic bone palettes, and any CBs not
-    // pre-copied by ResolvePacket). Avoids creating a 512 MiB cueHeap VRAM arena mirror, avoids
-    // RenderPass breaks + vkCmdCopyBuffer + pipeline barriers, eliminates the remaining 8,693/s
-    // SIGSEGV write faults on cueHeap, and deduplicates repeated shadow/G-buffer bindings within
-    // the same submission tick in O(1).
+    // V6.2 / V7.1: Direct zero-fault streaming for transient `cueHeap` read-only bindings up to
+    // 16 MiB (with 0xFFFFFFFF unbounded V# descriptors pre-bounded to their live allocation block
+    // via ClampTransientCueReadSize). Avoids creating a 512 MiB cueHeap VRAM arena mirror, avoids
+    // RenderPass breaks + vkCmdCopyBuffer + pipeline barriers, eliminates all SIGSEGV write faults
+    // on cueHeap, and deduplicates repeated shadow/G-buffer bindings within the same submission.
     if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
-        size != 0 && size <= 2_MB &&
+        size != 0 && size <= 16_MB &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
@@ -1202,7 +1229,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             u64 inv_gen = 0;
             u64 offset = 0;
         };
-        static constexpr size_t kCueMemoSlots = 256;
+        static constexpr size_t kCueMemoSlots = 512;
         thread_local std::array<CueStreamMemo, kCueMemoSlots> tls_cue_memo{};
         const u64 cur_tick = scheduler.CurrentTick();
         const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
@@ -1531,6 +1558,9 @@ std::optional<std::pair<const Buffer*, u64>> BufferCache::CommandWriteTarget(VAd
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_addr, u32 size) {
+    if (!inpass_shadows.empty() && OverlapsInPassShadow(device_addr, size)) {
+        FlushInPassShadows();
+    }
     // bbport BB_GUEST_IN_PLACE: texture data is read by the GPU from the game's memory itself:
     // through the arena where it is bound in place, else (BB_CHUNK_TEXTURES) from its guest
     // memory chunk.
@@ -1708,6 +1738,182 @@ std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
     }
     scheduler.NoteHostCopySources(host_ranges);
     return {staging.buffer, staging.offset};
+}
+
+bool BufferCache::OverlapsInPassShadow(VAddr addr, u64 size) const noexcept {
+    if (size == 0) {
+        return false;
+    }
+    for (const auto& s : inpass_shadows) {
+        if (addr < s.dst_va + s.size && s.dst_va < addr + size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, u64 total_bytes) {
+    if (slices.empty() || total_bytes == 0 || total_bytes > 512_KB) {
+        return false;
+    }
+    const u64 align = std::max<u64>(
+        16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
+    const bool precise = EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+    u64 base_off = 0;
+    if (!stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
+        !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
+        !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+        const auto reserved = stream_buffer.Reserve(total_bytes, align);
+        if (!reserved) {
+            return false;
+        }
+        base_off = *reserved;
+        u8* const base_dst = stream_buffer.mapped_data.data() + base_off;
+        Buffer* const sbuf = &stream_buffer;
+        Core::MemoryManager* const mem = memory;
+        boost::container::small_vector<std::pair<u64, u64>, 32> host_ranges;
+        host_ranges.reserve(slices.size());
+        for (const auto& s : slices) {
+            host_ranges.emplace_back(s.src_va, s.byte_size);
+        }
+        constexpr size_t kInlineChunk = 32;
+        for (size_t offset = 0; offset < slices.size(); offset += kInlineChunk) {
+            const u32 chunk_count =
+                static_cast<u32>(std::min(kInlineChunk, slices.size() - offset));
+            const bool flush_now = (offset + chunk_count >= slices.size());
+            std::array<TransientHostSlice, kInlineChunk> batch_slices{};
+            for (u32 i = 0; i < chunk_count; ++i) {
+                const auto& src = slices[offset + i];
+                batch_slices[i] = {
+                    .src_va = src.src_va,
+                    .byte_size = src.byte_size,
+                    .staging_rel_offset = src.rel_offset,
+                };
+            }
+            scheduler.RecordHostCopy(
+                [batch_slices, chunk_count, flush_now, base_dst, base_off, total_bytes, sbuf, mem,
+                 precise] {
+                    for (u32 i = 0; i < chunk_count; ++i) {
+                        const auto& s = batch_slices[i];
+                        u8* dst = base_dst + s.staging_rel_offset;
+                        if (!precise) {
+                            std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.byte_size);
+                        } else {
+                            mem->CopySparseMemory(s.src_va, dst, s.byte_size);
+                        }
+                    }
+                    if (flush_now) {
+                        sbuf->Flush(base_off, total_bytes);
+                    }
+                });
+        }
+        scheduler.NoteHostCopySources(host_ranges);
+    } else {
+        const auto [data, offset] = stream_buffer.Map(total_bytes, align);
+        for (const auto& s : slices) {
+            if (!precise) {
+                std::memcpy(data + s.rel_offset, reinterpret_cast<const void*>(s.src_va),
+                            s.byte_size);
+            } else {
+                memory->CopySparseMemory(s.src_va, data + s.rel_offset, s.byte_size);
+            }
+        }
+        stream_buffer.Commit();
+        base_off = offset;
+    }
+
+    BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
+    for (const auto& s : slices) {
+        const u64 stream_off = base_off + s.rel_offset;
+        gpu_modified_ranges.Add(s.dst_va, s.byte_size);
+        memory_tracker->MarkRegionAsGpuModified(s.dst_va, s.byte_size);
+        BindMemoSlot(s.dst_va, s.byte_size).address = 0;
+        bool replaced_exact = false;
+        // Replace an earlier exact-range entry ONLY if it is the newest overlapping entry so
+        // chronological ordering of partial overlaps is never altered.
+        for (int i = static_cast<int>(inpass_shadows.size()) - 1; i >= 0; --i) {
+            auto& prev = inpass_shadows[static_cast<size_t>(i)];
+            if (s.dst_va < prev.dst_va + prev.size && prev.dst_va < s.dst_va + s.byte_size) {
+                if (prev.dst_va == s.dst_va && prev.size == s.byte_size) {
+                    prev.stream_off = stream_off;
+                    replaced_exact = true;
+                }
+                break;
+            }
+        }
+        if (!replaced_exact) {
+            inpass_shadows.push_back(InPassShadow{
+                .dst_va = s.dst_va,
+                .size = s.byte_size,
+                .pad = 0u,
+                .stream_off = stream_off,
+            });
+        }
+    }
+    scheduler.NoteEndRenderingWork();
+    return true;
+}
+
+void BufferCache::FlushInPassShadows() {
+    if (inpass_shadows.empty()) {
+        return;
+    }
+    std::vector<InPassShadow> pending;
+    pending.swap(inpass_shadows);
+    scheduler.EndRendering();
+
+    const bool full_ov = gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_GpuBarrierCoalesce);
+    const Buffer* batch_dst = nullptr;
+    std::array<vk::BufferCopy, 128> batch_copies{};
+    u32 batch_count = 0;
+    const auto flush_batch = [&] {
+        if (batch_count != 0) {
+            runtime.CopyBuffer(&stream_buffer, batch_dst,
+                               std::span{batch_copies.data(), batch_count});
+            batch_count = 0;
+        }
+    };
+    const auto ranges_overlap = [](u64 a_off, u64 a_sz, u64 b_off, u64 b_sz) noexcept {
+        return a_off < (b_off + b_sz) && b_off < (a_off + a_sz);
+    };
+
+    for (const auto& s : pending) {
+        texture_cache.InvalidateMemoryFromGPU(s.dst_va, s.size);
+        force_writes_in_place = true;
+        const auto [dst_buf, dst_off] = ObtainBuffer(s.dst_va, s.size, true, false, full_ov);
+        force_writes_in_place = false;
+        if (!dst_buf) {
+            continue;
+        }
+        bool can_coalesce = (batch_count > 0 && dst_buf == batch_dst && dst_buf != &stream_buffer);
+        if (can_coalesce) {
+            for (u32 i = 0; i < batch_count; ++i) {
+                const auto& prev = batch_copies[i];
+                if (ranges_overlap(dst_off, s.size, prev.dstOffset, prev.size)) {
+                    can_coalesce = false;
+                    break;
+                }
+            }
+        }
+        if (can_coalesce && full_ov) {
+            auto& last = batch_copies[batch_count - 1];
+            if (last.srcOffset + last.size == s.stream_off &&
+                last.dstOffset + last.size == dst_off) {
+                last.size += s.size;
+                continue;
+            }
+        }
+        if (!can_coalesce || batch_count >= batch_copies.size()) {
+            flush_batch();
+            batch_dst = dst_buf;
+        }
+        batch_copies[batch_count++] = vk::BufferCopy{
+            .srcOffset = s.stream_off,
+            .dstOffset = dst_off,
+            .size = s.size,
+        };
+    }
+    flush_batch();
 }
 
 bool BufferCache::IsRegionCpuModified(VAddr addr, size_t size) {
@@ -3107,6 +3313,9 @@ std::optional<std::pair<const Buffer*, u64>> BufferCache::ShadowCopy(VAddr addr,
 }
 
 void BufferCache::DropShadows(VAddr addr, u64 size) {
+    if (!inpass_shadows.empty() && OverlapsInPassShadow(addr, size)) {
+        FlushInPassShadows();
+    }
     std::erase_if(shadows, [&](const Shadow& shadow) {
         return addr < shadow.addr + shadow.size && shadow.addr < addr + size;
     });

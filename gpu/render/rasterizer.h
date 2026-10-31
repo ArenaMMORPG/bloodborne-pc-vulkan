@@ -302,8 +302,8 @@ public:
         scheduler.WaitDeferredSignals();
     }
     /// Runs `signal` after the guest memory copies issued so far, without waiting here.
-    void SignalAfterHostCopies(std::function<void()> signal) {
-        scheduler.SignalAfterHostCopies(std::move(signal));
+    void SignalAfterHostCopies(std::function<void()> signal, bool force_kick = true) {
+        scheduler.SignalAfterHostCopies(std::move(signal), force_kick);
     }
     /// bbport BB_HONEST_LABELS=1: runs `signal` once the GPU has finished every command recorded
     /// before this call (the submission of the current tick), in call order, on a thread that
@@ -904,6 +904,8 @@ private:
         std::atomic<u64> total_max{0};
         std::atomic<u64> big_max{0};
         std::array<std::atomic<u64>, 4> level_max{};
+        std::atomic<VAddr> active_min_addr{~VAddr{0}};
+        std::atomic<VAddr> active_max_addr{0};
         static void BumpMax(std::atomic<u64>& target, u64 packet, bool single_writer) {
             u64 seen = target.load(std::memory_order_relaxed);
             if (seen >= packet) {
@@ -917,11 +919,42 @@ private:
                    !target.compare_exchange_weak(seen, packet, std::memory_order_relaxed)) {
             }
         }
+        void UpdateAddrBounds(VAddr address, u64 size, u64 prev_max, u64 retired,
+                              bool single_writer) {
+            const VAddr end = address + size;
+            if (single_writer && prev_max <= retired) {
+                active_min_addr.store(address, std::memory_order_relaxed);
+                active_max_addr.store(end, std::memory_order_relaxed);
+                return;
+            }
+            VAddr cur_min = active_min_addr.load(std::memory_order_relaxed);
+            if (address < cur_min) {
+                if (single_writer) {
+                    active_min_addr.store(address, std::memory_order_relaxed);
+                } else {
+                    while (address < cur_min && !active_min_addr.compare_exchange_weak(
+                                                    cur_min, address, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+            VAddr cur_max = active_max_addr.load(std::memory_order_relaxed);
+            if (end > cur_max) {
+                if (single_writer) {
+                    active_max_addr.store(end, std::memory_order_relaxed);
+                } else {
+                    while (end > cur_max && !active_max_addr.compare_exchange_weak(
+                                                cur_max, end, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+        }
         void Note(VAddr address, u64 size, u64 packet, bool single_writer = false,
                   u64 retired = 0) {
             if (size == 0 || packet <= retired) {
                 return;
             }
+            const u64 prev_max = total_max.load(std::memory_order_relaxed);
+            UpdateAddrBounds(address, size, prev_max, retired, single_writer);
             BumpMax(total_max, packet, single_writer);
             if (size > Limits[2]) {
                 BumpMax(big_max, packet, single_writer);
@@ -968,6 +1001,8 @@ private:
             if (size == 0 || packet <= retired) {
                 return;
             }
+            const u64 prev_max = total_max.load(std::memory_order_relaxed);
+            UpdateAddrBounds(address, size, prev_max, retired, single_writer);
             BumpMax(total_max, packet, single_writer);
             const u32 level = size <= Limits[0] ? 0 : size <= Limits[1] ? 1 : size <= Limits[2] ? 2 : 3;
             BumpMax(level_max[level], packet, single_writer);
@@ -1000,6 +1035,10 @@ private:
         }
         u64 Newest(VAddr address, u64 size, u64 min_needed = 1) const {
             if (size == 0 || total_max.load(std::memory_order_relaxed) < min_needed) {
+                return 0;
+            }
+            if (address + size <= active_min_addr.load(std::memory_order_relaxed) ||
+                address >= active_max_addr.load(std::memory_order_relaxed)) {
                 return 0;
             }
             u64 newest = 0;

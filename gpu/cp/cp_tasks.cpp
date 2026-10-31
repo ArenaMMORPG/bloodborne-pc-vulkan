@@ -527,7 +527,45 @@ void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8*
 void DirectVkTimestampQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
     DirectTimestampEvent ev{};
     std::memcpy(&ev, data, sizeof(ev));
-    if (ev.base_address == 0 || ev.query_op > 1u) {
+    if (ev.base_address == 0 || ev.query_op > 2u) {
+        return;
+    }
+    if (ev.query_op == 2u) {
+        // V7.1: D3D11_QUERY_EVENT (EndQuery case 0, ~375/frame). Preserves strict FIFO ordering
+        // after any deferred host staging copies without calling KickRecording(true) mid-submit
+        // (WaitDeferredSignals() / Flush() at the end of every batch kicks ordered_chunk).
+        BbStats::eop_decoded.fetch_add(1u, std::memory_order_relaxed);
+        const VAddr base_addr = ev.base_address;
+        if (Vulkan::Rasterizer::HonestLabels()) {
+            rasterizer.ProcessDownloadImages();
+            if (rasterizer.WriteLabelOnGpu(base_addr, 1ULL, 8u)) {
+                Diagnostics::NoteLabel(Diagnostics::LabelStep::GraphicsOnGpu, base_addr, 1ULL, 8u);
+                BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
+                return;
+            }
+            rasterizer.SignalAfterGpu(
+                [base_addr] {
+                    const u64 seq = BbFreeCheck::NextFenceSeq();
+                    MaybeDelay(seq);
+                    WriteLabel(reinterpret_cast<void*>(base_addr), 1ULL, 8u, BbFreeCheck::Eop, seq);
+                    BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
+                },
+                base_addr, 1ULL);
+            return;
+        }
+        auto write_ready = [base_addr] {
+            const u64 seq = BbFreeCheck::NextFenceSeq();
+            MaybeDelay(seq);
+            WriteLabel(reinterpret_cast<void*>(base_addr), 1ULL, 8u, BbFreeCheck::Eop, seq);
+            BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
+        };
+        if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
+            rasterizer.SignalAfterHostCopies(std::move(write_ready), /*force_kick=*/false);
+        } else {
+            rasterizer.WaitHostCopies();
+            rasterizer.WaitDeferredSignals();
+            write_ready();
+        }
         return;
     }
     const VAddr ts_addr = ev.base_address + (ev.query_op == 0u ? 0x10ULL : 0x08ULL);
