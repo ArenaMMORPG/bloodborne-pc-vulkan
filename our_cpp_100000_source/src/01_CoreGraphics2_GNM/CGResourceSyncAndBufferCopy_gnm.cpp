@@ -830,35 +830,89 @@ void FlushBufferUpdates_A(PendingUpdateQueueA* queue_a, GnmxContextCore* ctx) {
         reinterpret_cast<TempFreeToMarkerFn>(GX_VMA(0x0207d5f0ULL))(temp_alloc[1]);
     }
 
-    void* fence_ptr = ctx_bytes + 0x10;
-    using RetireNodeFn = void (*)(void*, void*, GpuRangeNode*);
-    uint32_t bucket_mask = *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470);
-    if (bucket_mask != 0u) {
-        while (bucket_mask != 0u) {
-            const uint32_t b = static_cast<uint32_t>(__builtin_ctz(bucket_mask));
-            bucket_mask -= (1u << b);
-            auto** bucket_slot = reinterpret_cast<GpuRangeNode**>(ctx_bytes + 0xb3e8 + static_cast<size_t>(b) * 8u);
-            GpuRangeNode* node = *bucket_slot;
-            while (node) {
-                GpuRangeNode* next = node->next_free;
-                void* gpu_heap = *reinterpret_cast<void**>(ctx_bytes + 0xb3e0);
-                reinterpret_cast<RetireNodeFn>(GX_VMA(0x026aa5a0ULL))(gpu_heap, &fence_ptr, node);
-                node = next;
+    if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_DecommissionLegacyPm4)) {
+        gx_direct_vk::ReleaseU32LabelBatch u32Batch(ctx_bytes + 0x10, 4u);
+        GpuRangeNode* chain_head = nullptr;
+        GpuRangeNode* chain_tail = nullptr;
+        auto enqueue_node = [&](GpuRangeNode* node) noexcept {
+            node->vtable_or_color = 2ULL;
+            if (!chain_head) {
+                chain_head = node;
+            } else {
+                chain_tail->next_free = node;
             }
-            *bucket_slot = nullptr;
-        }
-        *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470) = 0u;
-    }
+            chain_tail = node;
+            u32Batch.Add(reinterpret_cast<uint64_t>(node));
+        };
 
-    auto** full_slot = reinterpret_cast<GpuRangeNode**>(ctx_bytes + 0xb468);
-    GpuRangeNode* full_node = *full_slot;
-    while (full_node) {
-        GpuRangeNode* next = full_node->next_free;
-        void* gpu_heap = *reinterpret_cast<void**>(ctx_bytes + 0xb3e0);
-        reinterpret_cast<RetireNodeFn>(GX_VMA(0x026aa5a0ULL))(gpu_heap, &fence_ptr, full_node);
-        full_node = next;
+        uint32_t bucket_mask = *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470);
+        if (bucket_mask != 0u) {
+            while (bucket_mask != 0u) {
+                const uint32_t b = static_cast<uint32_t>(__builtin_ctz(bucket_mask));
+                bucket_mask -= (1u << b);
+                auto** bucket_slot = reinterpret_cast<GpuRangeNode**>(
+                    ctx_bytes + 0xb3e8 + static_cast<size_t>(b) * 8u);
+                GpuRangeNode* node = *bucket_slot;
+                while (node) {
+                    GpuRangeNode* next = node->next_free;
+                    enqueue_node(node);
+                    node = next;
+                }
+                *bucket_slot = nullptr;
+            }
+            *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470) = 0u;
+        }
+
+        auto** full_slot = reinterpret_cast<GpuRangeNode**>(ctx_bytes + 0xb468);
+        GpuRangeNode* full_node = *full_slot;
+        while (full_node) {
+            GpuRangeNode* next = full_node->next_free;
+            enqueue_node(full_node);
+            full_node = next;
+        }
+        *full_slot = nullptr;
+
+        if (chain_head) {
+            auto* gpu_heap = *reinterpret_cast<uint8_t**>(ctx_bytes + 0xb3e0);
+            auto** head_slot = reinterpret_cast<GpuRangeNode**>(gpu_heap + 0x98);
+            GpuRangeNode* old_head = __atomic_load_n(head_slot, __ATOMIC_RELAXED);
+            do {
+                chain_tail->next_free = old_head;
+            } while (!__atomic_compare_exchange_n(
+                head_slot, &old_head, chain_head, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+            u32Batch.Flush();
+        }
+    } else {
+        void* fence_ptr = ctx_bytes + 0x10;
+        using RetireNodeFn = void (*)(void*, void*, GpuRangeNode*);
+        uint32_t bucket_mask = *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470);
+        if (bucket_mask != 0u) {
+            while (bucket_mask != 0u) {
+                const uint32_t b = static_cast<uint32_t>(__builtin_ctz(bucket_mask));
+                bucket_mask -= (1u << b);
+                auto** bucket_slot = reinterpret_cast<GpuRangeNode**>(ctx_bytes + 0xb3e8 + static_cast<size_t>(b) * 8u);
+                GpuRangeNode* node = *bucket_slot;
+                while (node) {
+                    GpuRangeNode* next = node->next_free;
+                    void* gpu_heap = *reinterpret_cast<void**>(ctx_bytes + 0xb3e0);
+                    reinterpret_cast<RetireNodeFn>(GX_VMA(0x026aa5a0ULL))(gpu_heap, &fence_ptr, node);
+                    node = next;
+                }
+                *bucket_slot = nullptr;
+            }
+            *reinterpret_cast<uint32_t*>(ctx_bytes + 0xb470) = 0u;
+        }
+
+        auto** full_slot = reinterpret_cast<GpuRangeNode**>(ctx_bytes + 0xb468);
+        GpuRangeNode* full_node = *full_slot;
+        while (full_node) {
+            GpuRangeNode* next = full_node->next_free;
+            void* gpu_heap = *reinterpret_cast<void**>(ctx_bytes + 0xb3e0);
+            reinterpret_cast<RetireNodeFn>(GX_VMA(0x026aa5a0ULL))(gpu_heap, &fence_ptr, full_node);
+            full_node = next;
+        }
+        *full_slot = nullptr;
     }
-    *full_slot = nullptr;
 }
 
 void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx);
@@ -897,6 +951,9 @@ int32_t FlushAndPrepareSubmit(GnmxContextCore* ctx, PendingUpdateQueueB* out_sub
     if (chunk) {
         const uint32_t cap = *reinterpret_cast<uint32_t*>(gfxc + 0xb4b0);
         const uint64_t next_off = static_cast<uint64_t>(cap) << 6;
+        const bool batch_chunks =
+            gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_NativeSyncAndDcb);
+        gx_direct_vk::ReleaseLabelBatch chunk_batch(gfxc);
         do {
             uint8_t* next_chunk = *reinterpret_cast<uint8_t**>(chunk + next_off);
             const uint32_t count = next_chunk ? cap : *reinterpret_cast<uint32_t*>(gfxc + 0xb4b4);
@@ -908,13 +965,20 @@ int32_t FlushAndPrepareSubmit(GnmxContextCore* ctx, PendingUpdateQueueB* out_sub
                     last_state = 0;
                     if (st != 0) {
                         mgr = *reinterpret_cast<void**>(gfxc + 0xb4c8);
-                        reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st);
+                        if (batch_chunks) {
+                            chunk_batch.AddPoolSlot(mgr, reinterpret_cast<uint64_t*>(st));
+                        } else {
+                            reinterpret_cast<ApplyChunkStateFn>(GX_VMA(0x026d3c80ULL))(mgr, gfxc, st);
+                        }
                         last_state = st;
                     }
                 }
             }
             chunk = next_chunk;
         } while (chunk);
+        if (batch_chunks) {
+            chunk_batch.Flush();
+        }
     }
 
     const uint64_t dcb_cmdptr = *reinterpret_cast<uint64_t*>(gfxc + 0x00);

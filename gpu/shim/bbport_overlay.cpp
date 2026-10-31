@@ -1128,13 +1128,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     if (h.gnm_wait_ms >= 1.50f && h.b_busy_pct < 78.0f && h.gpu_present_ms < 0.50f) {
         h.bottleneck_kind = 4;
         h.bottleneck_ms = h.gnm_wait_ms;
-        if (gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_AsyncFramePipeline)) {
-            h.bottleneck_ru = "Хвост GPU / Flip Fence (Async V5.2a)";
-            h.bottleneck_en = "GPU Tail / Flip Fence (Async V5.2a)";
-        } else {
-            h.bottleneck_ru = "Очередь CPU↔GPU (GnmWait -> V5.2)";
-            h.bottleneck_en = "CPU+GPU Serialized (GnmWait -> V5.2)";
-        }
+        h.bottleneck_ru = "Ожидание GPU кадра (Guest GnmWait)";
+        h.bottleneck_en = "CPU<->GPU Frame Sync (Guest GnmWait)";
     } else if (h.gpu_present_ms >= 0.50f && gpu_sync_ms >= stage_b_work_ms) {
         h.bottleneck_kind = 0;
         h.bottleneck_ms = gpu_sync_ms;

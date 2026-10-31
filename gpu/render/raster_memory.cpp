@@ -106,20 +106,71 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         }
     }
 
-    const VideoCore::Buffer* batch_src = nullptr;
-    const VideoCore::Buffer* batch_dst = nullptr;
-    std::array<vk::BufferCopy, 32> batch_copies{};
-    u32 batch_count = 0;
-
-    const auto flush_batch = [&] {
-        if (batch_count != 0) {
-            runtime.CopyBuffer(batch_src, batch_dst, std::span{batch_copies.data(), batch_count});
-            batch_count = 0;
-        }
+    struct ResolvedBufCopy {
+        const VideoCore::Buffer* src_buf;
+        const VideoCore::Buffer* dst_buf;
+        u64 src_off;
+        u64 dst_off;
+        u32 size;
     };
+    static thread_local std::vector<ResolvedBufCopy> resolved_copies;
+    resolved_copies.clear();
+    if (resolved_copies.capacity() < regions.size()) {
+        resolved_copies.reserve(regions.size());
+    }
 
     const auto ranges_overlap = [](u64 a_off, u64 a_sz, u64 b_off, u64 b_sz) noexcept {
         return a_off < (b_off + b_sz) && b_off < (a_off + a_sz);
+    };
+
+    const auto flush_resolved = [&] {
+        if (resolved_copies.empty()) {
+            return;
+        }
+        const VideoCore::Buffer* batch_src = nullptr;
+        const VideoCore::Buffer* batch_dst = nullptr;
+        std::array<vk::BufferCopy, 64> batch_copies{};
+        u32 batch_count = 0;
+        const auto flush_batch = [&] {
+            if (batch_count != 0) {
+                runtime.CopyBuffer(batch_src, batch_dst,
+                                   std::span{batch_copies.data(), batch_count});
+                batch_count = 0;
+            }
+        };
+        for (const auto& item : resolved_copies) {
+            bool can_coalesce = (batch_count > 0 && batch_count < batch_copies.size() &&
+                                 item.src_buf == batch_src && item.dst_buf == batch_dst);
+            if (item.src_buf == item.dst_buf &&
+                ranges_overlap(item.src_off, item.size, item.dst_off, item.size)) {
+                can_coalesce = false;
+            }
+            if (can_coalesce) {
+                for (u32 i = 0; i < batch_count; ++i) {
+                    const auto& prev = batch_copies[i];
+                    if (ranges_overlap(item.dst_off, item.size, prev.dstOffset, prev.size) ||
+                        (item.src_buf == batch_dst &&
+                         ranges_overlap(item.src_off, item.size, prev.dstOffset, prev.size)) ||
+                        (item.dst_buf == batch_src &&
+                         ranges_overlap(item.dst_off, item.size, prev.srcOffset, prev.size))) {
+                        can_coalesce = false;
+                        break;
+                    }
+                }
+            }
+            if (!can_coalesce) {
+                flush_batch();
+                batch_src = item.src_buf;
+                batch_dst = item.dst_buf;
+            }
+            batch_copies[batch_count++] = vk::BufferCopy{
+                .srcOffset = item.src_off,
+                .dstOffset = item.dst_off,
+                .size = item.size,
+            };
+        }
+        flush_batch();
+        resolved_copies.clear();
     };
 
     for (const auto& reg : regions) {
@@ -159,7 +210,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                     src_img.info.pitch == dst_img.info.pitch && reg.byte_size >= image_size &&
                     reg.byte_size - image_size <= MaxTail &&
                     src_img.info.num_bits == dst_img.info.num_bits) {
-                    flush_batch();
+                    flush_resolved();
                     runtime.CopyColorAndDepth(&src_img, &dst_img);
                     dst_img.gpu_write_tick = scheduler.CurrentTick();
                     if (const u64 tail = reg.byte_size - image_size) {
@@ -188,38 +239,10 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         if (!src_buf || !dst_buf) {
             continue;
         }
-
-        // Self-overlap within a single vkCmdCopyBuffer is forbidden by VUID-vkCmdCopyBuffer-pRegions-00117.
-        bool can_coalesce = (batch_count > 0 && batch_count < batch_copies.size() &&
-                             src_buf == batch_src && dst_buf == batch_dst);
-        if (src_buf == dst_buf && ranges_overlap(src_off, reg.byte_size, dst_off, reg.byte_size)) {
-            can_coalesce = false;
-        }
-        if (can_coalesce) {
-            for (u32 i = 0; i < batch_count; ++i) {
-                const auto& prev = batch_copies[i];
-                if (ranges_overlap(dst_off, reg.byte_size, prev.dstOffset, prev.size) ||
-                    (src_buf == batch_dst &&
-                     ranges_overlap(src_off, reg.byte_size, prev.dstOffset, prev.size)) ||
-                    (dst_buf == batch_src &&
-                     ranges_overlap(dst_off, reg.byte_size, prev.srcOffset, prev.size))) {
-                    can_coalesce = false;
-                    break;
-                }
-            }
-        }
-        if (!can_coalesce) {
-            flush_batch();
-            batch_src = src_buf;
-            batch_dst = dst_buf;
-        }
-        batch_copies[batch_count++] = vk::BufferCopy{
-            .srcOffset = src_off,
-            .dstOffset = dst_off,
-            .size = reg.byte_size,
-        };
+        resolved_copies.push_back(
+            ResolvedBufCopy{src_buf, dst_buf, src_off, dst_off, reg.byte_size});
     }
-    flush_batch();
+    flush_resolved();
 }
 
 void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {

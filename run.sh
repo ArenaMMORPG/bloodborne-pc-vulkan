@@ -155,8 +155,14 @@ fi
 # Memory model left to the port: the new one on every GPU (0.6). It goes through the layer's memory
 # module: no sparse binding of the game's memory, so nothing NVIDIA-specific stalls; a driver that
 # fails the startup checks (BbGuestMemory::Usable) still falls back to VRAM copies by itself.
-export BB_PC_MODEL=1
-echo "Memory model: 0.6 in-place (${gpu_name:-GPU unknown})"
+if [[ -z ${BB_PC_MODEL:-} ]]; then
+    export BB_PC_MODEL=0
+fi
+if [[ ${BB_PC_MODEL} == 1 ]]; then
+    echo "Memory model: 0.6 in-place (${gpu_name:-GPU unknown})"
+else
+    echo "Memory model: 0.3 VRAM (${gpu_name:-GPU unknown}; BB_PC_MODEL=1: in-place host memory)"
+fi
 # GCN 3-5 under RADV (Polaris, Vega and their APUs): with HiZ, depth compression showed black
 # halos and missing geometry (issues #54, #99); RADV_DEBUG=nohiz fixed it at some cost. Set
 # unless RADV_DEBUG is the user's, BB_AUTO_NOHIZ=0: off.
@@ -169,7 +175,10 @@ if [[ ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} && $gpu_name == *"(RADV "* 
         fi
     done
 fi
-export BB_GUEST_IN_PLACE=1
+if [[ ${BB_AS_0_3:-0} == 1 ]]; then
+    export BB_GUEST_IN_PLACE=0 BB_HOST_COPY_WAITS=all BB_PRODUCER_CHECK=1
+fi
+export BB_GUEST_IN_PLACE=${BB_GUEST_IN_PLACE:-${BB_PC_MODEL:-0}}
 # MangoHud (launcher switch: MANGOHUD=1) must be drawn once. Two overlays on top of each other
 # showed doubled, offset text: the Steam Deck's performance overlay (mangoapp, game mode) plus the
 # in-game layer, or the AppImage's bundled layer plus a system MangoHud (the layer names differ,
