@@ -569,11 +569,13 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         if (address == 0 || raw_size == 0) {
             continue;
         }
-        // N1.2: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in dedicated VMA
-        // DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest RAM at `address`
-        // is never CPU-updated after CreateAndInitialize. Skip Stage A ConstRing memcpy entirely.
+        // N1.2 / N1.2c: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in dedicated
+        // VMA DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest RAM at
+        // `address` is never CPU-updated after CreateAndInitialize. Skip Stage A ConstRing memcpy
+        // entirely via the lossless 4-byte NativeOwnedBitmap (covers interior byteOffset > 0 too).
         if (!desc.is_written && n1_native_buf &&
-            VideoCore::DirectBuffers::IsExactNativeOwnedBuffer(address)) {
+            (VideoCore::DirectBuffers::IsNativeOwnedAddress(address) ||
+             VideoCore::DirectBuffers::OverlapsNativeOwnedRange(address, raw_size))) {
             continue;
         }
         if (!desc.is_written && stage_a_bypass) {
@@ -1327,6 +1329,14 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
             }
             const VAddr address = binding.address;
             const u64 size = binding.size;
+            static const bool n1_native_buf =
+                gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+            if (n1_native_buf &&
+                (VideoCore::DirectBuffers::IsNativeOwnedAddress(address) ||
+                 VideoCore::DirectBuffers::OverlapsNativeOwnedRange(address, size))) {
+                binding.offset = RingNotCopied;
+                continue;
+            }
             if (fast_cue_resolve &&
                 VideoCore::DirectBuffers::IsTransientCueHeap(address, size) &&
                 !VideoCore::DirectBuffers::IsCueHeapEverGpuModified()) {

@@ -87,13 +87,18 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 /// to the end of their live CGGpuFreeListAllocatorGnm allocation block.
 [[nodiscard]] u64 ClampTransientCueReadSize(VAddr addr, u64 requested_size) noexcept;
 
-/// N1.1 / N1.2: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)) +
-/// 65,536-slot ExactBufferTable tracking every live GXGnmBuffer (exact requestedSize, allocSize,
-/// and native VkBuffer ownership) so unbounded 0xFFFFFFFF V# descriptors clamp to the exact byte
-/// size of their GXGnmBuffer (zero 4 KiB neighbor overshoot) and Stage A skips ConstRing memcpy
-/// for native-owned buffers.
+/// N1.1 / N1.2 / N1.2c: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)),
+/// lossless 4-byte-granule NativeOwnedBitmap (0 collisions, 0 evictions, O(1) interior-offset hit),
+/// and 262,144-slot Murmur3-avalanched ExactBufferTable tracking every live GXGnmBuffer (exact
+/// requestedSize, allocSize, and native VkBuffer ownership) so unbounded 0xFFFFFFFF V# descriptors
+/// clamp to the exact byte size of their GXGnmBuffer (zero 4 KiB neighbor overshoot) and Stage A /
+/// DrawPrep workers skip ConstRing guest-RAM memcpy for 100% of native-owned buffers.
 void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept;
 void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept;
+void MarkNativeOwnedRange(VAddr addr, u64 byte_size) noexcept;
+void ClearNativeOwnedRange(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] bool IsNativeOwnedAddress(VAddr addr) noexcept;
+[[nodiscard]] bool OverlapsNativeOwnedRange(VAddr addr, u64 byte_size) noexcept;
 void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size, bool is_native_owned) noexcept;
 void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept;
 [[nodiscard]] bool IsExactNativeOwnedBuffer(VAddr addr) noexcept;
@@ -150,6 +155,9 @@ public:
     /// back into its persistent `DEVICE_LOCAL` `VkBuffer` once per submission outside RenderPasses.
     void FlushPendingWritebacks();
 
+    /// Stage B: checks whether [addr, addr + size) overlaps any live Stage B native VkBuffer entry.
+    [[nodiscard]] bool OverlapsLiveEntry(VAddr addr, u64 size) const noexcept;
+
     /// Stage B: invalidates any native VkBuffer overlapping an external/UAV GPU write.
     void OnGpuWrite(VAddr addr, u64 size) noexcept;
 
@@ -183,7 +191,7 @@ private:
     void SetBitmapRange(VAddr start, VAddr end) noexcept;
     void RebuildBitmapAroundErase(VAddr erased_start, VAddr erased_end) noexcept;
     [[nodiscard]] bool AnyBitmap64k(VAddr addr, u64 size) const noexcept;
-    void RetireOverlapping(VAddr addr, u64 size);
+    void RetireOverlapping(VAddr addr, u64 size, bool clear_global_owned = true);
     void ReclaimCompleted() noexcept;
     void ClearMruFor(const Buffer* buf) noexcept;
     void UpdateMruEntry(VAddr base_addr, u64 alloc_size, const Buffer* buf,

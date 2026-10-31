@@ -996,7 +996,14 @@ std::uint32_t GXGnmCommandContext_MapSubresource(
     std::uint8_t resType = resBase[0x38];
     if (static_cast<std::uint8_t>(resType - 2) >= 3u) {
         if (resType == 1) {
+            const void* gpuBase = *reinterpret_cast<const void* const*>(resBase + 0x20);
             std::uint32_t byteSize = *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(resCore) + 0x14);
+            std::uint32_t allocSize = *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(resCore) + 0x18);
+            const std::uint32_t span = allocSize >= byteSize ? allocSize : byteSize;
+            if (mapType != 0u && gpuBase != nullptr && span != 0u) {
+                gx_direct_vk::PrepareDirectBufferWrite(gpuBase, span);
+                gx_direct_vk::RetireDirectGpuRange(gpuBase, span);
+            }
             *reinterpret_cast<std::uint32_t*>(mappedOut + 0x08) = byteSize;
             *reinterpret_cast<std::uint32_t*>(mappedOut + 0x0C) = byteSize;
             return 0;

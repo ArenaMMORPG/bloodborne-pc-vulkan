@@ -262,6 +262,9 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                 VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
                 (n1_native_bufs && memory->ClampRangeSize(reg.src_va, reg.byte_size) == reg.byte_size);
             if (reg.byte_size > max_slice_bytes || !valid_cpu_src ||
+                (n1_native_bufs &&
+                 (VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.dst_va, reg.byte_size) ||
+                  direct_buffers.OverlapsLiveEntry(reg.dst_va, reg.byte_size))) ||
                 buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
                 texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
                 texture_cache.IsMeta(reg.dst_va)) {

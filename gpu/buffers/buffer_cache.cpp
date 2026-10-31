@@ -1223,7 +1223,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         size != 0 &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
         (size <= STREAM_THRESHOLD ||
-         (size <= 2_MB && IsRegionCpuModified(device_addr, size))) &&
+         (size <= 4_MB && IsRegionCpuModified(device_addr, size))) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
         struct CueStreamMemo {
@@ -1928,6 +1928,11 @@ bool BufferCache::IsRegionCpuModified(VAddr addr, size_t size) {
 }
 
 bool BufferCache::IsRegionGpuModified(VAddr addr, size_t size) {
+    static const bool n1_native_buf =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if (n1_native_buf && DirectBuffers::OverlapsNativeOwnedRange(addr, size)) {
+        return true;
+    }
     if (memory_tracker->IsRegionGpuModified(addr, size)) {
         return true;
     }

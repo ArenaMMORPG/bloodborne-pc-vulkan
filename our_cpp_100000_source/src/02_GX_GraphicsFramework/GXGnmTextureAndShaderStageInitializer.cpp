@@ -3776,8 +3776,9 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
     const bool n1_native_eligible =
         gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) &&
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) &&
-        desc->cpuAccessFlags == 0u &&
-        (desc->usageType == 0u || (desc->usageType == 1u && initialDataPtr != nullptr)) &&
+        ((desc->cpuAccessFlags == 0u &&
+          (desc->usageType == 0u || (desc->usageType == 1u && initialDataPtr != nullptr))) ||
+         (desc->usageType == 2u && (desc->cpuAccessFlags & ~1u) == 0u)) &&
         (desc->bindFlags & 0x90u) == 0u && desc->byteSize > 0u &&
         CGMemoryGnm_IsCpuReadableAddress(gpuMem);
     gx_direct_vk::NoteDirectExactBufferAlloc(

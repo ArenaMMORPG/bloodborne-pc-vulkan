@@ -154,11 +154,22 @@ constexpr size_t kNativeDirPages = static_cast<size_t>(kNativeDirSpan >> kNative
 constexpr u64 kNativeMaxSingleBlockBytes = 128ULL << 20; // ignore whole-heap container carve-outs
 std::array<std::atomic<u32>, kNativeDirPages> g_native_page_end_rel4{};
 
-// N1.2: 65,536-slot (16,384 sets x 4 ways = 1 MiB BSS) lock-free ExactBufferTable keyed by exact
+// N1.2c: Lossless lock-free 4-byte-granule NativeOwnedBitmap over [0x1000000000, 0x1400000000)
+// (67,108,864 u64 words; Linux demand-pages only touched ~2.5 GiB buffer ranges).
+// Guarantees 0 hash collisions, 0 evictions, 0 4-byte/16-byte neighbor false positives, and O(1)
+// single-load detection for both `gpuBaseAddr` and interior `gpuBaseAddr + byteOffset` views.
+constexpr u32 kNativeOwnedGranuleShift = 2u; // 4 bytes per bit
+constexpr u32 kNativeOwnedWordShift = kNativeOwnedGranuleShift + 6u; // 256 bytes per u64 word
+constexpr size_t kNativeOwnedWords = static_cast<size_t>(kNativeDirSpan >> kNativeOwnedWordShift);
+std::array<std::atomic<u64>, kNativeOwnedWords> g_native_owned_4b{};
+
+// N1.2 / N1.2c: 262,144-slot (32,768 sets x 8 ways + 4-set linear probe = 32 candidate ways per
+// address, 4 MiB BSS) Murmur3-avalanched lock-free ExactBufferTable keyed by exact
 // `GXGnmBuffer::gpuBaseAddr` (always >= 4-byte aligned, so bit 0 of `addr_and_flag` stores
 // `is_native_owned`, and `sizes_packed` stores `(u64(alloc_size) << 32) | u64(req_size)`).
-constexpr size_t kExactBufSets = 16384;
-constexpr size_t kExactBufWays = 4;
+constexpr size_t kExactBufSets = 32768;
+constexpr size_t kExactBufWays = 8;
+constexpr size_t kExactBufProbeSets = 4;
 struct ExactBufSlot {
     std::atomic<u64> addr_and_flag{0};
     std::atomic<u64> sizes_packed{0};
@@ -167,8 +178,13 @@ std::array<std::array<ExactBufSlot, kExactBufWays>, kExactBufSets> g_exact_buf_t
 std::atomic<u32> g_exact_rr_hand{0};
 
 [[nodiscard]] constexpr size_t ExactBufSetIdx(VAddr addr) noexcept {
-    const u64 a = addr >> 4;
-    return static_cast<size_t>((a ^ (a >> 11) ^ (a >> 22)) & (kExactBufSets - 1));
+    u64 h = addr >> 2;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
+    return static_cast<size_t>(h & (kExactBufSets - 1));
 }
 
 } // namespace
@@ -182,10 +198,19 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
         g_pending_count.store(0, std::memory_order_release);
         g_ever_registered.store(false, std::memory_order_release);
         for (auto& word : g_guest_immutable_64k) {
-            word.store(0ULL, std::memory_order_relaxed);
+            if (word.load(std::memory_order_relaxed) != 0ULL) {
+                word.store(0ULL, std::memory_order_relaxed);
+            }
+        }
+        for (auto& word : g_native_owned_4b) {
+            if (word.load(std::memory_order_relaxed) != 0ULL) {
+                word.store(0ULL, std::memory_order_relaxed);
+            }
         }
         for (auto& cell : g_native_page_end_rel4) {
-            cell.store(0u, std::memory_order_relaxed);
+            if (cell.load(std::memory_order_relaxed) != 0u) {
+                cell.store(0u, std::memory_order_relaxed);
+            }
         }
         for (auto& set : g_exact_buf_table) {
             for (auto& way : set) {
@@ -401,6 +426,126 @@ void NoteNativeGpuBlockAlloc(VAddr addr, u64 byte_size) noexcept {
     }
 }
 
+void MarkNativeOwnedRange(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0 || addr >= kNativeDirBase + kNativeDirMaxBytes) {
+        return;
+    }
+    const VAddr end_va = addr + byte_size;
+    if (end_va <= kNativeDirBase) {
+        return;
+    }
+    const u64 rel_start = (addr > kNativeDirBase) ? (addr - kNativeDirBase) : 0ULL;
+    const u64 rel_end = std::min<u64>(end_va - kNativeDirBase, kNativeDirMaxBytes);
+    if (rel_end <= rel_start) {
+        return;
+    }
+    const u64 first_bit = rel_start >> kNativeOwnedGranuleShift;
+    const u64 end_bit = (rel_end + ((1ULL << kNativeOwnedGranuleShift) - 1ULL)) >>
+                        kNativeOwnedGranuleShift;
+    if (end_bit <= first_bit) {
+        return;
+    }
+    const u64 last_bit = end_bit - 1ULL;
+    const u64 first_word = first_bit >> 6;
+    const u64 last_word = last_bit >> 6;
+    const u64 lo_mask = ~0ULL << (first_bit & 63ULL);
+    const u64 hi_mask = ~0ULL >> (63ULL - (last_bit & 63ULL));
+    if (first_word == last_word) {
+        g_native_owned_4b[first_word].fetch_or(lo_mask & hi_mask, std::memory_order_release);
+        return;
+    }
+    g_native_owned_4b[first_word].fetch_or(lo_mask, std::memory_order_release);
+    for (u64 w = first_word + 1ULL; w < last_word; ++w) {
+        g_native_owned_4b[w].store(~0ULL, std::memory_order_release);
+    }
+    g_native_owned_4b[last_word].fetch_or(hi_mask, std::memory_order_release);
+}
+
+void ClearNativeOwnedRange(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0 || addr >= kNativeDirBase + kNativeDirMaxBytes) {
+        return;
+    }
+    const VAddr end_va = addr + byte_size;
+    if (end_va <= kNativeDirBase) {
+        return;
+    }
+    const u64 rel_start = (addr > kNativeDirBase) ? (addr - kNativeDirBase) : 0ULL;
+    const u64 rel_end = std::min<u64>(end_va - kNativeDirBase, kNativeDirMaxBytes);
+    if (rel_end <= rel_start) {
+        return;
+    }
+    const u64 first_bit = rel_start >> kNativeOwnedGranuleShift;
+    const u64 end_bit = (rel_end + ((1ULL << kNativeOwnedGranuleShift) - 1ULL)) >>
+                        kNativeOwnedGranuleShift;
+    if (end_bit <= first_bit) {
+        return;
+    }
+    const u64 last_bit = end_bit - 1ULL;
+    const u64 first_word = first_bit >> 6;
+    const u64 last_word = last_bit >> 6;
+    const u64 lo_mask = ~0ULL << (first_bit & 63ULL);
+    const u64 hi_mask = ~0ULL >> (63ULL - (last_bit & 63ULL));
+    if (first_word == last_word) {
+        g_native_owned_4b[first_word].fetch_and(~(lo_mask & hi_mask), std::memory_order_release);
+        return;
+    }
+    g_native_owned_4b[first_word].fetch_and(~lo_mask, std::memory_order_release);
+    for (u64 w = first_word + 1ULL; w < last_word; ++w) {
+        g_native_owned_4b[w].store(0ULL, std::memory_order_release);
+    }
+    g_native_owned_4b[last_word].fetch_and(~hi_mask, std::memory_order_release);
+}
+
+bool IsNativeOwnedAddress(VAddr addr) noexcept {
+    if (!g_ever_registered.load(std::memory_order_acquire) || addr == 0) {
+        return false;
+    }
+    if (addr >= kNativeDirBase) {
+        const u64 rel = addr - kNativeDirBase;
+        if (rel < kNativeDirMaxBytes) {
+            const u64 bit = rel >> kNativeOwnedGranuleShift;
+            return (g_native_owned_4b[bit >> 6].load(std::memory_order_acquire) &
+                    (1ULL << (bit & 63ULL))) != 0ULL;
+        }
+    }
+    return IsExactNativeOwnedBuffer(addr);
+}
+
+bool OverlapsNativeOwnedRange(VAddr addr, u64 byte_size) noexcept {
+    if (!g_ever_registered.load(std::memory_order_acquire) || byte_size == 0) {
+        return false;
+    }
+    if (addr >= kNativeDirBase && addr < kNativeDirBase + kNativeDirMaxBytes) {
+        const u64 rel_start = addr - kNativeDirBase;
+        const u64 rel_end = std::min<u64>(rel_start + byte_size, kNativeDirMaxBytes);
+        if (rel_end > rel_start) {
+            const u64 first_bit = rel_start >> kNativeOwnedGranuleShift;
+            const u64 last_bit =
+                ((rel_end + ((1ULL << kNativeOwnedGranuleShift) - 1ULL)) >>
+                 kNativeOwnedGranuleShift) -
+                1ULL;
+            const u64 first_word = first_bit >> 6;
+            const u64 last_word = last_bit >> 6;
+            const u64 lo_mask = ~0ULL << (first_bit & 63ULL);
+            const u64 hi_mask = ~0ULL >> (63ULL - (last_bit & 63ULL));
+            if (first_word == last_word) {
+                return (g_native_owned_4b[first_word].load(std::memory_order_acquire) &
+                        (lo_mask & hi_mask)) != 0ULL;
+            }
+            if ((g_native_owned_4b[first_word].load(std::memory_order_acquire) & lo_mask) != 0ULL) {
+                return true;
+            }
+            for (u64 w = first_word + 1ULL; w < last_word; ++w) {
+                if (g_native_owned_4b[w].load(std::memory_order_acquire) != 0ULL) {
+                    return true;
+                }
+            }
+            return (g_native_owned_4b[last_word].load(std::memory_order_acquire) & hi_mask) != 0ULL;
+        }
+    }
+    return IsExactNativeOwnedBuffer(addr);
+}
+
 void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size,
                            bool is_native_owned) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL || alloc_size == 0) {
@@ -409,47 +554,57 @@ void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size,
     const u32 safe_req = req_size > 0 && req_size <= alloc_size ? req_size : alloc_size;
     const u64 packed_sizes = (static_cast<u64>(alloc_size) << 32) | static_cast<u64>(safe_req);
     const u64 tagged_addr = (addr & ~3ULL) | (is_native_owned ? 1ULL : 0ULL);
-    auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+    const size_t base_set = ExactBufSetIdx(addr);
 
-    // 1. Update matching address in place if present.
-    for (size_t w = 0; w < kExactBufWays; ++w) {
-        const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
-        if ((cur & ~3ULL) == addr) {
-            set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
-            set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
-            return;
+    // 1. Update matching address in place across all probed sets if present.
+    for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+        auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
+            if ((cur & ~3ULL) == addr) {
+                set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+                set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
+                return;
+            }
         }
     }
-    // 2. Fill first empty way if available.
-    for (size_t w = 0; w < kExactBufWays; ++w) {
-        u64 expected = 0ULL;
-        if (set[w].addr_and_flag.compare_exchange_strong(
-                expected, 2ULL, std::memory_order_acquire, std::memory_order_relaxed)) {
-            set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
-            set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
-            return;
+    // 2. Fill first empty way across the 32 probed candidate slots.
+    for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+        auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            u64 expected = 0ULL;
+            if (set[w].addr_and_flag.compare_exchange_strong(
+                    expected, 2ULL, std::memory_order_acquire, std::memory_order_relaxed)) {
+                set[w].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+                set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
+                return;
+            }
         }
     }
-    // 3. Evict a way round-robin.
-    const size_t victim =
-        static_cast<size_t>(g_exact_rr_hand.fetch_add(1u, std::memory_order_relaxed) &
-                            (kExactBufWays - 1));
-    set[victim].addr_and_flag.store(0ULL, std::memory_order_release);
-    set[victim].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
-    set[victim].addr_and_flag.store(tagged_addr, std::memory_order_release);
+    // 3. Fallback round-robin across all 32 candidate slots (virtually unreachable at <10% load).
+    const u32 rr = g_exact_rr_hand.fetch_add(1u, std::memory_order_relaxed);
+    auto& victim_set =
+        g_exact_buf_table[(base_set + ((rr >> 3) & (kExactBufProbeSets - 1))) & (kExactBufSets - 1)];
+    const size_t victim_way = static_cast<size_t>(rr & (kExactBufWays - 1));
+    victim_set[victim_way].addr_and_flag.store(0ULL, std::memory_order_release);
+    victim_set[victim_way].sizes_packed.store(packed_sizes, std::memory_order_relaxed);
+    victim_set[victim_way].addr_and_flag.store(tagged_addr, std::memory_order_release);
 }
 
 void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL) {
         return;
     }
-    auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+    const size_t base_set = ExactBufSetIdx(addr);
     const u64 tagged_addr = (addr & ~3ULL) | (is_native_owned ? 1ULL : 0ULL);
-    for (size_t w = 0; w < kExactBufWays; ++w) {
-        const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
-        if ((cur & ~3ULL) == addr) {
-            set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
-            return;
+    for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+        auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
+            if ((cur & ~3ULL) == addr) {
+                set[w].addr_and_flag.store(tagged_addr, std::memory_order_release);
+                return;
+            }
         }
     }
 }
@@ -458,11 +613,14 @@ bool IsExactNativeOwnedBuffer(VAddr addr) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL) {
         return false;
     }
-    const auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
+    const size_t base_set = ExactBufSetIdx(addr);
     const u64 wanted = addr | 1ULL;
-    for (size_t w = 0; w < kExactBufWays; ++w) {
-        if (set[w].addr_and_flag.load(std::memory_order_acquire) == wanted) {
-            return true;
+    for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+        const auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            if (set[w].addr_and_flag.load(std::memory_order_acquire) == wanted) {
+                return true;
+            }
         }
     }
     return false;
@@ -472,13 +630,16 @@ VAddr LookupExactBufferEnd(VAddr addr) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL) {
         return 0;
     }
-    const auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
-    for (size_t w = 0; w < kExactBufWays; ++w) {
-        const u64 tag = set[w].addr_and_flag.load(std::memory_order_acquire);
-        if ((tag & ~3ULL) == addr) {
-            const u64 sizes = set[w].sizes_packed.load(std::memory_order_relaxed);
-            const u32 alloc_sz = static_cast<u32>(sizes >> 32);
-            return alloc_sz != 0 ? (addr + alloc_sz) : 0;
+    const size_t base_set = ExactBufSetIdx(addr);
+    for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+        const auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+        for (size_t w = 0; w < kExactBufWays; ++w) {
+            const u64 tag = set[w].addr_and_flag.load(std::memory_order_acquire);
+            if ((tag & ~3ULL) == addr) {
+                const u64 sizes = set[w].sizes_packed.load(std::memory_order_relaxed);
+                const u32 alloc_sz = static_cast<u32>(sizes >> 32);
+                return alloc_sz != 0 ? (addr + alloc_sz) : 0;
+            }
         }
     }
     return 0;
@@ -486,11 +647,14 @@ VAddr LookupExactBufferEnd(VAddr addr) noexcept {
 
 void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept {
     if ((addr & 3ULL) == 0ULL && addr != 0) {
-        auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
-        for (size_t w = 0; w < kExactBufWays; ++w) {
-            const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
-            if ((cur & ~3ULL) == addr) {
-                set[w].addr_and_flag.store(0ULL, std::memory_order_release);
+        const size_t base_set = ExactBufSetIdx(addr);
+        for (size_t p = 0; p < kExactBufProbeSets; ++p) {
+            auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+            for (size_t w = 0; w < kExactBufWays; ++w) {
+                const u64 cur = set[w].addr_and_flag.load(std::memory_order_relaxed);
+                if ((cur & ~3ULL) == addr) {
+                    set[w].addr_and_flag.store(0ULL, std::memory_order_release);
+                }
             }
         }
     }
@@ -541,20 +705,25 @@ u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size) noexcept {
         return clamped;
     }
     if ((addr & 3ULL) == 0ULL && addr != 0) {
-        const auto& set = g_exact_buf_table[ExactBufSetIdx(addr)];
-        for (size_t w = 0; w < kExactBufWays; ++w) {
-            const u64 tag = set[w].addr_and_flag.load(std::memory_order_acquire);
-            if ((tag & ~3ULL) == addr) {
-                const u64 sizes = set[w].sizes_packed.load(std::memory_order_relaxed);
-                const u32 req_sz = static_cast<u32>(sizes & 0xFFFFFFFFULL);
-                const u32 alloc_sz = static_cast<u32>(sizes >> 32);
-                if (alloc_sz != 0) {
-                    if (clamped > alloc_sz) {
-                        return req_sz != 0 ? req_sz : alloc_sz;
+        const size_t base_set = ExactBufSetIdx(addr);
+        bool matched = false;
+        for (size_t p = 0; p < kExactBufProbeSets && !matched; ++p) {
+            const auto& set = g_exact_buf_table[(base_set + p) & (kExactBufSets - 1)];
+            for (size_t w = 0; w < kExactBufWays; ++w) {
+                const u64 tag = set[w].addr_and_flag.load(std::memory_order_acquire);
+                if ((tag & ~3ULL) == addr) {
+                    const u64 sizes = set[w].sizes_packed.load(std::memory_order_relaxed);
+                    const u32 req_sz = static_cast<u32>(sizes & 0xFFFFFFFFULL);
+                    const u32 alloc_sz = static_cast<u32>(sizes >> 32);
+                    if (alloc_sz != 0) {
+                        if (clamped > alloc_sz) {
+                            return req_sz != 0 ? req_sz : alloc_sz;
+                        }
+                        return clamped;
                     }
-                    return clamped;
+                    matched = true;
+                    break;
                 }
-                break;
             }
         }
     }
@@ -694,7 +863,7 @@ void Manager::ReclaimCompleted() noexcept {
     }
 }
 
-void Manager::RetireOverlapping(VAddr addr, u64 size) {
+void Manager::RetireOverlapping(VAddr addr, u64 size, bool clear_global_owned) {
     if (entries_by_base.empty() || size == 0 || !AnyBitmap64k(addr, size)) {
         return;
     }
@@ -706,18 +875,41 @@ void Manager::RetireOverlapping(VAddr addr, u64 size) {
     const u64 tick = scheduler.CurrentTick();
     while (it != entries_by_base.end() && it->first < range_end) {
         const VAddr e_start = it->first;
-        const VAddr e_end = e_start + it->second.alloc_size;
+        const u64 e_size = it->second.alloc_size;
+        const VAddr e_end = e_start + e_size;
         if (e_end <= addr) {
             ++it;
             continue;
         }
         UpdateMruEntry(e_start, 0, nullptr, 0);
         ClearMruFor(it->second.buffer.get());
-        SetExactNativeBufferOwned(e_start, false);
+        if (clear_global_owned) {
+            ClearNativeOwnedRange(e_start, e_size);
+            SetExactNativeBufferOwned(e_start, false);
+        }
         retired.emplace_back(tick, std::move(it->second.buffer));
         it = entries_by_base.erase(it);
         RebuildBitmapAroundErase(e_start, e_end);
     }
+}
+
+bool Manager::OverlapsLiveEntry(VAddr addr, u64 size) const noexcept {
+    if (entries_by_base.empty() || size == 0 || !AnyBitmap64k(addr, size)) {
+        return false;
+    }
+    const VAddr range_end = addr + size;
+    auto it = entries_by_base.lower_bound(addr);
+    if (it != entries_by_base.begin()) {
+        --it;
+    }
+    while (it != entries_by_base.end() && it->first < range_end) {
+        const VAddr e_end = it->first + it->second.alloc_size;
+        if (e_end > addr) {
+            return true;
+        }
+        ++it;
+    }
+    return false;
 }
 
 void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
@@ -729,7 +921,7 @@ void Manager::OnGpuWrite(VAddr addr, u64 size) noexcept {
     if (entries_by_base.empty()) {
         return;
     }
-    RetireOverlapping(addr, size);
+    RetireOverlapping(addr, size, /*clear_global_owned=*/true);
 }
 
 std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
@@ -868,8 +1060,9 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
     struct StagedSlice {
         u32 region_idx{0};
         bool fast_memcpy{false};
-        VAddr dst_va{0};
+        VAddr base_va{0};
         VAddr src_va{0};
+        u32 dst_in_buf_off{0};
         u32 copy_bytes{0};
         u32 slice_span{0};
         u32 rel_offset{0};
@@ -915,13 +1108,19 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
                     for (u32 k = 0; k < chunk_count; ++k) {
                         const auto& s = chunk_slices[k];
                         u8* dst = base_dst + s.rel_offset;
-                        if (s.fast_memcpy) {
-                            std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
-                        } else {
-                            mem->CopySparseMemory(s.src_va, dst, s.copy_bytes);
+                        if (s.dst_in_buf_off != 0) {
+                            std::memset(dst, 0, s.dst_in_buf_off);
                         }
-                        if (s.slice_span > s.copy_bytes) {
-                            std::memset(dst + s.copy_bytes, 0, s.slice_span - s.copy_bytes);
+                        u8* copy_dst = dst + s.dst_in_buf_off;
+                        if (s.fast_memcpy) {
+                            std::memcpy(copy_dst, reinterpret_cast<const void*>(s.src_va),
+                                        s.copy_bytes);
+                        } else {
+                            mem->CopySparseMemory(s.src_va, copy_dst, s.copy_bytes);
+                        }
+                        const u32 written_end = s.dst_in_buf_off + s.copy_bytes;
+                        if (s.slice_span > written_end) {
+                            std::memset(dst + written_end, 0, s.slice_span - written_end);
                         }
                     }
                     sbuf_ptr->Flush(base_off, chunk_bytes);
@@ -937,13 +1136,18 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             for (u32 k = 0; k < staged_count; ++k) {
                 const auto& s = staged[k];
                 u8* dst = data + s.rel_offset;
-                if (s.fast_memcpy) {
-                    std::memcpy(dst, reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
-                } else {
-                    memory->CopySparseMemory(s.src_va, dst, s.copy_bytes);
+                if (s.dst_in_buf_off != 0) {
+                    std::memset(dst, 0, s.dst_in_buf_off);
                 }
-                if (s.slice_span > s.copy_bytes) {
-                    std::memset(dst + s.copy_bytes, 0, s.slice_span - s.copy_bytes);
+                u8* copy_dst = dst + s.dst_in_buf_off;
+                if (s.fast_memcpy) {
+                    std::memcpy(copy_dst, reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
+                } else {
+                    memory->CopySparseMemory(s.src_va, copy_dst, s.copy_bytes);
+                }
+                const u32 written_end = s.dst_in_buf_off + s.copy_bytes;
+                if (s.slice_span > written_end) {
+                    std::memset(dst + written_end, 0, s.slice_span - written_end);
                 }
             }
             sbuf.Commit();
@@ -953,7 +1157,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
         for (u32 k = 0; k < staged_count; ++k) {
             const auto& s = staged[k];
-            auto it = entries_by_base.find(s.dst_va);
+            auto it = entries_by_base.find(s.base_va);
             if (it == entries_by_base.end()) {
                 continue;
             }
@@ -964,11 +1168,11 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             e.stream_override_off = stream_off;
             if (!e.dirty_writeback) {
                 e.dirty_writeback = true;
-                dirty_writeback_bases.push_back(s.dst_va);
+                dirty_writeback_bases.push_back(s.base_va);
             }
-            UpdateMruEntry(s.dst_va, e.alloc_size, &sbuf, stream_off);
-            buf_cache.NoteExternalGpuModified(s.dst_va, e.alloc_size);
-            Vulkan::DirectShaders::InvalidateRange(s.dst_va, e.alloc_size);
+            UpdateMruEntry(s.base_va, e.alloc_size, &sbuf, stream_off);
+            buf_cache.NoteExternalGpuModified(s.base_va, e.alloc_size);
+            Vulkan::DirectShaders::InvalidateRange(s.base_va, e.alloc_size);
             out_handled[s.region_idx] = 1u;
         }
         staged_count = 0;
@@ -987,13 +1191,21 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
-        auto it = entries_by_base.find(reg.dst_va);
-        if (it == entries_by_base.end() || !it->second.buffer) {
+        auto it = entries_by_base.upper_bound(reg.dst_va);
+        if (it == entries_by_base.begin()) {
             continue;
         }
+        --it;
+        const VAddr base_va = it->first;
         const auto& e = it->second;
-        if (reg.byte_size < e.raw_size || reg.byte_size > e.alloc_size ||
+        if (!e.buffer || reg.dst_va < base_va ||
+            reg.dst_va + reg.byte_size > base_va + e.alloc_size ||
             e.alloc_size > (512ULL << 10)) {
+            continue;
+        }
+        const u64 dst_in_buf_off = reg.dst_va - base_va;
+        const bool full_overwrite = (dst_in_buf_off == 0 && reg.byte_size >= e.raw_size);
+        if (!full_overwrite && !e.needs_zero_init) {
             continue;
         }
 
@@ -1008,8 +1220,8 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
                 out_handled[prev] != 0u ||
                 std::any_of(staged.begin(), staged.begin() + staged_count,
                             [prev](const StagedSlice& s) { return s.region_idx == prev; });
-            if (!prev_will_handle &&
-                RangesOverlap(reg.dst_va, e.alloc_size, regions[prev].dst_va,
+            if ((!prev_will_handle || !full_overwrite) &&
+                RangesOverlap(base_va, e.alloc_size, regions[prev].dst_va,
                               regions[prev].byte_size)) {
                 ordering_hazard = true;
                 break;
@@ -1024,8 +1236,16 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
+        // Source cannot itself be a native GPU VkBuffer (whose guest RAM is uninitialized/stale).
+        if (OverlapsNativeOwnedRange(reg.src_va, reg.byte_size) ||
+            OverlapsLiveEntry(reg.src_va, reg.byte_size)) {
+            continue;
+        }
+
         const bool cue_src =
-            IsTransientCueHeap(reg.src_va, reg.byte_size) && !IsCueHeapEverGpuModified();
+            IsTransientCueHeap(reg.src_va, reg.byte_size) &&
+            (!IsCueHeapEverGpuModified() ||
+             !buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size));
         uintptr_t mapped_end = 0;
         const bool fast_mapped =
             cue_src || (BbLookupMappedEnd(reg.src_va, mapped_end) &&
@@ -1050,8 +1270,9 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         staged[staged_count++] = StagedSlice{
             .region_idx = idx,
             .fast_memcpy = fast_mapped,
-            .dst_va = reg.dst_va,
+            .base_va = base_va,
             .src_va = reg.src_va,
+            .dst_in_buf_off = static_cast<u32>(dst_in_buf_off),
             .copy_bytes = reg.byte_size,
             .slice_span = static_cast<u32>(slice_span),
             .rel_offset = static_cast<u32>(rel_off),
@@ -1269,7 +1490,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         const auto& ev = events[i];
         if (ev.kind == EventKind::RetireRange) {
             if (ev.addr != 0 && ev.byte_size != 0) {
-                RetireOverlapping(ev.addr, ev.byte_size);
+                RetireOverlapping(ev.addr, ev.byte_size, /*clear_global_owned=*/false);
             }
             continue;
         }
@@ -1290,8 +1511,11 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                                  : (ev.usage_type == 2) ? "DirectDynamicBuf"
                                                         : "DirectDefaultBuf";
 
-        // N1.2b: Inside an open RenderPass, NEVER call runtime.CopyBuffer / runtime.FillBuffer
+        // N1.2b/N1.2c: Inside an open RenderPass, NEVER call runtime.CopyBuffer / runtime.FillBuffer
         // (which would call scheduler.EndRendering() and break the 2560x1440 6-MRT pass!).
+        // Guest-timeline tables (`g_native_owned_4b` / `g_exact_buf_table`) are updated strictly on
+        // the Guest CPU thread so delayed Stage B `ProcessEvents` can never race with subsequent
+        // guest-thread frees/reallocations at the same VA.
         if (is_rendering) {
             if (ev.has_initial_data != 0) {
                 u64 stream_off = 0;
@@ -1302,7 +1526,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                     deferred_events.push_back(ev);
                     continue;
                 }
-                RetireOverlapping(ev.addr, guest_span);
+                RetireOverlapping(ev.addr, guest_span, /*clear_global_owned=*/false);
                 auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                                     MemoryType::DeviceLocal, debug_name);
                 Entry entry{};
@@ -1319,8 +1543,6 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entries_by_base[ev.addr] = std::move(entry);
                 dirty_writeback_bases.push_back(ev.addr);
                 SetBitmapRange(ev.addr, ev.addr + guest_span);
-                NoteExactNativeBuffer(ev.addr, static_cast<u32>(raw_size),
-                                      static_cast<u32>(guest_span), true);
                 const size_t h0 =
                     static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
                 mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
@@ -1330,7 +1552,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
 
             // ev.has_initial_data == 0 inside an active RenderPass:
             if (zero_buffer && vk_alloc_size <= kSharedZeroBytes) {
-                RetireOverlapping(ev.addr, guest_span);
+                RetireOverlapping(ev.addr, guest_span, /*clear_global_owned=*/false);
                 auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                                     MemoryType::DeviceLocal, debug_name);
                 Entry entry{};
@@ -1343,8 +1565,6 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entry.buffer = std::move(buf);
                 entries_by_base[ev.addr] = std::move(entry);
                 SetBitmapRange(ev.addr, ev.addr + guest_span);
-                NoteExactNativeBuffer(ev.addr, static_cast<u32>(raw_size),
-                                      static_cast<u32>(guest_span), true);
                 if (active_buf_cache) {
                     active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
                 }
@@ -1361,7 +1581,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 deferred_events.push_back(ev);
                 continue;
             }
-            RetireOverlapping(ev.addr, guest_span);
+            RetireOverlapping(ev.addr, guest_span, /*clear_global_owned=*/false);
             auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                                 MemoryType::DeviceLocal, debug_name);
             Entry entry{};
@@ -1378,8 +1598,6 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
             entries_by_base[ev.addr] = std::move(entry);
             dirty_writeback_bases.push_back(ev.addr);
             SetBitmapRange(ev.addr, ev.addr + guest_span);
-            NoteExactNativeBuffer(ev.addr, static_cast<u32>(raw_size),
-                                  static_cast<u32>(guest_span), true);
             if (active_buf_cache) {
                 active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
             }
@@ -1391,7 +1609,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         }
 
         // Outside any active RenderPass (!is_rendering):
-        RetireOverlapping(ev.addr, guest_span);
+        RetireOverlapping(ev.addr, guest_span, /*clear_global_owned=*/false);
         auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                             MemoryType::DeviceLocal, debug_name);
         bool lazy_zero = false;
@@ -1445,8 +1663,6 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         entry.buffer = std::move(buf);
         entries_by_base[ev.addr] = std::move(entry);
         SetBitmapRange(ev.addr, ev.addr + guest_span);
-        NoteExactNativeBuffer(ev.addr, static_cast<u32>(raw_size), static_cast<u32>(guest_span),
-                              true);
         const size_t h0 =
             static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
         mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
@@ -1476,13 +1692,20 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    const bool had_native = VideoCore::DirectBuffers::OverlapsNativeOwnedRange(addr, byte_size);
+    if (had_native) {
+        VideoCore::DirectBuffers::ClearNativeOwnedRange(addr, byte_size);
+    }
     VideoCore::DirectBuffers::NoteTransientCueHeapAlloc(addr, byte_size);
     VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, byte_size);
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->NoteFreshRange(addr, byte_size);
     }
-    if (VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
-        VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
+    const bool had_guest_64k = VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size);
+    if (had_native || had_guest_64k) {
+        if (had_guest_64k) {
+            VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
+        }
         VideoCore::DirectBuffers::Event ev{};
         ev.kind = VideoCore::DirectBuffers::EventKind::RetireRange;
         ev.addr = addr;
@@ -1522,6 +1745,10 @@ void bb_direct_vk_note_exact_buffer_alloc(const void* gpu_addr,
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     const u32 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
+    if (is_native_owned != 0u) {
+        VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
+        VideoCore::DirectBuffers::MarkNativeOwnedRange(addr, span);
+    }
     VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
     VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, span,
                                                     is_native_owned != 0u);
@@ -1537,11 +1764,12 @@ void bb_direct_vk_register_immutable_buffer(uint32_t resource_id,
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
-    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
-    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
-                                                    false);
-    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
+    VideoCore::DirectBuffers::MarkNativeOwnedRange(addr, span);
+    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
+                                                    true);
+    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = VideoCore::DirectBuffers::EventKind::RegisterImmutable;
     ev.usage_type = 1u;
@@ -1567,11 +1795,12 @@ void bb_direct_vk_register_native_buffer(uint32_t resource_id,
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
     const u64 span = alloc_byte_size >= raw_byte_size ? alloc_byte_size : raw_byte_size;
-    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
-    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
-                                                    false);
-    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::g_ever_registered.store(true, std::memory_order_release);
+    VideoCore::DirectBuffers::NoteNativeGpuBlockAlloc(addr, span);
+    VideoCore::DirectBuffers::MarkNativeOwnedRange(addr, span);
+    VideoCore::DirectBuffers::NoteExactNativeBuffer(addr, raw_byte_size, static_cast<u32>(span),
+                                                    true);
+    VideoCore::DirectBuffers::MarkGuestImmutableRange(addr, span);
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = (usage_type == 1u && has_initial_data != 0u)
                   ? VideoCore::DirectBuffers::EventKind::RegisterImmutable
@@ -1592,15 +1821,22 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    const bool had_native = VideoCore::DirectBuffers::OverlapsNativeOwnedRange(addr, byte_size);
+    if (had_native) {
+        VideoCore::DirectBuffers::ClearNativeOwnedRange(addr, byte_size);
+    }
     VideoCore::DirectBuffers::NoteTransientCueHeapFree(addr, byte_size);
     VideoCore::DirectBuffers::NoteNativeGpuBlockFree(addr, byte_size);
     if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
         buf->DisarmWatchedRange(addr, byte_size);
     }
-    if (!VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size)) {
+    const bool had_guest_64k = VideoCore::DirectBuffers::GuestImmutableIntersects(addr, byte_size);
+    if (!had_native && !had_guest_64k) {
         return;
     }
-    VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
+    if (had_guest_64k) {
+        VideoCore::DirectBuffers::ClearWholeGuestImmutablePages(addr, byte_size);
+    }
     VideoCore::DirectBuffers::Event ev{};
     ev.kind = VideoCore::DirectBuffers::EventKind::RetireRange;
     ev.addr = addr;
