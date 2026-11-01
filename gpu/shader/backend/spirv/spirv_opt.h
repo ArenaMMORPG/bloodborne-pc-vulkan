@@ -17,6 +17,11 @@ struct SpirvOptStats {
     u64 nocontract_stripped = 0;
     u64 legacy_mul_folded = 0;
     u32 inf_nan_preserve_stripped = 0;
+    u32 hw_interp_modules = 0;
+    u64 hw_interp_varyings = 0;
+    u64 hw_interp_channels = 0;
+    u64 hw_interp_int_nudges = 0;
+    u64 self_minmax_folded = 0;
 };
 
 /// Controlled by BB_SPIRV_OPT (default 1 = enabled, 0 = raw EmitSPIRV output).
@@ -26,6 +31,12 @@ struct SpirvOptStats {
 /// contraction, fold exact V_MUL_LEGACY_F32 squares/constants, and strip SignedZeroInfNanPreserve
 /// on NaN-safe modules; 0 = strict GCN float controls).
 [[nodiscard]] bool FastFpEnabled() noexcept;
+
+/// Block 5, Step 5.3: Controlled by BB_HW_INTERP (default 1 = replace software PerVertexKHR /
+/// FragmentBarycentricKHR manual barycentric FSUB+FFMA chains with hardware rasterizer IPA
+/// interpolation + Flat provoking-vertex loads + 1+2^-16 integer-varying truncation nudge;
+/// 0 = software FragmentBarycentricKHR).
+[[nodiscard]] bool HwInterpEnabled() noexcept;
 
 /// Runs SPIRV-Tools RegisterPerformancePasses() (-O) targeting Vulkan 1.3.
 /// On failure, logs a warning and leaves `spv` unmodified.
