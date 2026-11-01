@@ -616,6 +616,8 @@ private:
     bool BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
                              u32 first_image_idx, bool& barrier, TextureSet*& slot, u64& out_key);
     boost::container::small_vector<DirectCopyTextureRegionArgs, 16> pending_tex_copies;
+    vk::Pipeline bound_graphics_pipeline{};
+    u64 bound_graphics_epoch = 0;
     /// The prepared sharps of `stage` in the current prepared draw, if they fit it.
     const PreparedStage* FindPreparedStage(const Shader::Info& stage) const;
     /// Whether the helper may bind textures for this pipeline at all (fixed descriptor layout,

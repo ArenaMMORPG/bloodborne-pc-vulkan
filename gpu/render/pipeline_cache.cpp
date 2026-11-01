@@ -493,7 +493,19 @@ bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
     if (worker_sel.regs->stage_enable.hs_en) {
         return false;
     }
-    return RefreshGraphicsKey(worker_sel) && !worker_sel.worker->failed;
+    // Single shared_lock + single sigsetjmp across all stages of the draw (cuts cross-CCD
+    // programs_mutex atomic RMWs and sigsetjmp overhead in half on bb:DrawPrep0..1).
+    std::shared_lock lk{programs_mutex};
+    sigjmp_buf recover;
+    if (sigsetjmp(recover, 0)) {
+        runtime_fault_recover = nullptr;
+        worker_sel.worker->failed = true;
+        return false;
+    }
+    runtime_fault_recover = &recover;
+    const bool ok = RefreshGraphicsKey(worker_sel) && !worker_sel.worker->failed;
+    runtime_fault_recover = nullptr;
+    return ok;
 }
 
 namespace {
@@ -1128,7 +1140,7 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
             return false;
         }
         if (fetch_shader) {
-            sel.fetch_shader = fetch_shader;
+            sel.fetch_shader = std::move(fetch_shader);
         }
         return true;
     };
@@ -1291,8 +1303,9 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
                                                    HwStage hw_stage,
                                                    const Program* direct_program) {
     // A draw-preparation worker only looks up, with its own copy of the program's Info.
+    // Note: PrepareGraphicsPipeline already holds shared_lock<programs_mutex> and armed
+    // runtime_fault_recover across the whole draw.
     auto& worker = *sel.worker;
-    std::shared_lock lk{programs_mutex};
     const Program* program = direct_program;
     if (!program) {
         const auto found = program_cache.find(params.hash);
@@ -1308,40 +1321,44 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
         worker.failed = true;
         return {};
     }
-    auto& info = worker.infos.try_emplace(program, *program->info_template).first->second;
-    if (program->info_template->uses_paged_buffers && !info.uses_paged_buffers) {
+    auto& mru_slot = worker.info_mru[(reinterpret_cast<uintptr_t>(program) >> 6) & 63];
+    PrepWorker::ProgramState* prog_state = nullptr;
+    if (mru_slot.first == program && mru_slot.second != nullptr) [[likely]] {
+        prog_state = mru_slot.second;
+    } else {
+        prog_state = &worker.infos.try_emplace(program, *program->info_template).first->second;
+        mru_slot = {program, prog_state};
+    }
+    auto& info = prog_state->info;
+    if (program->info_template->uses_paged_buffers && !info.uses_paged_buffers) [[unlikely]] {
         info = *program->info_template;
     }
     info.pgm_base = params.Base();
     info.user_data = params.user_data;
-    // The walk of resource tables and the fetch shader parse read guest memory through pointers
-    // in the registers; ahead of the GPU thread that memory may already be reused. A fault
-    // returns here (runtime_fault_recover) and the draw is left to the GPU thread. A jump out of
-    // the specialization leaks its partial allocations (rare).
-    sigjmp_buf recover;
-    if (sigsetjmp(recover, 0)) {
-        worker.failed = true;
-        return {};
-    }
-    runtime_fault_recover = &recover;
     info.RefreshFlatBuf();
     if (info.has_fetch_shader &&
         !FetchCodeDecodes(Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base))) {
-        runtime_fault_recover = nullptr;
         worker.failed = true; // the GPU thread reads back what the GPU wrote, or skips the draw
         return {};
     }
-    const auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
-    runtime_fault_recover = nullptr;
-    const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
-    if (it == program->modules.end()) {
+    auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
+    const auto& modules = program->modules;
+    const auto it =
+        (prog_state->last_perm_idx < modules.size() &&
+         modules[prog_state->last_perm_idx].spec == spec)
+            ? (modules.begin() + prog_state->last_perm_idx)
+            : std::ranges::find(modules, spec, &Program::Module::spec);
+    if (it == modules.end()) {
         worker.failed = true;
         return {};
     }
     info.AddBindings(binding);
-    const size_t perm_idx = std::distance(program->modules.begin(), it);
-    worker.stages.push_back({program, params.hash, hw_stage, info.pgm_base, &info.flattened_ud_buf});
-    return {&info, it->module, it->spec.fetch_shader_data, HashCombine(params.hash, perm_idx)};
+    const size_t perm_idx = static_cast<size_t>(std::distance(modules.begin(), it));
+    prog_state->last_perm_idx = perm_idx;
+    worker.stages.push_back(
+        {program, &info, params.hash, hw_stage, info.pgm_base, &info.flattened_ud_buf});
+    return {&info, it->module, std::move(spec.fetch_shader_data),
+            HashCombine(params.hash, perm_idx)};
 }
 
 PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage hw_stage,

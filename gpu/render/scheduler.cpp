@@ -790,17 +790,23 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
     BbThreads::PinToGpuDomain(); // with the draw recording thread whose chunks it records
     Worker& worker = *workers[index];
     std::vector<std::unique_ptr<RecordChunk>> ordered;
+    std::vector<std::unique_ptr<RecordChunk>> local_chunks;
+    local_chunks.reserve(8);
     const auto has_work = [&] {
         return !worker.queue.empty() || OrderedReady();
     };
     while (true) {
         // The thread of the segment being recorded spins briefly before sleeping: its next
         // chunk usually follows within microseconds, and a sleeping thread costs the producer
-        // a wake-up syscall per kick. With few hardware threads (Steam Deck: 8) the spin would
-        // take time from guest threads. The others sleep until a new segment reaches them.
+        // a wake-up syscall per kick. Keep the default tight (20 us) so inter-chunk and
+        // inter-frame gaps do not burn ~1.6 ms/frame of empty PAUSE loops on bb:VkRecorder.
         if (active_worker.load(std::memory_order_relaxed) == index) {
-            static const auto spin_time =
-                std::chrono::microseconds(BbThreads::Available() >= 12 ? 200 : 20);
+            static const auto spin_time = std::chrono::microseconds([] {
+                if (const char* env = std::getenv("BB_RECORDER_SPIN_US")) {
+                    return std::max(0, std::atoi(env));
+                }
+                return BbThreads::Available() >= 12 ? 20 : 10;
+            }());
             const auto spin_until = std::chrono::steady_clock::now() + spin_time;
             for (u32 spins = 1; worker.queued.load(std::memory_order_acquire) == 0 &&
                                 ordered_queued.load(std::memory_order_acquire) == 0;
@@ -813,7 +819,6 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
                 }
             }
         }
-        std::unique_ptr<RecordChunk> chunk;
         {
             std::unique_lock lk{recorder_mutex};
             if (!has_work()) {
@@ -833,8 +838,22 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
                 ordered_running = true;
                 ordered_queued.store(ordered_queue.size(), std::memory_order_release);
             } else {
-                chunk = std::move(worker.queue.front());
-                worker.queue.pop_front();
+                auto* const first_batch = worker.queue.front()->batch;
+                const u32 first_seg = worker.queue.front()->segment;
+                const u32 max_before_ordered =
+                    (!ordered_queue.empty() &&
+                     ordered_queue.front()->batch == first_batch &&
+                     ordered_queue.front()->segment == first_seg &&
+                     ordered_queue.front()->after > first_batch->recorded[first_seg])
+                        ? (ordered_queue.front()->after - first_batch->recorded[first_seg])
+                        : 8u;
+                const u32 take_limit = std::clamp<u32>(max_before_ordered, 1u, 8u);
+                do {
+                    local_chunks.push_back(std::move(worker.queue.front()));
+                    worker.queue.pop_front();
+                } while (local_chunks.size() < take_limit && !worker.queue.empty() &&
+                         worker.queue.front()->batch == first_batch &&
+                         worker.queue.front()->segment == first_seg);
                 worker.queued.store(worker.queue.size(), std::memory_order_release);
                 worker.busy = true;
             }
@@ -854,17 +873,23 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
         }
         // The segment's command buffer is begun by the first chunk; it is ended at the
         // submission, after SyncRecording(). Only this thread uses the pool meanwhile.
-        auto& cmdbuf = chunk->batch->segments[chunk->segment];
+        auto& cmdbuf = local_chunks[0]->batch->segments[local_chunks[0]->segment];
         if (!cmdbuf) {
             cmdbuf = BeginCommandBuffer(*worker.pool);
         }
-        chunk->Execute(cmdbuf);
+        for (auto& c : local_chunks) {
+            c->Execute(cmdbuf);
+        }
         {
             std::scoped_lock lk{recorder_mutex};
-            ++chunk->batch->recorded[chunk->segment];
-            free_chunks.push_back(std::move(chunk));
+            auto& first = local_chunks[0];
+            first->batch->recorded[first->segment] += static_cast<u32>(local_chunks.size());
+            for (auto& c : local_chunks) {
+                free_chunks.push_back(std::move(c));
+            }
+            local_chunks.clear();
             worker.busy = false;
-            if (worker.queue.empty()) {
+            if (worker.queue.empty() || OrderedReady()) {
                 recorder_idle_cv.notify_all();
             }
         }

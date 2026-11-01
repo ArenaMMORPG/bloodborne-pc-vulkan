@@ -237,7 +237,9 @@ void PrepareResources(const Shader::Info& info, PreparedStage& stage, FlatArena&
 /// Rasterizer::BindVertexBuffers' pure part (GraphicsPipeline::GetVertexInputs for the dynamic
 /// vertex input path, and the merge of the stream memory into ranges).
 void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderData& fetch,
-                         const Gcn::Regs& regs, PreparedVertexInputs& out, FlatArena& arena) {
+                         const Gcn::Regs& regs, PreparedVertexInputs& out, FlatArena& arena,
+                         std::span<const Gcn::Buffer> pre_buffers = {}, u64 pre_buffers_hash = 0,
+                         bool has_pre_buffers = false) {
     using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
     thread_local std::vector<vk::VertexInputAttributeDescription2EXT> attributes;
     thread_local std::vector<vk::VertexInputBindingDescription2EXT> bindings;
@@ -250,9 +252,11 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
     ranges.clear();
     merged.clear();
     range_index.clear();
-    for (const auto& attrib : fetch.attributes) {
+    for (size_t attr_idx = 0; attr_idx < fetch.attributes.size(); ++attr_idx) {
+        const auto& attrib = fetch.attributes[attr_idx];
         const auto step_rate = attrib.GetStepRate();
-        const auto buffer = attrib.GetSharp(vs);
+        const auto buffer =
+            has_pre_buffers ? pre_buffers[attr_idx] : attrib.GetSharp(vs);
         // The V# may come from user data the guest is still writing: an unknown format leaves
         // the inputs to the GPU thread, which reads them once the draw is submitted (the
         // assertion in SurfaceFormat stopped the process here).
@@ -327,8 +331,11 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
     out.ranges = arena.AppendArray(merged.data(), merged.size());
     out.count = static_cast<u32>(attributes.size());
     out.num_ranges = static_cast<u32>(merged.size());
-    out.buffers_hash =
-        buffers.empty() ? 0 : XXH3_64bits(buffers.data(), buffers.size() * sizeof(Gcn::Buffer));
+    out.buffers_hash = has_pre_buffers
+                           ? pre_buffers_hash
+                           : (buffers.empty() ? 0
+                                              : XXH3_64bits(buffers.data(),
+                                                            buffers.size() * sizeof(Gcn::Buffer)));
     out.valid = true;
 }
 
@@ -624,6 +631,17 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
     PrepWorker prep_worker{};
     sel.worker = &prep_worker;
     std::vector<std::shared_ptr<Submission>> path;
+    struct VertexPrepMemoEntry {
+        u64 submission_seq = ~0ull;
+        VkShaderModule vs_module = VK_NULL_HANDLE;
+        u32 step_rate_0 = 0;
+        u32 step_rate_1 = 0;
+        u32 count = 0;
+        u64 buffers_hash = 0;
+        std::array<Gcn::Buffer, 16> buffers{};
+        PreparedVertexInputs vertex{};
+    };
+    auto vtx_memo = std::make_unique<std::array<VertexPrepMemoEntry, 32>>();
 
     // The nearest ready buffer the GPU thread has not finished that still has open stripe slots.
     const auto claimable = [&]() -> std::shared_ptr<Submission> {
@@ -737,13 +755,61 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
                                 .flat = arena.Append(*stage.flat),
                                 .flat_size = static_cast<u32>(stage.flat->size()),
                             };
-                            PrepareResources(prep_worker.infos.at(stage.program), draw.stages[i],
-                                             arena);
+                            PrepareResources(*stage.worker_info, draw.stages[i], arena);
                         }
                         draw.vertex.valid = false;
                         const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
                         if (vs && sel.fetch_shader) {
-                            PrepareVertexInputs(*vs, *sel.fetch_shader, *regs, draw.vertex, arena);
+                            const u32 attr_count =
+                                static_cast<u32>(sel.fetch_shader->attributes.size());
+                            if (attr_count <= 16) [[likely]] {
+                                std::array<Gcn::Buffer, 16> cur_buffers{};
+                                for (u32 a = 0; a < attr_count; ++a) {
+                                    cur_buffers[a] =
+                                        sel.fetch_shader->attributes[a].GetSharp(*vs);
+                                }
+                                const u64 b_hash =
+                                    attr_count
+                                        ? XXH3_64bits(cur_buffers.data(),
+                                                      attr_count * sizeof(Gcn::Buffer))
+                                        : 0ULL;
+                                const VkShaderModule vs_mod = static_cast<VkShaderModule>(
+                                    sel.modules[static_cast<u32>(Shader::SwStage::Vertex)]);
+                                auto& entry = (*vtx_memo)
+                                    [(b_hash ^ (reinterpret_cast<uintptr_t>(vs_mod) >> 4)) & 31];
+                                if (entry.submission_seq == target->seq &&
+                                    entry.vs_module == vs_mod &&
+                                    entry.step_rate_0 == regs->vgt_instance_step_rate_0 &&
+                                    entry.step_rate_1 == regs->vgt_instance_step_rate_1 &&
+                                    entry.count == attr_count && entry.buffers_hash == b_hash &&
+                                    (attr_count == 0 ||
+                                     std::memcmp(entry.buffers.data(), cur_buffers.data(),
+                                                 attr_count * sizeof(Gcn::Buffer)) == 0)) {
+                                    draw.vertex = entry.vertex;
+                                } else {
+                                    PrepareVertexInputs(
+                                        *vs, *sel.fetch_shader, *regs, draw.vertex, arena,
+                                        std::span<const Gcn::Buffer>{cur_buffers.data(),
+                                                                     attr_count},
+                                        b_hash, true);
+                                    if (draw.vertex.valid) {
+                                        entry.submission_seq = target->seq;
+                                        entry.vs_module = vs_mod;
+                                        entry.step_rate_0 = regs->vgt_instance_step_rate_0;
+                                        entry.step_rate_1 = regs->vgt_instance_step_rate_1;
+                                        entry.count = attr_count;
+                                        entry.buffers_hash = b_hash;
+                                        if (attr_count > 0) {
+                                            std::memcpy(entry.buffers.data(), cur_buffers.data(),
+                                                        attr_count * sizeof(Gcn::Buffer));
+                                        }
+                                        entry.vertex = draw.vertex;
+                                    }
+                                }
+                            } else {
+                                PrepareVertexInputs(*vs, *sel.fetch_shader, *regs, draw.vertex,
+                                                    arena);
+                            }
                         }
                         draw.state.store(PreparedDraw::Ready, std::memory_order_release);
                     } else {

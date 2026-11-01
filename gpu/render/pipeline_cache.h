@@ -104,13 +104,21 @@ struct PipelineSelection {
 struct PrepWorker {
     struct Stage {
         const Program* program;
+        const Shader::Info* worker_info;
         u64 hash;
         Shader::HwStage hw_stage;
         VAddr pgm_base;
         const std::vector<u32>* flat;
     };
-    // Node-based: stages keep pointers to these Infos while later stages are inserted.
-    std::unordered_map<const Program*, Shader::Info> infos;
+    struct ProgramState {
+        Shader::Info info;
+        size_t last_perm_idx = 0;
+        explicit ProgramState(const Shader::Info& tmpl) : info{tmpl} {}
+    };
+    // Node-based: stages and info_mru keep stable pointers to these states while later programs
+    // are inserted.
+    std::unordered_map<const Program*, ProgramState> infos;
+    std::array<std::pair<const Program*, ProgramState*>, 64> info_mru{};
     boost::container::static_vector<Stage, MaxShaderStages> stages;
     bool failed = false;
 };

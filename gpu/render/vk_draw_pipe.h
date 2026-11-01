@@ -322,7 +322,7 @@ private:
                     if (const char* env = std::getenv("BB_PIPE_SPIN_US")) {
                         return std::max(0, std::atoi(env));
                     }
-                    return BbThreads::Available() >= 12 ? 200 : 50;
+                    return BbThreads::Available() >= 12 ? 25 : 15;
                 }());
                 const auto spin_until = std::chrono::steady_clock::now() + spin_time;
                 for (u32 spins = 1; available == at; ++spins) {

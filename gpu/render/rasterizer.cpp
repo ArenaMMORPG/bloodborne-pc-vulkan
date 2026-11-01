@@ -732,23 +732,43 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
     if (!Breadcrumbs::Enabled() && !DynCheck::Enabled()) [[likely]] {
-        // N3.2: 24-byte explicit draw closure instead of 712-byte `[=]` closure capturing
-        // 392-byte `Viewports` + 264-byte `Scissors` boost::static_vectors + 168-byte Crumb.
+        const u64 cur_epoch = scheduler.DescriptorStateEpoch();
+        const bool need_bind_pipeline =
+            (bound_graphics_epoch != cur_epoch) || (bound_graphics_pipeline != handle);
+        bound_graphics_pipeline = handle;
+        bound_graphics_epoch = cur_epoch;
         if (is_indexed) {
-            scheduler.Record([handle, num_indices, num_instances, first_vertex,
-                              first_instance](vk::CommandBuffer cmdbuf) {
-                cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-                cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
-                                   first_instance);
-            });
+            if (need_bind_pipeline) {
+                scheduler.Record([handle, num_indices, num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                    cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+                                       first_instance);
+                });
+            } else {
+                scheduler.Record([num_indices, num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+                                       first_instance);
+                });
+            }
         } else {
-            scheduler.Record([handle, num_indices, num_instances, first_vertex,
-                              first_instance](vk::CommandBuffer cmdbuf) {
-                cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-                cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
-            });
+            if (need_bind_pipeline) {
+                scheduler.Record([handle, num_indices, num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                    cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+                });
+            } else {
+                scheduler.Record([num_indices, num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+                });
+            }
         }
     } else {
+        bound_graphics_pipeline = handle;
+        bound_graphics_epoch = scheduler.DescriptorStateEpoch();
         const auto* ps_info = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         Breadcrumbs::Crumb crumb{
             .kind = is_indexed ? Breadcrumbs::Kind::DrawIndexed : Breadcrumbs::Kind::Draw,
@@ -1796,6 +1816,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
     const vk::Pipeline handle = pipeline->Handle();
+    bound_graphics_pipeline = handle;
+    bound_graphics_epoch = scheduler.DescriptorStateEpoch();
     const vk::Buffer args = checked_args;
     const u64 args_offset = checked_offset;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
