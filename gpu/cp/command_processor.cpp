@@ -82,7 +82,7 @@ u64 CommandProcessor::HashRegisterPacket(u64 checksum, const u32* words, u32 cou
 }
 
 void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet, u64& checksum,
-                                                   RegDirty* dirty) {
+                                                   RegDirty* dirty, bool compute_checksum) {
     const u32 header = packet[0];
     const u32 body_words = BodyWords(header);
     const u32* body = packet + 1;
@@ -295,12 +295,61 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
             }
             return;
         }
+        if (vk_op == DirectVk::Op::BindVsShader && body_words == 9u) {
+            const bool only_sh = ((body[1] >> 18) & 1u) != 0u;
+            std::memcpy(&regs.reg_array[Bank::Sh + 0x48u], body + 2u, 4u * sizeof(u32));
+            mark(Bank::Sh + 0x48u, 4u);
+            if (!only_sh) {
+                write(Bank::Context + 0x1B1u, body[6]);
+                write(Bank::Context + 0x1C3u, body[7]);
+                write(Bank::Context + 0x207u, body[8]);
+            }
+            break;
+        }
+        if (vk_op == DirectVk::Op::BindPsShader) {
+            const bool valid = ((body[1] >> 16) & 1u) != 0u;
+            const bool sdk350 = ((body[1] >> 17) & 1u) != 0u;
+            const bool only_sh = ((body[1] >> 18) & 1u) != 0u;
+            if (valid && body_words == 14u) {
+                const u32* ps = body + 2u;
+                std::memcpy(&regs.reg_array[Bank::Sh + 0x08u], ps, 4u * sizeof(u32));
+                mark(Bank::Sh + 0x08u, 4u);
+                if (!only_sh) {
+                    regs.reg_array[Bank::Context + 0x1C4u] = ps[4];
+                    regs.reg_array[Bank::Context + 0x1C5u] = ps[5];
+                    mark(Bank::Context + 0x1C4u, 2u);
+                    regs.reg_array[Bank::Context + 0x1B3u] = ps[6];
+                    regs.reg_array[Bank::Context + 0x1B4u] = ps[7];
+                    mark(Bank::Context + 0x1B3u, 2u);
+                    write(Bank::Context + 0x1B6u, ps[8]);
+                    write(Bank::Context + 0x1B8u, ps[9]);
+                    write(Bank::Context + 0x203u, ps[10]);
+                    write(Bank::Context + 0x08Fu, ps[11]);
+                }
+                break;
+            }
+            if (!valid && body_words == 2u) {
+                regs.reg_array[Bank::Sh + 0x08u] = 0u;
+                regs.reg_array[Bank::Sh + 0x09u] = 0u;
+                mark(Bank::Sh + 0x08u, 2u);
+                if (!only_sh) {
+                    write(Bank::Context + 0x203u, 0u);
+                }
+                if (sdk350) {
+                    write(Bank::Context + 0x08Fu, 0xFu);
+                }
+                break;
+            }
+            return;
+        }
         return;
     }
     default:
         return;
     }
-    checksum = HashRegisterPacket(checksum, packet, body_words + 1);
+    if (compute_checksum) {
+        checksum = HashRegisterPacket(checksum, packet, body_words + 1);
+    }
 }
 
 // ---- Thread ----------------------------------------------------------------------------------

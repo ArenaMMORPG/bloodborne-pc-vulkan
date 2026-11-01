@@ -617,9 +617,15 @@ private:
                              u64 precomputed_key, u32 first_image_idx, bool& barrier,
                              TextureSet*& slot, u64& out_key);
     struct StageBVertexMemoEntry {
+        static constexpr size_t NumSets = 2048;
+        static constexpr size_t NumWays = 2;
+        static constexpr size_t TableSize = NumSets * NumWays;
         u64 key = 0;
+        u64 last_use = 0;
         u64 erase_gen = 0;
+        u64 exact_gen = 0;
         u32 frame_number = ~0u;
+        bool has_transient_cue = false;
         const GraphicsPipeline* pipeline = nullptr;
         u32 step_rate_0 = 0;
         u32 step_rate_1 = 0;
@@ -631,7 +637,9 @@ private:
         std::array<vk::VertexInputBindingDescription2EXT, 16> bindings{};
         std::array<std::pair<VAddr, VAddr>, 16> ranges{};
     };
-    std::unique_ptr<std::array<StageBVertexMemoEntry, 128>> stage_b_vertex_memo;
+    u64 stage_b_vertex_memo_clock = 0;
+    std::unique_ptr<std::array<StageBVertexMemoEntry, StageBVertexMemoEntry::TableSize>>
+        stage_b_vertex_memo;
     boost::container::small_vector<DirectCopyTextureRegionArgs, 16> pending_tex_copies;
     vk::Pipeline bound_graphics_pipeline{};
     u64 bound_graphics_epoch = 0;

@@ -451,6 +451,8 @@ enum class Op : u32 {
     OcclusionQuery = 22u,
     ReleaseU32LabelsBatch = 23u,
     TimestampQuery = 24u,
+    BindVsShader = 25u,
+    BindPsShader = 26u,
 };
 struct CopyRegion {
     u64 dst_va;

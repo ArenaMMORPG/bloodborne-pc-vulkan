@@ -791,8 +791,12 @@ void CGShaderResourceBinderGnm_SetVsAndPsShaders(
             vs_st.dirty_other_mask |= 0x80000000ULL;
             vs_st.dirty_cmd_mask   |= vs_st.other_dep_masks[31];
         }
-        reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
-            gnmx_gfxc, vs_hdr->gnm_shader_object + 8, 0u);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindVsShader(gnmx_gfxc, vs_hdr->gnm_shader_object + 8, 0u);
+        } else {
+            reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
+                gnmx_gfxc, vs_hdr->gnm_shader_object + 8, 0u);
+        }
     }
 
     if (ps_hdr != nullptr) {
@@ -830,7 +834,11 @@ void CGShaderResourceBinderGnm_SetVsAndPsShaders(
             ps_st.dirty_other_mask |= 0x80000000ULL;
             ps_st.dirty_cmd_mask   |= ps_st.other_dep_masks[31];
         }
-        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_gfxc, ps_hdr->gnm_shader_object + 8);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindPsShader(gnmx_gfxc, ps_hdr->gnm_shader_object + 8);
+        } else {
+            reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_gfxc, ps_hdr->gnm_shader_object + 8);
+        }
 
         const uint8_t* ps_obj = ps_hdr->gnm_shader_object;
         const uint32_t num_ps_inputs = ps_obj[0x38];
@@ -851,7 +859,11 @@ void CGShaderResourceBinderGnm_SetVsAndPsShaders(
             }
         }
     } else {
-        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_gfxc, nullptr);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindPsShader(gnmx_gfxc, nullptr);
+        } else {
+            reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_gfxc, nullptr);
+        }
     }
 
     self->stages[0].bound_shader_hdr = reinterpret_cast<const CGShaderBindingHeaderGnm*>(~0ULL);
@@ -1512,8 +1524,12 @@ inline bool UnpackVsAndInputLayout(
     if (is_pure_vs_stage) {
         const uint32_t shader_modifier = (input_layout != nullptr)
             ? *reinterpret_cast<const uint32_t*>(input_layout + 0x40) : 0u;
-        reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
-            gnmx_ctx, vs_hdr->gnm_shader_object + 8, shader_modifier);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindVsShader(gnmx_ctx, vs_hdr->gnm_shader_object + 8, shader_modifier);
+        } else {
+            reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
+                gnmx_ctx, vs_hdr->gnm_shader_object + 8, shader_modifier);
+        }
     }
 
     if (!gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_SkipShaderPrefetch)) {
@@ -1541,7 +1557,11 @@ inline bool UnpackAndBindPsHeader(
             ps_st.dirty_other_mask |= 0x80000000ULL;
             ps_st.dirty_cmd_mask   |= ps_st.other_dep_masks[31];
         }
-        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_ctx, ps_hdr->gnm_shader_object + 8);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindPsShader(gnmx_ctx, ps_hdr->gnm_shader_object + 8);
+        } else {
+            reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_ctx, ps_hdr->gnm_shader_object + 8);
+        }
         if (!gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_SkipShaderPrefetch)) {
             const uint32_t prefetch_size = (*reinterpret_cast<const uint32_t*>(ps_hdr->gnm_shader_object)) & 0x7FFFFFu;
             reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1073f50ULL))(
@@ -1549,7 +1569,11 @@ inline bool UnpackAndBindPsHeader(
         }
         gnmx_ctx_wrapper[0xb657] &= 0xFEu;
     } else {
-        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_ctx, nullptr);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindPsShader(gnmx_ctx, nullptr);
+        } else {
+            reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x10753c0ULL))(gnmx_ctx, nullptr);
+        }
         gnmx_ctx_wrapper[0xb657] |= 0x01u;
     }
     return true;
@@ -1739,8 +1763,12 @@ inline void ConfigureGsStagesAndRings(
     reinterpret_cast<void(*)(void*, const void*)>(GX_VMA(0x10759d0ULL))(
         gnmx_ctx, gs_obj + 0x08);
     const uint32_t gs_reg_count = gs_obj[0x03];
-    reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075480ULL))(
-        gnmx_ctx, gs_obj + gs_reg_count * 4 + 0x40, 0u);
+    if (gx_direct_vk::DirectShaderBindEnabled()) {
+        gx_direct_vk::EmitBindVsShader(gnmx_ctx, gs_obj + gs_reg_count * 4 + 0x40, 0u);
+    } else {
+        reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075480ULL))(
+            gnmx_ctx, gs_obj + gs_reg_count * 4 + 0x40, 0u);
+    }
 }
 
 inline void StageAndBindGsStreamOutBuffers(
@@ -2095,8 +2123,12 @@ void CGShaderResourceBinderGnm_BindAndFlushGraphicsPipeline(
                     ds_st.dirty_other_mask |= 0x80000000ULL;
                     ds_st.dirty_cmd_mask   |= ds_st.other_dep_masks[31];
                 }
-                reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
-                    gnmx_ctx, ds_hdr->gnm_shader_object + 8, 0u);
+                if (gx_direct_vk::DirectShaderBindEnabled()) {
+                    gx_direct_vk::EmitBindVsShader(gnmx_ctx, ds_hdr->gnm_shader_object + 8, 0u);
+                } else {
+                    reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1075480ULL))(
+                        gnmx_ctx, ds_hdr->gnm_shader_object + 8, 0u);
+                }
                 if (!skip_prefetch) {
                     const uint32_t prefetch_size = (*reinterpret_cast<const uint32_t*>(ds_hdr->gnm_shader_object)) & 0x7FFFFFu;
                     reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1073f50ULL))(

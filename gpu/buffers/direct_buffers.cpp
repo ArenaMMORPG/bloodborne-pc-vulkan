@@ -754,11 +754,20 @@ bool OverlapsNativeOwnedRange(VAddr addr, u64 byte_size) noexcept {
     return IsExactNativeOwnedBuffer(addr);
 }
 
+namespace {
+std::atomic<u64> g_exact_buf_topology_gen{1};
+} // namespace
+
+u64 ExactBufferTopologyGen() noexcept {
+    return g_exact_buf_topology_gen.load(std::memory_order_acquire);
+}
+
 void NoteExactNativeBuffer(VAddr addr, u32 req_size, u32 alloc_size,
                            bool is_native_owned) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL || alloc_size == 0) {
         return;
     }
+    g_exact_buf_topology_gen.fetch_add(1ULL, std::memory_order_release);
     const u32 safe_req = req_size > 0 && req_size <= alloc_size ? req_size : alloc_size;
     const u64 packed_sizes = (static_cast<u64>(alloc_size) << 32) | static_cast<u64>(safe_req);
     const u64 tagged_addr = (addr & ~3ULL) | (is_native_owned ? 1ULL : 0ULL);
@@ -803,6 +812,7 @@ void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept {
     if (addr == 0 || (addr & 3ULL) != 0ULL) {
         return;
     }
+    g_exact_buf_topology_gen.fetch_add(1ULL, std::memory_order_release);
     const size_t base_set = ExactBufSetIdx(addr);
     const u64 tagged_addr = (addr & ~3ULL) | (is_native_owned ? 1ULL : 0ULL);
     for (size_t p = 0; p < kExactBufProbeSets; ++p) {

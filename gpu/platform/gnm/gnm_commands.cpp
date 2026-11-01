@@ -4,11 +4,13 @@
 // console's: a NOP fills what a packet leaves of its reservation (its first dword zeroed, the rest
 // left as they are). The port is a base PS4: no PS4 Pro (Neo) layouts.
 
+#include <cstdlib>
 #include <cstring>
 
 #include "bbport_gnm_hooks.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "cp/cp_packets.h"
 #include "platform/errors.h"
 #include "platform/gnm/gnm.h"
 #include "platform/gnm/gnm_init_state.h"
@@ -499,6 +501,14 @@ s32 PS4_SYSV_ABI sceGnmSetLsShader(u32* cmdbuf, u32 size, const u32* ls_regs, u3
 
 namespace {
 
+bool DirectShaderBindEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_DIRECT_SHADER_BIND");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
 /// The pixel shader's registers; `update` writes the context ones as update markers.
 u32* EmitPsRegs(u32* at, const u32* ps_regs, bool update, u32 pgm_hi = 0) {
     at = EmitSh(at, 0x8, ps_regs[0], pgm_hi);       // SPI_SHADER_PGM_LO/HI_PS
@@ -522,6 +532,14 @@ s32 PsShader(u32* cmdbuf, u32 size, const u32* ps_regs, bool update, bool sdk350
         return -1;
     }
     if (!ps_regs) {
+        if (DirectShaderBindEnabled()) {
+            cmdbuf[0] = Header(Op::Nop, 2);
+            cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+            cmdbuf[2] = u32(BbCp::DirectVk::Op::BindPsShader) | (sdk350 ? (1u << 17) : 0u) |
+                        (update ? (1u << 18) : 0u);
+            PadTo(cmdbuf + 3, cmdbuf + 40);
+            return BbErr::Ok;
+        }
         u32* at = EmitSh(cmdbuf, 0x8, 0u, 0u);
         at = update ? EmitUpdate(at, 0x203, 0u) : EmitCtx(at, 0x203, 0u); // DB_SHADER_CONTROL
         if (sdk350) {
@@ -533,6 +551,15 @@ s32 PsShader(u32* cmdbuf, u32 size, const u32* ps_regs, bool update, bool sdk350
     if (ps_regs[1] != 0) {
         LOG_ERROR(Lib_GnmDriver, "shader address above 1 TiB");
         return -1;
+    }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 14);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindPsShader) | (1u << 16) |
+                    (update ? (1u << 18) : 0u);
+        std::memcpy(cmdbuf + 3, ps_regs, 12 * sizeof(u32));
+        PadTo(cmdbuf + 15, cmdbuf + 40);
+        return BbErr::Ok;
     }
     EmitPadding(EmitPsRegs(cmdbuf, ps_regs, update), 11);
     return BbErr::Ok;
@@ -559,6 +586,20 @@ s32 VsShader(u32* cmdbuf, u32 size, const u32* vs_regs, u32 modifier, bool updat
     Observe observe{cmdbuf, size};
     if (!cmdbuf || size <= 0x1C || (vs_regs && (modifier & 0xFCFFFC3F)) || !CheckRegs(vs_regs)) {
         return -1;
+    }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 9);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindVsShader) | (update ? (1u << 18) : 0u);
+        cmdbuf[3] = vs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = ApplyModifier(vs_regs[2], modifier, 0xFCFFFC3F);
+        cmdbuf[6] = vs_regs[3];
+        cmdbuf[7] = vs_regs[4];
+        cmdbuf[8] = vs_regs[5];
+        cmdbuf[9] = vs_regs[6];
+        PadTo(cmdbuf + 10, cmdbuf + 29);
+        return BbErr::Ok;
     }
     u32* at = EmitSh(cmdbuf, 0x48, vs_regs[0], 0u); // SPI_SHADER_PGM_LO/HI_VS
     at = EmitSh(at, 0x4A, ApplyModifier(vs_regs[2], modifier, 0xFCFFFC3F), vs_regs[3]);
@@ -641,7 +682,16 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedPsShader(u32* cmdbuf, u32 size, u32 shader_id,
     const u32 ps1[12] = {u32(address >> 8), u32(address >> 40), 0x2000u, 0u, 0u, 2u,
                          2u, 2u, 0u, 0u, 0x10u, 3u};
     // The driver's own path (sceGnmSetPsShader350) refuses addresses above 1 TiB; written here.
-    EmitPadding(EmitPsRegs(cmdbuf, shader_id == 0 ? ps0 : ps1, false, u32(address >> 40)), 11);
+    const u32* ps = shader_id == 0 ? ps0 : ps1;
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 14);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindPsShader) | (1u << 16);
+        std::memcpy(cmdbuf + 3, ps, 12 * sizeof(u32));
+        PadTo(cmdbuf + 15, cmdbuf + 40);
+        return BbErr::Ok;
+    }
+    EmitPadding(EmitPsRegs(cmdbuf, ps, false, u32(address >> 40)), 11);
     return BbErr::Ok;
 }
 
@@ -651,6 +701,20 @@ s32 PS4_SYSV_ABI sceGnmSetEmbeddedVsShader(u32* cmdbuf, u32 size, u32 shader_id,
         return BbErr::GnmFailure;
     }
     const auto address = reinterpret_cast<uintptr_t>(EmbeddedVs0);
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 9);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindVsShader);
+        cmdbuf[3] = u32(address >> 8);
+        cmdbuf[4] = u32(address >> 40);
+        cmdbuf[5] = 0xC0000u;
+        cmdbuf[6] = 4u;
+        cmdbuf[7] = 0u; // SPI_VS_OUT_CONFIG: one parameter
+        cmdbuf[8] = 4u; // SPI_SHADER_POS_FORMAT
+        cmdbuf[9] = 0u; // PA_CL_VS_OUT_CNTL
+        PadTo(cmdbuf + 10, cmdbuf + 29);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0x48, u32(address >> 8), u32(address >> 40));
     at = EmitSh(at, 0x4A, 0xC0000u, 4u);
     at = EmitCtx(at, 0x207, 0u); // PA_CL_VS_OUT_CNTL

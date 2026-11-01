@@ -527,36 +527,63 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                packet_vsharps.size() == fetch->attributes.size() && packet_vsharps.size() <= 16 &&
                !FrameCapture::Active() && !BbCeStats::Enabled()) {
         if (!stage_b_vertex_memo) [[unlikely]] {
-            stage_b_vertex_memo = std::make_unique<std::array<StageBVertexMemoEntry, 128>>();
+            stage_b_vertex_memo = std::make_unique<
+                std::array<StageBVertexMemoEntry, StageBVertexMemoEntry::TableSize>>();
         }
         const u32 cnt = static_cast<u32>(packet_vsharps.size());
         const u32 step0 = regs.vgt_instance_step_rate_0;
         const u32 step1 = regs.vgt_instance_step_rate_1;
         const u32 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
         const u64 cur_erase_gen = direct_buffers.EraseGeneration();
+        const u64 cur_exact_gen = VideoCore::DirectBuffers::ExactBufferTopologyGen();
         const u64 seed = reinterpret_cast<uintptr_t>(pipeline) ^
                          (u64(step0) * 0x9E3779B97F4A7C15ULL) ^
                          (u64(step1) * 0xBF58476D1CE4E5B9ULL);
         const u64 vsharp_hash =
             XXH3_64bits(packet_vsharps.data(), cnt * sizeof(Gcn::Buffer));
         const u64 memo_key = (vsharp_hash ^ seed) | 1ULL;
-        auto& slot = (*stage_b_vertex_memo)[(memo_key >> 1) & 127];
-        if (slot.key == memo_key && slot.frame_number == cur_frame &&
-            slot.erase_gen == cur_erase_gen && slot.pipeline == pipeline &&
-            slot.step_rate_0 == step0 && slot.step_rate_1 == step1 && slot.count == cnt &&
-            std::memcmp(slot.vsharps.data(), packet_vsharps.data(), cnt * sizeof(Gcn::Buffer)) ==
-                0) {
-            attributes.assign(slot.attributes.begin(), slot.attributes.begin() + cnt);
-            bindings.assign(slot.bindings.begin(), slot.bindings.begin() + cnt);
-            guest_buffers.assign(slot.vsharps.begin(), slot.vsharps.begin() + cnt);
-            memo_hit_slot = &slot;
-        } else {
+        const size_t set_base =
+            ((memo_key >> 1) & (StageBVertexMemoEntry::NumSets - 1)) *
+            StageBVertexMemoEntry::NumWays;
+        for (size_t w = 0; w < StageBVertexMemoEntry::NumWays; ++w) {
+            auto& cand = (*stage_b_vertex_memo)[set_base + w];
+            if (cand.key == memo_key && cand.erase_gen == cur_erase_gen &&
+                cand.exact_gen == cur_exact_gen &&
+                (!cand.has_transient_cue || cand.frame_number == cur_frame) &&
+                cand.pipeline == pipeline && cand.step_rate_0 == step0 &&
+                cand.step_rate_1 == step1 && cand.count == cnt &&
+                std::memcmp(cand.vsharps.data(), packet_vsharps.data(),
+                            cnt * sizeof(Gcn::Buffer)) == 0) {
+                cand.last_use = ++stage_b_vertex_memo_clock;
+                attributes.assign(cand.attributes.begin(), cand.attributes.begin() + cnt);
+                bindings.assign(cand.bindings.begin(), cand.bindings.begin() + cnt);
+                guest_buffers.assign(cand.vsharps.begin(), cand.vsharps.begin() + cnt);
+                memo_hit_slot = &cand;
+                break;
+            }
+        }
+        if (!memo_hit_slot) {
             pipeline->GetVertexInputs(attributes, bindings, divisors, guest_buffers, step0, step1,
                                       packet_vsharps);
             if (attributes.size() == cnt && bindings.size() == cnt && guest_buffers.size() == cnt) {
+                auto& w0 = (*stage_b_vertex_memo)[set_base];
+                auto& w1 = (*stage_b_vertex_memo)[set_base + 1];
+                auto& slot = (w0.key == 0 || w0.last_use <= w1.last_use) ? w0 : w1;
+                bool any_cue = false;
+                for (u32 i = 0; i < cnt; ++i) {
+                    if (packet_vsharps[i].base_address != 0 &&
+                        VideoCore::DirectBuffers::IsTransientCueHeap(
+                            packet_vsharps[i].base_address, packet_vsharps[i].GetSize())) {
+                        any_cue = true;
+                        break;
+                    }
+                }
                 slot.key = memo_key;
+                slot.last_use = ++stage_b_vertex_memo_clock;
                 slot.erase_gen = cur_erase_gen;
+                slot.exact_gen = cur_exact_gen;
                 slot.frame_number = cur_frame;
+                slot.has_transient_cue = any_cue;
                 slot.pipeline = pipeline;
                 slot.step_rate_0 = step0;
                 slot.step_rate_1 = step1;

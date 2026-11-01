@@ -123,6 +123,7 @@ void SetExactNativeBufferOwned(VAddr addr, bool is_native_owned) noexcept;
 [[nodiscard]] VAddr LookupExactBufferEnd(VAddr addr) noexcept;
 [[nodiscard]] u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size,
                                          bool for_write = false) noexcept;
+[[nodiscard]] u64 ExactBufferTopologyGen() noexcept;
 
 class Manager {
 public:

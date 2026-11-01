@@ -921,7 +921,6 @@ void PipelineCache::CommitFastSelect(const GraphicsPipeline* pipeline,
     const u32 sig_len =
         BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(), sig);
     if (sig_len == 0) {
-        ++f.not_eligible;
         return;
     }
     const u64 sig_key = XXH3_64bits(sig.data(), sig_len * sizeof(u32)) | 1ULL;
@@ -1240,9 +1239,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         } else {
             ++fast->full;
-        }
-        if (selected) {
-            CommitFastSelect(selected, params);
+            if (selected) {
+                CommitFastSelect(selected, params);
+            }
         }
     }
     return selected;

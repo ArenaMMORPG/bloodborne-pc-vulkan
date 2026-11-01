@@ -679,6 +679,9 @@ enum class Op : uint32_t {
     ReleaseU32LabelsBatch    = 23u,
     // V6.2: Direct Timestamp / TimestampDisjoint Query (replaces ~339/frame 0x2169ec0/0x216a070 EventWriteEop + KickRecording)
     TimestampQuery           = 24u,
+    // Block 4 Step 3.2: Single-packet VS & PS shader bind (replaces 6-packet / 29-dw VsShader and 9-packet / 40-dw PsShader)
+    BindVsShader             = 25u,
+    BindPsShader             = 26u,
 };
 
 // Tag stored in `CopyRegion::reserved` / `CopyRecord::reserved` when the C++20 engine itself
@@ -1622,6 +1625,68 @@ inline void EmitSetDepthRenderTarget(void* dcb_raw, const void* dt_raw) noexcept
         pkt[1] = kNopPayloadTag;
         pkt[2] = static_cast<uint32_t>(Op::SetDepthRenderTarget);
     }
+}
+
+inline bool DirectShaderBindEnabled() noexcept {
+    static const bool enabled = []() noexcept -> bool {
+        const char* env = std::getenv("BB_DIRECT_SHADER_BIND");
+        return !(env && env[0] == '0');
+    }();
+    return enabled && EnabledV2();
+}
+
+// 1-to-1 single-packet replacement for 0x1075480 (GfxContext::setVsShader, 6 PM4 packets / 29 dw -> 1 packet / 10 dw)
+inline void EmitBindVsShader(void* dcb_raw, const void* vs_regs_raw, uint32_t modifier) noexcept {
+    if (!dcb_raw || !vs_regs_raw) {
+        return;
+    }
+    const auto* vs = static_cast<const uint32_t*>(vs_regs_raw);
+    if ((modifier & 0xFCFFFC3Fu) != 0u || vs[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 10u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(9u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindVsShader);
+    pkt[3] = vs[0]; // SPI_SHADER_PGM_LO_VS (Sh+0x48)
+    pkt[4] = vs[1]; // SPI_SHADER_PGM_HI_VS (Sh+0x49)
+    pkt[5] = (modifier == 0u) ? vs[2] : ((vs[2] & 0xFCFFFC3Fu) | modifier); // RSRC1_VS (Sh+0x4A)
+    pkt[6] = vs[3]; // SPI_SHADER_PGM_RSRC2_VS (Sh+0x4B)
+    pkt[7] = vs[4]; // SPI_VS_OUT_CONFIG (Ctx+0x1B1)
+    pkt[8] = vs[5]; // SPI_SHADER_POS_FORMAT (Ctx+0x1C3)
+    pkt[9] = vs[6]; // PA_CL_VS_OUT_CNTL (Ctx+0x207)
+}
+
+// 1-to-1 single-packet replacement for 0x10753c0 (GfxContext::setPsShader, 9 PM4 packets / 40 dw -> 1 packet / 15 or 3 dw)
+inline void EmitBindPsShader(void* dcb_raw, const void* ps_regs_raw, bool sdk350 = false) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    if (!ps_regs_raw) {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(2u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::BindPsShader) | (sdk350 ? (1u << 17) : 0u);
+        return;
+    }
+    const auto* ps = static_cast<const uint32_t*>(ps_regs_raw);
+    if (ps[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 15u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(14u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindPsShader) | (1u << 16);
+    std::memcpy(pkt + 3u, ps, 12u * sizeof(uint32_t));
 }
 
 // ============================================================================

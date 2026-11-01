@@ -135,7 +135,8 @@ public:
     /// which replay the stream): the blocks written go to `dirty`, the packet into `checksum`
     /// (equal checksums at a draw mean equal register files).
     static void ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet, u64& checksum,
-                                            RegDirty* dirty = nullptr);
+                                            RegDirty* dirty = nullptr,
+                                            bool compute_checksum = true);
     static u64 HashRegisterPacket(u64 checksum, const u32* words, u32 count);
 
     Regs regs{};

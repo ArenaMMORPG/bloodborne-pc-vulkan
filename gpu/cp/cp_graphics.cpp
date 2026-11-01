@@ -299,7 +299,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
     // A packet that waited is tried again: its registers and drain are done already.
     const bool retry = work.waiting_at == packet;
     if (!retry) {
-        ApplyGraphicsRegisterPacket(regs, packet, gfx_reg_checksum, &pipe_dirty);
+        const bool need_checksum = rasterizer && rasterizer->GetDrawPreparation().Enabled();
+        ApplyGraphicsRegisterPacket(regs, packet, gfx_reg_checksum, &pipe_dirty, need_checksum);
         // Not before earlier fences either: these may write guest memory.
         if (rasterizer && !Pipelined(op) &&
             !(op == Op::DmaData && DmaData::From(body).DstLow() == 0x3022C)) {
@@ -376,7 +377,9 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     break;
                 }
                 if (vk_op == DirectVk::Op::SetContextRegsPacked ||
-                    vk_op == DirectVk::Op::SetIndexState) {
+                    vk_op == DirectVk::Op::SetIndexState ||
+                    vk_op == DirectVk::Op::BindVsShader ||
+                    vk_op == DirectVk::Op::BindPsShader) {
                     // Applied in ApplyGraphicsRegisterPacket (including DrawPreparation).
                     break;
                 }
