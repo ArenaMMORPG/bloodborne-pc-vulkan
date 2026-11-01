@@ -166,8 +166,9 @@ void EventWriteEopTask(Vulkan::Rasterizer& rasterizer, const u8* data) {
     if (async_fences && !BbToggle::Disabled(BbToggle::AsyncFences)) {
         BbCopy::AfterCopies([eop, seq] { SignalEop(eop, seq); });
     } else if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
-        // The Vulkan recording thread signals it after the copies queued before it.
-        rasterizer.SignalAfterHostCopies([eop, seq] { SignalEop(eop, seq); });
+        // The Vulkan recording thread signals it after the copies queued before it (or inline on
+        // Stage B when zero host copies and zero deferred signals are pending).
+        rasterizer.SignalAfterHostCopiesFast([eop, seq] { SignalEop(eop, seq); });
     } else {
         rasterizer.WaitHostCopies();
         rasterizer.WaitDeferredSignals(); // labels in order: not before deferred ones
@@ -463,7 +464,7 @@ void DirectVkReleaseLabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8* da
         BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
     };
     if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
-        rasterizer.SignalAfterHostCopies(std::move(write_all));
+        rasterizer.SignalAfterHostCopiesFast(std::move(write_all));
     } else {
         rasterizer.WaitHostCopies();
         rasterizer.WaitDeferredSignals();
@@ -517,7 +518,7 @@ void DirectVkReleaseU32LabelsBatchTask(Vulkan::Rasterizer& rasterizer, const u8*
         BbStats::eop_written.fetch_add(count, std::memory_order_relaxed);
     };
     if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
-        rasterizer.SignalAfterHostCopies(std::move(write_all));
+        rasterizer.SignalAfterHostCopiesFast(std::move(write_all));
     } else {
         rasterizer.WaitHostCopies();
         rasterizer.WaitDeferredSignals();
@@ -561,7 +562,7 @@ void DirectVkTimestampQueryTask(Vulkan::Rasterizer& rasterizer, const u8* data) 
             BbStats::eop_written.fetch_add(1u, std::memory_order_relaxed);
         };
         if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
-            rasterizer.SignalAfterHostCopies(std::move(write_ready), /*force_kick=*/false);
+            rasterizer.SignalAfterHostCopiesFast(std::move(write_ready), /*force_kick=*/false);
         } else {
             rasterizer.WaitHostCopies();
             rasterizer.WaitDeferredSignals();

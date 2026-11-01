@@ -45,4 +45,8 @@ void WaitAsync();
 /// Callbacks run in the order they were registered.
 void AfterCopies(std::function<void()> callback);
 
+/// Lock-free fast check: true if the calling thread has unsubmitted batched copies or if the
+/// async copy pool has any pending tasks / draining epoch callbacks in flight.
+bool HasPending() noexcept;
+
 } // namespace BbCopy

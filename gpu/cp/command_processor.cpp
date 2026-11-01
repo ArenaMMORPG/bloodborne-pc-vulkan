@@ -330,6 +330,7 @@ void CommandProcessor::SubmitDone(u64 frame) noexcept {
     std::scoped_lock lock{submit_mutex};
     if (frame != 0) {
         frame_ends.emplace_back(submissions_total, frame);
+        has_pending_frame_end.store(true, std::memory_order_release);
     } else {
         ++submissions_total;
         work_retired = false;
@@ -590,6 +591,9 @@ void CommandProcessor::Run(std::stop_token stop) {
                 work = queue.works.front().get();
             }
             if (work != last_decoded) {
+                if (has_pending_frame_end.load(std::memory_order_acquire)) {
+                    SignalDecodedFrames();
+                }
                 last_decoded = work;
                 BbTimeline::Note(BbTimeline::DecodeBegin, u64(current_queue), decoded_total);
                 if (rasterizer && (VideoCore::DirectTextures::HasPendingEvents() ||
@@ -639,6 +643,7 @@ void CommandProcessor::Run(std::stop_token stop) {
 }
 
 void CommandProcessor::AfterBatch() {
+    SignalDecodedFrames();
     const bool pipe_signals = rasterizer && rasterizer->PipeSignals();
     const bool pipe_order =
         rasterizer && rasterizer->PipeOrder() &&
@@ -669,7 +674,6 @@ void CommandProcessor::AfterBatch() {
             }
         }
     }
-    SignalDecodedFrames();
 
     // The guest takes GPU idle (sceGnmSubmitDone) as its work being done and frees the objects
     // that hold its fence labels: they must be written before, by the draw recording thread and
@@ -763,28 +767,81 @@ void CommandProcessor::SignalDecodedFrames() {
             frame = frame_ends.front().second;
             frame_ends.pop_front();
         }
+        if (frame_ends.empty()) {
+            has_pending_frame_end.store(false, std::memory_order_release);
+        }
     }
     if (frame == 0) {
         return;
     }
+    const bool do_on_submit = submit_done.exchange(false, std::memory_order_acq_rel);
     if (!rasterizer) {
         BbGnm::NoteFramesRetired(frame);
         return;
     }
-    // Everything of the frame recorded, then submitted: finished once the GPU has executed it.
+    struct FrameSignal {
+        u64 retired;
+        bool on_submit;
+    } const sig{frame, do_on_submit};
+    // Everything of the frame recorded, then submitted: finished once the GPU has executed it
+    // (HonestLabels), or once Stage B has recorded/flushed all commands and EoP labels of frame F
+    // in the 0.3 VRAM model (where all transient guest data is copied out into ConstantRing /
+    // stream_buffer / native VkBuffers before Flush, while WaitPendingFrame bounds GPU to 2-FIF).
     if (rasterizer->PipeSignals()) {
         rasterizer->RunInOrder(
             [](Vulkan::Rasterizer& r, const u8* data) {
-                u64 retired;
-                std::memcpy(&retired, data, sizeof(retired));
+                FrameSignal s;
+                std::memcpy(&s, data, sizeof(s));
+                if (s.on_submit) {
+                    r.OnSubmit();
+                }
                 BbTimeline::Note(BbTimeline::PipeTask, 7, r.CurrentTick());
-                r.SignalAfterGpu([retired] { BbGnm::NoteFramesRetired(retired); });
+                r.SignalAfterGpu([retired = s.retired] { BbGnm::NoteFramesRetired(retired); });
                 r.Flush();
             },
-            &frame, sizeof(frame), BbToggle::PipelinedTasks, false);
+            &sig, sizeof(sig), BbToggle::PipelinedTasks, false);
+        return;
+    }
+    if (!Vulkan::Rasterizer::HonestLabels()) {
+        if (rasterizer->PipeOrder() && !BbToggle::Disabled(BbToggle::PipelinedTasks)) {
+            rasterizer->RunInOrder(
+                [](Vulkan::Rasterizer& r, const u8* data) {
+                    FrameSignal s;
+                    std::memcpy(&s, data, sizeof(s));
+                    if (s.on_submit) {
+                        r.OnSubmit();
+                    }
+                    if (r.HasPendingWork()) {
+                        r.Flush();
+                    }
+                    BbTimeline::Note(BbTimeline::PipeTask, 7, r.CurrentTick());
+                    r.WaitDeferredSignals();
+                    BbGnm::NoteFramesRetired(s.retired);
+                    if (s.on_submit) {
+                        r.WaitPendingFrame();
+                    }
+                },
+                &sig, sizeof(sig), BbToggle::PipelinedTasks, false);
+            return;
+        }
+        rasterizer->DrainDrawPipe(DrawPipe::ReasonSubmissionEnd);
+        if (do_on_submit) {
+            rasterizer->OnSubmit();
+            if (rasterizer->HasPendingWork()) {
+                rasterizer->Flush();
+            }
+        }
+        rasterizer->WaitDeferredSignals();
+        BbGnm::NoteFramesRetired(frame);
+        if (do_on_submit) {
+            rasterizer->WaitPendingFrame();
+        }
         return;
     }
     rasterizer->DrainDrawPipe(DrawPipe::ReasonSubmissionEnd);
+    if (do_on_submit) {
+        rasterizer->OnSubmit();
+    }
     rasterizer->SignalAfterGpu([frame] { BbGnm::NoteFramesRetired(frame); });
     rasterizer->Flush();
 }

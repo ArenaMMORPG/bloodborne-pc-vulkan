@@ -50,12 +50,17 @@ public:
         return !threads.empty();
     }
 
+    bool IsIdleFast() const noexcept {
+        return idle_fast.load(std::memory_order_acquire);
+    }
+
     void Async(std::function<void()> task) {
         {
             std::scoped_lock lk{mutex};
             const u64 epoch = epoch_base + epochs.size() - 1;
             ++epochs.back().pending;
             ++pending;
+            idle_fast.store(false, std::memory_order_relaxed);
             async_tasks.push_back({std::move(task), epoch});
         }
         cv.notify_one();
@@ -66,6 +71,7 @@ public:
             std::unique_lock lk{mutex};
             if (epochs.size() > 1 || epochs.back().pending != 0 || draining) {
                 // Runs once every copy issued so far is done, in order with earlier ones.
+                idle_fast.store(false, std::memory_order_relaxed);
                 epochs.back().callbacks.push_back(std::move(callback));
                 epochs.emplace_back();
                 return;
@@ -172,6 +178,9 @@ private:
             lk.lock();
         }
         draining = false;
+        if (pending == 0 && epochs.size() == 1) {
+            idle_fast.store(true, std::memory_order_release);
+        }
     }
 
     static void Work(Job& job) {
@@ -222,6 +231,7 @@ private:
     u64 epoch_base = 0;       ///< epoch number of epochs.front()
     std::size_t pending = 0;
     bool draining = false;
+    std::atomic<bool> idle_fast{true};
 };
 
 Pool& GetPool() {
@@ -284,6 +294,10 @@ void QueueCopy(const Item& item) {
 void AfterCopies(std::function<void()> callback) {
     FlushBatch();
     GetPool().AfterCopies(std::move(callback));
+}
+
+bool HasPending() noexcept {
+    return !batch.items.empty() || !GetPool().IsIdleFast();
 }
 
 void WaitAsync() {

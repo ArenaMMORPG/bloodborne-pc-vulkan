@@ -375,6 +375,10 @@ void Scheduler::SignalAfterHostCopies(std::function<void()> signal, bool force_k
         signal();
         return;
     }
+    if (CanSignalAfterHostCopiesInline()) [[likely]] {
+        signal();
+        return;
+    }
     BbCopy::FlushBatch();
     if (host_copies_done.load(std::memory_order_acquire) >= host_copies_issued &&
         deferred_signals_done->load(std::memory_order_acquire) >=

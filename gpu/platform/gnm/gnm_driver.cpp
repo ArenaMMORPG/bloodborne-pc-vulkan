@@ -367,9 +367,16 @@ u32 SdkVersion() {
 }
 
 bool SubmitLockOnDecode() {
-    // Only with honest labels: without them the GPU idle interrupt comes at decode anyway, and
-    // the idle check keeps waiting for deferred fences (BB_WORK_RETIRED, Steam Deck crashes).
-    return SubmitLock() != LockMode::Gpu && Vulkan::Rasterizer::HonestLabels();
+    // N4.1: Enable double-buffered GX frame overlap (BB_SUBMIT_AHEAD = 2) in the 0.3 VRAM model
+    // (!HonestLabels) as well as HonestLabels. With DrawPipe (Stage B), LockMode::Gpu serialized
+    // Frame F+1 Submission #1 behind Stage B finishing Frame F (leaving Stage A 33.8% idle,
+    // Stage B 14.6% idle, and RTX 4090 with a 1.35 ms Mid-Frame Gap). SignalDecodedFrames retires
+    // Frame F in strict Stage-B order once Frame F is recorded, flushed, and EoP-signaled.
+    static const bool pipe_pacing = [] {
+        const char* env = std::getenv("BB_PIPE_PACING");
+        return !env || env[0] != '0';
+    }();
+    return SubmitLock() != LockMode::Gpu && (Vulkan::Rasterizer::HonestLabels() || pipe_pacing);
 }
 
 void ReleaseSubmissionLock() {

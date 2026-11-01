@@ -309,6 +309,10 @@ public:
     void SignalAfterHostCopies(std::function<void()> signal, bool force_kick = true) {
         scheduler.SignalAfterHostCopies(std::move(signal), force_kick);
     }
+    template <typename Func>
+    void SignalAfterHostCopiesFast(Func&& signal, bool force_kick = true) {
+        scheduler.SignalAfterHostCopiesFast(std::forward<Func>(signal), force_kick);
+    }
     /// bbport BB_HONEST_LABELS=1: runs `signal` once the GPU has finished every command recorded
     /// before this call (the submission of the current tick), in call order, on a thread that
     /// waits on the work semaphore: fences the guest sees when the work is done, not when it is

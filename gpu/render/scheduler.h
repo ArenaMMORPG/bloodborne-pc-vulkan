@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "bbport_copy.h"
 #include "bbport_toggles.h"
 #include "common/assert.h"
 #include "common/unique_function.h"
@@ -366,6 +367,25 @@ public:
     /// waiting here: the recording thread reaches it after the copies queued before it and hands
     /// it to the copy threads' completion (BbCopy::AfterCopies).
     void SignalAfterHostCopies(std::function<void()> signal, bool force_kick = true);
+
+    /// True on the producer thread (Stage B) when zero RecordHostCopy tasks, zero BbCopy async
+    /// tasks/batches, and zero earlier deferred signals are pending, allowing EoP/query labels
+    /// to write directly inline without std::function heap allocations or mutex round-trips.
+    [[nodiscard]] bool CanSignalAfterHostCopiesInline() const noexcept {
+        return host_copies_done.load(std::memory_order_acquire) >= host_copies_issued &&
+               deferred_signals_done->load(std::memory_order_acquire) >=
+                   deferred_signals_issued.load(std::memory_order_relaxed) &&
+               !BbCopy::HasPending();
+    }
+
+    template <typename Func>
+    void SignalAfterHostCopiesFast(Func&& signal, bool force_kick = true) {
+        if (CanSignalAfterHostCopiesInline()) [[likely]] {
+            signal();
+            return;
+        }
+        SignalAfterHostCopies(std::function<void()>(std::forward<Func>(signal)), force_kick);
+    }
 
     /// Before a guest-visible write that is not deferred (WriteData, end-of-shader
     /// fences, flip): waits until every signal handed to SignalAfterHostCopies ran, so that

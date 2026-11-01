@@ -339,7 +339,7 @@ private:
         char name[16];
         std::snprintf(name, sizeof(name), "bb:Resolve%u", worker);
         Common::SetCurrentThreadName(name);
-        BbThreads::PinToHelperDomain();
+        BbThreads::PinToGpuDomain();
         static const auto spin_time = std::chrono::microseconds([] {
             if (const char* env = std::getenv("BB_PIPE_SPIN_US")) {
                 return std::max(0, std::atoi(env));

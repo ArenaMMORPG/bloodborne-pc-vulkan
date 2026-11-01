@@ -308,6 +308,7 @@ private:
     std::atomic<u32> num_commands{0};
     std::atomic<u32> num_submits{0};
     std::atomic<bool> submit_done{false};
+    std::atomic<bool> has_pending_frame_end{false};
     std::atomic<bool> work_retired{true};
     // Under submit_mutex.
     u64 submissions_total = 0;

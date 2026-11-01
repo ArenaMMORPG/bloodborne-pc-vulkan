@@ -469,7 +469,8 @@ void DrawPreparation::Collect() {
 void DrawPreparation::ScannerLoop(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:DrawScan");
     BbThreads::PinToHelperDomain();
-    BbThreads::MakeLowPriority();
+    // Keep bb:DrawScan at normal nice(0) priority (<3% of 1 core on CCD1) so map-load asset
+    // decompression threads never starve it past MaxScanLag = 64 (eliminating scanner rebases).
     std::unique_ptr<Gcn::Regs> regs;
     u64 checksum = 0;
     u64 next_seq = 0;
