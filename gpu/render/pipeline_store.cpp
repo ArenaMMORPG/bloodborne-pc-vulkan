@@ -362,6 +362,7 @@ void PipelineCache::SaveProfile() {
 void PipelineCache::DropPreloaded() {
     // Modules of a damaged entry may sit in programs that later lookups would reuse: nothing
     // preloaded is kept.
+    InvalidateFastSelect();
     graphics_pipelines.clear();
     compute_pipelines.clear();
     std::unordered_set<VkShaderModule> modules;

@@ -850,6 +850,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     if (!pipe_synced) {
         // Stage B has not run yet: its register copy starts as this one.
         pipe_regs = liverpool->regs;
+        liverpool->FoldSelDirty();
         dirty.Clear();
         pipe_synced = true;
     }
@@ -1139,6 +1140,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         std::memcpy(out, &liverpool->regs, sizeof(Gcn::Regs));
         out += sizeof(Gcn::Regs);
     }
+    liverpool->FoldSelDirty();
     dirty.Clear();
     draw_pipe->Commit(static_cast<u32>(out - start), resolve);
     PrintPipeStats();

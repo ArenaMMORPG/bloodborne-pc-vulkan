@@ -299,11 +299,53 @@ struct PipelineCache::PendingPipeline {
     GraphicsPipeline::SerializationSupport sdata{};
 };
 
+using Gcn::RegDirty;
+
+struct PipelineCache::FastSelect {
+    struct Stage {
+        Program* program = nullptr;
+        HwStage hw_stage{};
+        SwStage sw_stage{};
+        VAddr pgm_base = 0;
+        u64 shader_hash = 0;
+        u32 perm_idx = 0;
+        Shader::RuntimeInfo runtime_info{};
+    };
+    static constexpr u32 MaxStages = 2; ///< VS mode: fragment (optional), vertex
+    std::array<Stage, MaxStages> stages{};
+    u32 num_stages = 0;
+    std::array<Stage, MaxStages> pending{};
+    u32 num_pending = 0;
+    bool pending_ok = true;
+    bool pending_motion_possible = false;
+    bool valid = false;
+    bool synced = false; ///< `snapshot` holds the register file as of the last sync
+    const GraphicsPipeline* pipeline = nullptr;
+    DrawIndirectParams params{};
+    bool motion = false;
+    bool motion_possible = false;
+    u64 positions_address = 0;
+    bool object_motion = false;
+    int upscaler = 0;
+    std::unique_ptr<std::array<u32, Gcn::Regs::NumRegs>> snapshot =
+        std::make_unique<std::array<u32, Gcn::Regs::NumRegs>>();
+    u64 hits = 0, full = 0, miss_regs = 0, miss_program = 0, miss_spec = 0, miss_motion = 0;
+    u64 not_eligible = 0, verify_bad = 0, calls = 0;
+    std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
+};
+
+void PipelineCache::InvalidateFastSelect() {
+    if (fast) {
+        fast->valid = false;
+    }
+}
+
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              BbCp::CommandProcessor* liverpool_, u32 sparse_page_shift)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
       desc_heap{instance, scheduler.GetWorkSemaphore(), DescriptorHeapSizes},
       profile{MakeProfile(instance_, sparse_page_shift)} {
+    fast = std::make_unique<FastSelect>();
     sel.regs = &liverpool->regs;
     WarmUp();
 
@@ -708,6 +750,288 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return nullptr;
 }
 
+namespace {
+/// Whether a G-buffer vertex shader gets the motion attachment (its bone palette buffers):
+/// shared by the full selection (RefreshGraphicsKey) and the fast select.
+bool VsSelectsMotion(const Shader::Info& vs) {
+    for (const auto& resource : vs.buffers) {
+        if (resource.IsSpecial()) {
+            continue;
+        }
+        const auto buffer = resource.GetSharp(vs);
+        if (buffer.Valid() && buffer.GetStride() == 16 &&
+            Motion::ClassifyBuffer(buffer.GetSize()) != Motion::BufferRole::Other) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AllMotionEnv() {
+    // BB_OBJECT_MOTION_ALL=1: the old broad selection, for visual A/B tests.
+    static const bool all_motion = [] {
+        const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
+        return value && value[0] == '1';
+    }();
+    return all_motion;
+}
+
+bool FastSelectEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_FAST_SELECT");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
+bool FastSelectVerify() {
+    static const bool verify = [] {
+        const char* env = std::getenv("BB_FAST_SELECT_VERIFY");
+        return env && env[0] == '1';
+    }();
+    return verify;
+}
+
+/// Per 32-word register block: the words the graphics pipeline selection depends on. Left out:
+/// the graphics stages' user data (read through the specialization check instead) and the
+/// draw arguments every draw packet writes (index count/base/offset, instances, initiator).
+const std::array<u32, Gcn::RegDirty::NumBlocks>& FastSelectRelevantMasks() {
+    static const auto masks = [] {
+        std::array<u32, Gcn::RegDirty::NumBlocks> m{};
+        m.fill(~0u);
+        const auto drop = [&](u32 word) {
+            m[word / Gcn::RegDirty::BlockWords] &= ~(1u << (word % Gcn::RegDirty::BlockWords));
+        };
+        // SPI_SHADER_PGM_LO_{PS,VS,GS,ES,HS,LS} at 0x2C08 + 0x40 * stage: address (2 words),
+        // RSRC1/RSRC2 (2 words), then the 16 user data words.
+        for (u32 stage = 0; stage < 6; ++stage) {
+            const u32 base = 0x2C08u + stage * 0x40u;
+            for (u32 w = base + 4u; w < base + 20u; ++w) {
+                drop(w);
+            }
+        }
+        drop(BbCp::Reg::VgtIndxOffset);
+        drop(BbCp::Reg::VgtDmaBaseHi);
+        drop(BbCp::Reg::VgtDmaBase);
+        drop(BbCp::Reg::VgtDrawInitiator);
+        drop(BbCp::Reg::VgtDmaMaxSize);
+        drop(BbCp::Reg::VgtNumIndices);
+        drop(BbCp::Reg::VgtNumInstances);
+        return m;
+    }();
+    return masks;
+}
+} // namespace
+
+
+void PipelineCache::NoteFastProgram(Program* program, HwStage hw_stage, SwStage sw_stage,
+                                    VAddr pgm_base, u64 shader_hash, size_t perm_idx) {
+    if (!fast || sw_stage == SwStage::Compute) {
+        return;
+    }
+    auto& f = *fast;
+    if (f.num_pending >= FastSelect::MaxStages) {
+        f.pending_ok = false;
+        return;
+    }
+    auto& st = f.pending[f.num_pending++];
+    st.program = program;
+    st.hw_stage = hw_stage;
+    st.sw_stage = sw_stage;
+    st.pgm_base = pgm_base;
+    st.shader_hash = shader_hash;
+    st.perm_idx = static_cast<u32>(perm_idx);
+}
+
+void PipelineCache::SyncFastSnapshot() {
+    auto& f = *fast;
+    auto& cp = *liverpool;
+    auto& snap = *f.snapshot;
+    if (!f.synced || cp.sel_dirty.reset || cp.pipe_dirty.reset) {
+        std::memcpy(snap.data(), cp.regs.reg_array.data(), sizeof(snap));
+        f.synced = true;
+    } else {
+        RegDirty dirty{};
+        dirty.blocks = cp.sel_dirty.blocks | cp.pipe_dirty.blocks;
+        dirty.ForEachBlock([&](size_t block) {
+            const size_t at = block * RegDirty::BlockWords;
+            std::memcpy(snap.data() + at, cp.regs.reg_array.data() + at,
+                        RegDirty::BlockWords * sizeof(u32));
+        });
+    }
+    cp.sel_dirty.Clear();
+}
+
+void PipelineCache::CommitFastSelect(const GraphicsPipeline* pipeline,
+                                     const DrawIndirectParams& params) {
+    auto& f = *fast;
+    const auto& regs = liverpool->regs;
+    f.valid = false;
+    const bool eligible = pipeline && f.pending_ok && f.num_pending > 0 &&
+                          regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::Vs &&
+                          instance.IsVertexInputDynamicState();
+    if (eligible) {
+        for (u32 i = 0; i < f.num_pending; ++i) {
+            f.stages[i] = f.pending[i];
+            f.stages[i].runtime_info = sel.runtime_infos[static_cast<u32>(f.pending[i].sw_stage)];
+        }
+        f.num_stages = f.num_pending;
+        f.pipeline = pipeline;
+        f.params = params;
+        f.motion = sel.motion;
+        f.motion_possible = f.pending_motion_possible;
+        f.positions_address = Shader::MotionVectors::positions_address;
+        f.object_motion = BbSettings::Get().object_motion.load(std::memory_order_relaxed);
+        f.upscaler = BbSettings::Get().upscaler.load(std::memory_order_relaxed);
+        f.valid = true;
+    } else {
+        ++f.not_eligible;
+    }
+    SyncFastSnapshot();
+}
+
+const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& params) {
+    auto& f = *fast;
+    if (!f.valid || !f.synced) {
+        return nullptr;
+    }
+    auto& cp = *liverpool;
+    if (params.vertex_sgpr_offset != f.params.vertex_sgpr_offset ||
+        params.instance_sgpr_offset != f.params.instance_sgpr_offset ||
+        cp.sel_dirty.reset || cp.pipe_dirty.reset ||
+        f.positions_address != Shader::MotionVectors::positions_address ||
+        f.object_motion != BbSettings::Get().object_motion.load(std::memory_order_relaxed) ||
+        f.upscaler != BbSettings::Get().upscaler.load(std::memory_order_relaxed)) {
+        ++f.miss_regs;
+        return nullptr;
+    }
+    // The registers the last full selection read, unchanged since (value compare of the
+    // blocks written since, user data and draw arguments left out).
+    const auto& masks = FastSelectRelevantMasks();
+    const auto& regs = cp.regs;
+    const auto& snap = *f.snapshot;
+    RegDirty dirty{};
+    dirty.blocks = cp.sel_dirty.blocks | cp.pipe_dirty.blocks;
+    bool changed = false;
+    dirty.ForEachBlock([&](size_t block) {
+        const u32 mask = masks[block];
+        if (changed || mask == 0) {
+            return;
+        }
+        const size_t at = block * RegDirty::BlockWords;
+        const u32* cur = regs.reg_array.data() + at;
+        const u32* old = snap.data() + at;
+        if (mask == ~0u) {
+            changed = std::memcmp(cur, old, RegDirty::BlockWords * sizeof(u32)) != 0;
+            return;
+        }
+        for (u32 w = 0; w < RegDirty::BlockWords; ++w) {
+            if (((mask >> w) & 1u) && cur[w] != old[w]) {
+                changed = true;
+                return;
+            }
+        }
+    });
+    if (changed) {
+        ++f.miss_regs;
+        return nullptr;
+    }
+    // Each stage: the same program still there, its user data refreshed (the pipeline's stage
+    // Info is the program's, as after a full selection), and the specialization of the
+    // permutation used.
+    Shader::Backend::Bindings binding{};
+    const Shader::Info* vs_info = nullptr;
+    for (u32 i = 0; i < f.num_stages; ++i) {
+        auto& st = f.stages[i];
+        const auto* pgm = regs.ProgramForStage(static_cast<u32>(st.hw_stage));
+        if (!pgm) {
+            ++f.miss_program;
+            return nullptr;
+        }
+        const VAddr base = pgm->Address<VAddr>();
+        if (base != st.pgm_base || base == 0) {
+            ++f.miss_program;
+            return nullptr;
+        }
+        DirectShaders::Snapshot direct_snap;
+        if (DirectShaders::TryLookup(base, direct_snap, /*is_worker=*/false) &&
+            direct_snap.cpu_immutable != 0) {
+            if (direct_snap.shader_hash != st.shader_hash) {
+                ++f.miss_program;
+                return nullptr;
+            }
+        } else {
+            if (program_write_sync) {
+                program_write_sync(base, 256);
+            }
+            const auto* bin = Gcn::DirectBinaryInfo(reinterpret_cast<const u32*>(base));
+            if (!bin || bin->shader_hash != st.shader_hash) {
+                ++f.miss_program;
+                return nullptr;
+            }
+        }
+        auto& info = st.program->info;
+        info.pgm_base = base;
+        info.user_data = pgm->user_data;
+        info.RefreshFlatBuf();
+        if (info.has_fetch_shader) {
+            const u32* fetch = Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+            if (fetch && program_write_sync) {
+                program_write_sync(reinterpret_cast<VAddr>(fetch), 256);
+            }
+            if (!FetchCodeDecodes(fetch)) {
+                ++f.miss_program;
+                return nullptr;
+            }
+        }
+        const auto spec = Shader::StageSpecialization(info, st.runtime_info, profile, binding);
+        auto& modules = st.program->modules;
+        if (st.perm_idx >= modules.size() || !(modules[st.perm_idx].spec == spec)) {
+            ++f.miss_spec;
+            return nullptr;
+        }
+        st.program->last_used = st.perm_idx;
+        info.AddBindings(binding);
+        if (st.sw_stage == SwStage::Vertex) {
+            vs_info = &info;
+        }
+    }
+    if (f.motion_possible) {
+        const bool motion = AllMotionEnv() || (vs_info && VsSelectsMotion(*vs_info));
+        if (motion != f.motion) {
+            ++f.miss_motion;
+            return nullptr;
+        }
+    }
+    SyncFastSnapshot();
+    ++f.hits;
+    return f.pipeline;
+}
+
+void PipelineCache::PrintFastSelectStats() {
+    auto& f = *fast;
+    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
+    if (!stats || (++f.calls & 1023) != 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - f.window < std::chrono::seconds(5)) {
+        return;
+    }
+    f.window = now;
+    const u64 total = std::max<u64>(f.hits + f.full, 1);
+    std::printf("Fast select (5 s): reused %llu (%.1f%%), full %llu; misses: registers %llu, "
+                "program %llu, specialization %llu, motion %llu; not eligible %llu; verify "
+                "mismatches %llu\n",
+                (unsigned long long)f.hits, 100.0 * double(f.hits) / double(total),
+                (unsigned long long)f.full, (unsigned long long)f.miss_regs,
+                (unsigned long long)f.miss_program, (unsigned long long)f.miss_spec,
+                (unsigned long long)f.miss_motion, (unsigned long long)f.not_eligible,
+                (unsigned long long)f.verify_bad);
+    f.hits = f.full = f.miss_regs = f.miss_program = f.miss_spec = f.miss_motion = 0;
+    f.not_eligible = 0;
+}
+
 void PipelineCache::NoteDrawTarget(const Gcn::Regs& regs) {
     const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
     const u64 target = DrawTarget(regs);
@@ -735,6 +1059,42 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             return pipeline;
         }
     }
+    const bool fast_select = FastSelectEnabled() && fast;
+    const GraphicsPipeline* fast_pipeline = nullptr;
+    if (fast_select) {
+        PrintFastSelectStats();
+        fast_pipeline = TryFastSelect(params);
+        if (fast_pipeline && !FastSelectVerify()) {
+            return fast_pipeline;
+        }
+    }
+    const GraphicsPipeline* const selected = SelectGraphicsPipelineFull(params, indirect);
+    if (fast_select) {
+        if (fast_pipeline) {
+            if (selected != fast_pipeline) {
+                auto& f = *fast;
+                if (f.verify_bad++ < 16) {
+                    const auto* vs = selected ? selected->GetStages()[u32(SwStage::Vertex)]
+                                              : nullptr;
+                    std::printf("Fast select VERIFY mismatch: reused %p, full selection %p "
+                                "(vs %016llx)\n",
+                                static_cast<const void*>(fast_pipeline),
+                                static_cast<const void*>(selected),
+                                (unsigned long long)(vs ? vs->pgm_hash : 0));
+                }
+            }
+        } else {
+            ++fast->full;
+        }
+        if (selected) {
+            CommitFastSelect(selected, params);
+        }
+    }
+    return selected;
+}
+
+const GraphicsPipeline* PipelineCache::SelectGraphicsPipelineFull(const DrawIndirectParams params,
+                                                                  bool indirect) {
     sel.draw_indirect_params = params;
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
@@ -956,6 +1316,9 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         db.NumSamples() == 1 && !regs.IsClipDisabled() &&
         regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::Vs;
     sel.motion = false;
+    if (!sel.worker && &sel == &this->sel && fast) {
+        fast->pending_motion_possible = motion_possible;
+    }
 
     if (!RefreshGraphicsStages(sel)) {
         return false;
@@ -966,17 +1329,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
             // Shaders with a bone palette (motion_history.h). Small skeletons (weapons, props)
             // also include static world pieces: the rasterizer gives those history only while
             // their constants change.
-            for (const auto& resource : vs->buffers) {
-                if (resource.IsSpecial()) {
-                    continue;
-                }
-                const auto buffer = resource.GetSharp(*vs);
-                if (buffer.Valid() && buffer.GetStride() == 16 &&
-                    Motion::ClassifyBuffer(buffer.GetSize()) != Motion::BufferRole::Other) {
-                    sel.motion = true;
-                    break;
-                }
-            }
+            sel.motion = VsSelectsMotion(*vs);
         }
         // BB_MOTION_SELECT_LOG=1: each G-buffer vertex shader once, with its buffer sizes and
         // the selection, to find animated models that the size rule leaves out.
@@ -1003,11 +1356,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
             }
         }
         // BB_OBJECT_MOTION_ALL=1: the old broad selection, for visual A/B tests.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
-        }();
-        if (all_motion) {
+        if (AllMotionEnv()) {
             sel.motion = true;
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {
@@ -1071,6 +1420,10 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     bool not_a_program = false;
     const auto& regs = *sel.regs;
     auto& key = sel.graphics_key;
+    if (!sel.worker && &sel == &this->sel && fast) {
+        fast->num_pending = 0;
+        fast->pending_ok = true;
+    }
     sel.fetch_shader = std::nullopt;
     sel.infos.fill(nullptr);
     sel.modules.fill(nullptr);
@@ -1391,6 +1744,9 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
                 program_cache.emplace(params.hash, std::move(new_program));
             }
             DirectShaders::NoteProgramCreated(params.hash, program);
+            if (&sel == &this->sel) {
+                NoteFastProgram(program, hw_stage, sw_stage, params.Base(), params.hash, 0);
+            }
             return {&program->info, module, program->modules[0].spec.fetch_shader_data, perm_hash};
         }
         resolved = found.value().get();
@@ -1455,6 +1811,9 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         spec.info = &info;
         PipelineStore::SaveShaderMeta(new_info, spec, HashCombine(params.hash, perm_idx), perm_idx);
         program.AddPermut(module, std::move(spec));
+    }
+    if (&sel == &this->sel) {
+        NoteFastProgram(&program, hw_stage, sw_stage, params.Base(), params.hash, perm_idx);
     }
     return {&info, modules[perm_idx].module, modules[perm_idx].spec.fetch_shader_data,
             HashCombine(params.hash, perm_idx)};
