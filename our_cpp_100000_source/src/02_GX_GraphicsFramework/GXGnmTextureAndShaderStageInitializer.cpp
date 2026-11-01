@@ -786,6 +786,11 @@ extern "C" int32_t GXGnmGeometryShaderProgram_InitializeFromShdrBinary(
         CGMemoryGnm_Memcpy(vsCopyGpuPtr, vsCopyPtrs.ucode, vsCopyPtrs.size);
         if (gx_direct_vk::EnabledV3Sub(gx_direct_vk::kV3Sub_DirectBuffers) && totalGpuSize > 0u) {
             gx_direct_vk::NoteDirectAssetBufferWrite(gpuBase, totalGpuSize);
+            if (gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers)) {
+                gx_direct_vk::RegisterDirectImmutableBuffer(
+                    0u, gpuBase, static_cast<uint32_t>(totalGpuSize),
+                    static_cast<uint32_t>(totalGpuSize), 4u);
+            }
         }
         gx_direct_vk::RegisterDirectShaderBinary(
             gpuBase, static_cast<uint32_t>(gsAlignedSize), shdrData, static_cast<uint32_t>(shdrSize), 3u);

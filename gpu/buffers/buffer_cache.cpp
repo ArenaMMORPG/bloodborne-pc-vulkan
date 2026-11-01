@@ -2321,7 +2321,10 @@ std::pair<vk::DeviceMemory, u64> BufferCache::AllocateResidency(u64 bytes, bool 
     // one block is partly unused. The next block is allocated in the background once half of the
     // current one is used: the kernel clears new memory, on a Steam Deck with the CPU (16-22 ms a
     // burst). At most one spare block.
-    constexpr u64 ResidencyBlock = 64_MB;
+    static const bool n1_native_residency =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const u64 ResidencyBlock =
+        n1_native_residency ? std::max<u64>(8_MB, u64(block_size) * 4ULL) : 64_MB;
     // bbport: VRAM full (a 4 GB card: "ErrorOutOfDeviceMemory", the game stopped): the block
     // comes from system memory the GPU reads over the bus, as a PC game's data spills there.
     // Slower, not fatal. BB_RESIDENCY_VRAM_LIMIT_MB=N (tests): VRAM "full" after N MiB of blocks.
@@ -2450,7 +2453,7 @@ std::pair<vk::DeviceMemory, u64> BufferCache::AllocateResidency(u64 bytes, bool 
     const u64 offset = residency_used;
     residency_used += bytes;
     residency_chunks[static_cast<VkDeviceMemory>(residency_memory)].used += bytes;
-    if (!spare_residency.valid() && residency_used * 2 >= residency_size) {
+    if (!n1_native_residency && !spare_residency.valid() && residency_used * 2 >= residency_size) {
         spare_residency = std::async(std::launch::async, allocate, ResidencyBlock);
     }
     NoteResidencyUnused();

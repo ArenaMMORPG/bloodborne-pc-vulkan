@@ -54,7 +54,8 @@ struct BufferAllocation {
     BufferAllocation& operator=(BufferAllocation&& other) noexcept;
 
     /// Creates the buffer (sparse ones bound to nothing yet); fills `out_info` for allocations.
-    void Create(vk::BufferCreateInfo& create_info, MemoryType type, VmaAllocationInfo* out_info);
+    void Create(vk::BufferCreateInfo& create_info, MemoryType type, VmaAllocationInfo* out_info,
+                bool dedicated = false);
     void Destroy();
 
     vk::Device device;
@@ -66,7 +67,7 @@ struct BufferAllocation {
 
 struct Buffer {
     Buffer(const Vulkan::Instance& instance, VAddr cpu_addr, u64 size_bytes, MemoryType type,
-           std::string_view debug_name = "");
+           std::string_view debug_name = "", bool dedicated = false);
     /// Over memory owned elsewhere (a guest memory chunk, exported): transfers and texel and
     /// storage reads; with the layer's memory module vertex, index, indirect data and device
     /// addresses too.

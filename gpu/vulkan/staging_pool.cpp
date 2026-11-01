@@ -23,7 +23,7 @@ constexpr u64 SegmentSize = 16 * MiB;
 /// The kernel populates staging memory on first touch (~2 ms per 16 MiB): memory given back
 /// between streaming bursts a few seconds apart was made again at 0.3 GB/s. It lives 30 s idle,
 /// and the upload segments are populated at startup.
-constexpr u64 IdleFrames = 3000;
+constexpr u64 IdleFrames = 900;
 constexpr u64 PrewarmSegments = 8;
 /// Requests in a segment start on this much at least (copies into images need their texel size,
 /// storage bindings their offset alignment; 256 covers both on every GPU).
@@ -40,7 +40,7 @@ constexpr bool Mapped(MemoryType type) {
 StagingBufferPool::StagingBufferPool(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     const char* keep = std::getenv("BB_STAGING_KEEP_MB");
-    keep_segments = (keep ? std::strtoull(keep, nullptr, 10) : 512) * MiB / SegmentSize;
+    keep_segments = (keep ? std::strtoull(keep, nullptr, 10) : 128) * MiB / SegmentSize;
     Segments& uploads = segments[u32(MemoryType::HostUncached)];
     for (u64 i = 0; i < PrewarmSegments; ++i) {
         Segment& segment = NewSegment(uploads, MemoryType::HostUncached);
@@ -62,8 +62,8 @@ StagingBufferRef StagingBufferPool::Request(u64 size, MemoryType type, u64 align
 
 StagingBufferPool::Segment& StagingBufferPool::NewSegment(Segments& list, MemoryType type) {
     list.list.push_back(Segment{
-        .buffer = std::make_unique<VideoCore::Buffer>(instance, 0, SegmentSize, type,
-                                                      "StagingBufferPool:Segment"),
+        .buffer = std::make_unique<VideoCore::Buffer>(
+            instance, 0, SegmentSize, type, "StagingBufferPool:Segment", /*dedicated=*/true),
         .last_frame = frame,
     });
     return list.list.back();
@@ -83,15 +83,25 @@ StagingBufferRef StagingBufferPool::FromSegments(Segments& list, u64 size, u64 a
     };
     Segment* segment = list.list.empty() ? nullptr : &list.list[list.current];
     if (!segment || !fits(*segment)) {
-        // The next segment the GPU is done with starts empty again; else a new one.
+        // Prefer the lowest-index free segment so temporary map-load burst segments at higher
+        // indices stay idle and return their dedicated VRAM/host memory to the driver.
         segment = nullptr;
-        for (size_t step = 1; step <= list.list.size() && !segment; ++step) {
-            const size_t index = (list.current + step) % list.list.size();
+        for (size_t index = 0; index < list.list.size() && !segment; ++index) {
+            if (index == list.current) {
+                continue;
+            }
             Segment& candidate = list.list[index];
             if (candidate.last_tick == 0 || scheduler.IsFree(candidate.last_tick)) {
                 candidate.used = 0;
                 list.current = index;
                 segment = &candidate;
+            }
+        }
+        if (!segment && !list.list.empty()) {
+            Segment& cur = list.list[list.current];
+            if (cur.last_tick == 0 || scheduler.IsFree(cur.last_tick)) {
+                cur.used = 0;
+                segment = &cur;
             }
         }
         if (!segment) {
@@ -128,10 +138,11 @@ StagingBufferRef StagingBufferPool::FromWhole(u64 size, MemoryType type, bool de
         }
     }
     if (!best) {
+        const u64 aligned_size = Common::AlignUp(size, WholeGranule);
         list.push_back(Whole{
-            .buffer = std::make_unique<VideoCore::Buffer>(instance, 0,
-                                                          Common::AlignUp(size, WholeGranule),
-                                                          type, "StagingBufferPool:Whole"),
+            .buffer = std::make_unique<VideoCore::Buffer>(
+                instance, 0, aligned_size, type, "StagingBufferPool:Whole",
+                /*dedicated=*/aligned_size >= 2 * MiB),
         });
         best = &list.back();
     }

@@ -30,14 +30,15 @@ const char* TypeName(MemoryType type) {
 /// `VkDeviceMemory` allocations. Only huge buffers (>= 64 MiB) request dedicated memory so
 /// thousands of native `.flver` / `GXGnmBuffer` `VkBuffer`s sub-allocate cleanly from VMA pools
 /// instead of exhausting NVIDIA's `maxMemoryAllocationCount = 4096`.
-VmaAllocationCreateInfo AllocationInfo(MemoryType type, bool device_address, u64 size_bytes) {
+VmaAllocationCreateInfo AllocationInfo(MemoryType type, bool device_address, u64 size_bytes,
+                                       bool dedicated) {
     VmaAllocationCreateInfo info{
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_UNKNOWN,
         .preferredFlags = type != MemoryType::DeviceLocal ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                                                           : VkMemoryPropertyFlags{},
     };
-    if (device_address && size_bytes >= (64ULL << 20)) {
+    if (dedicated || (device_address && size_bytes >= (64ULL << 20))) {
         info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
     switch (type) {
@@ -144,14 +145,14 @@ void BufferAllocation::Destroy() {
 }
 
 void BufferAllocation::Create(vk::BufferCreateInfo& create_info, MemoryType type,
-                              VmaAllocationInfo* out_info) {
+                              VmaAllocationInfo* out_info, bool dedicated) {
     const bool device_address =
         bool(create_info.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
     if (type == MemoryType::Sparse) {
         buffer = CreateArena(device, allocator, create_info);
     } else {
         const VmaAllocationCreateInfo alloc_info =
-            AllocationInfo(type, device_address, create_info.size);
+            AllocationInfo(type, device_address, create_info.size, dedicated);
         const VkBufferCreateInfo vk_info = create_info;
         VkBuffer handle{};
         const VkResult result =
@@ -167,7 +168,7 @@ void BufferAllocation::Create(vk::BufferCreateInfo& create_info, MemoryType type
 }
 
 Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
-               MemoryType type, std::string_view debug_name)
+               MemoryType type, std::string_view debug_name, bool dedicated)
     : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, mem_type{type},
       buffer{instance.GetDevice(), instance.GetAllocator()} {
     vk::BufferCreateInfo create_info{
@@ -184,7 +185,7 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         create_info.pQueueFamilyIndices = families.data();
     }
     VmaAllocationInfo alloc_info{};
-    buffer.Create(create_info, type, &alloc_info);
+    buffer.Create(create_info, type, &alloc_info, dedicated);
 
     const auto device = instance.GetDevice();
     if (debug_name.empty()) {

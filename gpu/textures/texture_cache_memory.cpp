@@ -173,8 +173,10 @@ void TextureCache::GarbageCollectImages() {
     // Ages in seconds: gc_tick (a guest submission each, hundreds a second) at each of the last
     // 64 seconds. Once a second: near the driver's budget the collector evicts by submissions.
     const u64 second = SteadySeconds();
+    bool new_second = false;
     if (second != gc_second) {
         gc_second = second;
+        new_second = true;
         if (instance.CanReportMemoryUsage() && !instance.IsIntegrated()) {
             const u64 budget = instance.GetDeviceMemoryBudgetNow();
             if (budget != 0 && total_used_memory >= budget / 100 * 92 &&
@@ -184,9 +186,6 @@ void TextureCache::GarbageCollectImages() {
         }
         BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
-    }
-    if (BbToggle::Disabled(BbToggle::TextureCollector) || total_used_memory < trigger_gc_memory) {
-        return;
     }
 
     // Below the pressure mark an image goes once unused for BB_GC_IDLE_SECONDS (20): the
@@ -201,6 +200,31 @@ void TextureCache::GarbageCollectImages() {
         return gc_tick_at_second[(second - seconds) % gc_tick_at_second.size()];
     };
     const u64 idle_tick = tick_seconds_ago(idle_seconds);
+
+    if (!BbToggle::Disabled(BbToggle::TextureCollector) && new_second &&
+        total_used_memory < trigger_gc_memory && idle_tick != 0 && gc_tick > idle_tick) {
+        std::scoped_lock lock{mutex};
+        size_t idle_deletions = 16;
+        u32 idle_visited = 0;
+        lru_cache.ForEachItemBelow(idle_tick, [&](ImageId image_id) {
+            if (idle_deletions == 0 || ++idle_visited > 64) {
+                return true;
+            }
+            Image& image = slot_images[image_id];
+            if (True(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified)) ||
+                image.SafeToDownload()) {
+                lru_cache.Touch(image.lru_id, gc_tick);
+                return false;
+            }
+            --idle_deletions;
+            BbStats::gc_freed_images.fetch_add(1, std::memory_order_relaxed);
+            FreeImage(image_id);
+            return false;
+        });
+    }
+    if (BbToggle::Disabled(BbToggle::TextureCollector) || total_used_memory < trigger_gc_memory) {
+        return;
+    }
 
     std::scoped_lock lock{mutex};
     bool pressured = false;

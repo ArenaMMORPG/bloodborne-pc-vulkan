@@ -2259,6 +2259,10 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    if (const VAddr exact_end = VideoCore::DirectBuffers::LookupExactBufferEnd(addr);
+        exact_end > addr && (exact_end - addr) > byte_size) {
+        byte_size = exact_end - addr;
+    }
     const bool had_native = VideoCore::DirectBuffers::OverlapsNativeOwnedRange(addr, byte_size);
     if (had_native) {
         VideoCore::DirectBuffers::ClearNativeOwnedRange(addr, byte_size);

@@ -452,6 +452,10 @@ int32_t CGShaderBinaryGnm_AllocateAndUploadUcode(
             gx_direct_vk::NoteDirectAssetBufferWrite(gpu_mem, info.ucode_size);
             std::memcpy(gpu_mem, info.ucode_src, info.ucode_size);
             gx_direct_vk::NoteDirectAssetBufferWrite(gpu_mem, info.ucode_size);
+            if (gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers)) {
+                gx_direct_vk::RegisterDirectImmutableBuffer(
+                    0u, gpu_mem, info.ucode_size, info.ucode_size, 4u);
+            }
         } else {
             sub_261a1b0_memcpy(gpu_mem, info.ucode_src, info.ucode_size);
         }

@@ -389,8 +389,13 @@ inline void RegisterDirectShaderBinary(const void* gpu_ucode_addr,
 }
 
 inline void RetireDirectShaderRange(const void* gpu_addr, uint64_t byte_size) noexcept {
-    if (!EnabledV4Sub(kV4Sub_DirectShaderManifest) || !bb_direct_vk_retire_shader_range ||
-        !gpu_addr || byte_size == 0) {
+    if (!gpu_addr || byte_size == 0) {
+        return;
+    }
+    if (EnabledV3Sub(kV3Sub_DirectBuffers) && bb_direct_vk_retire_buffer_range) {
+        bb_direct_vk_retire_buffer_range(gpu_addr, byte_size);
+    }
+    if (!EnabledV4Sub(kV4Sub_DirectShaderManifest) || !bb_direct_vk_retire_shader_range) {
         return;
     }
     bb_direct_vk_retire_shader_range(gpu_addr, byte_size);

@@ -277,7 +277,9 @@ public:
         }
         return false;
     }
-    static constexpr u64 kSharedHotPageMaxBytes = 16384;
+    static constexpr u64 kSharedHotPageMaxBytes = 32768;
+    static constexpr u64 kHotGranuleShift = 16;
+    static constexpr size_t kHotGranuleCount = static_cast<size_t>((80ULL << 30) >> kHotGranuleShift);
     [[nodiscard]] static u64 ComputeSmallOrSampleHash(const ImageInfo& info) noexcept;
     bool IsMetaCleared(VAddr address, u32 slice) const {
         const auto it = surface_metas.find(address);
@@ -395,6 +397,8 @@ private:
     void UntrackImageHead(ImageId image_id);
     void UntrackImageTail(ImageId image_id);
     void MarkAsMaybeDirty(ImageId image_id, Image& image);
+    void NoteHotImageHit(Image& image) noexcept;
+    [[nodiscard]] bool IsHotGranuleRange(VAddr addr, u64 size) const noexcept;
     void TouchImage(const Image& image);
     void DeleteImage(ImageId image_id);
     void FreeImage(ImageId image_id) {
@@ -473,6 +477,7 @@ private:
     };
     tsl::robin_map<VAddr, MetaInfo> surface_metas;
     tsl::robin_map<VAddr, ImageId> direct_assets_by_addr; ///< V3.2: O(1) VAddr -> ImageId lookup
+    std::unique_ptr<u8[]> hot_granule_hits; ///< Sticky 64 KiB hot-page counters for rotated CPU LUT rings
 };
 
 } // namespace VideoCore

@@ -40,7 +40,8 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     : instance{instance_}, scheduler{scheduler_}, runtime{runtime_},
       command_processor{command_processor_}, buffer_cache{buffer_cache_},
       page_watch{page_watch_}, detiler{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
-      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()} {
+      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()},
+      hot_granule_hits{std::make_unique<u8[]>(kHotGranuleCount)} {
     const u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
     pressure_gc_samplers = max_samplers * 7 / 8;
@@ -519,6 +520,11 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
     Image& image = slot_images[image_id];
     WatchImage(image, refresh ? "texture (refresh)" : "texture (no refresh)");
     if (desc.type == BindingType::Storage) {
+        if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+            std::scoped_lock lock{mutex};
+            UntrackImage(image_id);
+            image.flags &= ~ImageFlagBits::SharedHotPage;
+        }
         image.flags |= ImageFlagBits::GpuModified;
         image.gpu_write_tick = CurrentTick();
         if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8) &&
@@ -548,6 +554,11 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
 ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc, ViewMemo* memo) {
     Image& image = slot_images[image_id];
     WatchImage(image, "render target");
+    if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+        std::scoped_lock lock{mutex};
+        UntrackImage(image_id);
+        image.flags &= ~ImageFlagBits::SharedHotPage;
+    }
     image.flags |= ImageFlagBits::GpuModified;
     image.gpu_write_tick = CurrentTick();
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
@@ -583,6 +594,11 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
 ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc, ViewMemo* memo) {
     Image& image = slot_images[image_id];
     WatchImage(image, "depth target");
+    if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+        std::scoped_lock lock{mutex};
+        UntrackImage(image_id);
+        image.flags &= ~ImageFlagBits::SharedHotPage;
+    }
     image.flags |= ImageFlagBits::GpuModified;
     image.gpu_write_tick = CurrentTick();
     image.usage.depth_target = 1;
@@ -729,7 +745,8 @@ void TextureCache::MarkDirectImmutableAsset(ImageId image_id) {
         UntrackImage(image_id);
         image.flags |= ImageFlagBits::DirectImmutable;
     }
-    image.flags &= ~(ImageFlagBits::Dirty | ImageFlagBits::MaybeCpuDirty);
+    image.flags &=
+        ~(ImageFlagBits::Dirty | ImageFlagBits::MaybeCpuDirty | ImageFlagBits::SharedHotPage);
     if (image.info.guest_address != 0 && image.info.guest_size != 0) {
         direct_assets_by_addr[image.info.guest_address] = image_id;
         buffer_cache.NotePreciseUpload(image.info.guest_address, image.info.guest_size);

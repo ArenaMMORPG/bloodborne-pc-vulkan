@@ -95,6 +95,19 @@ void TextureCache::TrackImage(ImageId image_id) {
         return;
     }
     if (!image.IsTracked()) {
+        if (False(image.flags &
+                  (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified |
+                   ImageFlagBits::SharedHotPage)) &&
+            image.info.guest_size > 0 && image.info.guest_size <= kSharedHotPageMaxBytes &&
+            IsHotGranuleRange(begin, image.info.guest_size)) {
+            image.flags |= ImageFlagBits::SharedHotPage;
+            if (image.hot_page_hits < 2) {
+                image.hot_page_hits = 2;
+            }
+            if (image.hash == 0) {
+                image.hash = ComputeSmallOrSampleHash(image.info);
+            }
+        }
         image.track_addr = begin;
         image.track_addr_end = end;
         if (False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
@@ -189,21 +202,63 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
     page_watch.WatchImage<false>(last, end - last);
 }
 
+void TextureCache::NoteHotImageHit(Image& image) noexcept {
+    if (image.info.guest_size == 0 || image.info.guest_size > kSharedHotPageMaxBytes ||
+        True(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified))) {
+        return;
+    }
+    if (image.hot_page_hits < 255) {
+        ++image.hot_page_hits;
+    }
+    bool hot = (image.hot_page_hits >= 2);
+    if (hot_granule_hits && image.info.guest_address != 0) {
+        const u64 first_g = image.info.guest_address >> kHotGranuleShift;
+        const u64 last_g =
+            (image.info.guest_address + image.info.guest_size - 1ULL) >> kHotGranuleShift;
+        if (last_g < kHotGranuleCount) {
+            for (u64 g = first_g; g <= last_g; ++g) {
+                u8& cnt = hot_granule_hits[g];
+                if (cnt < 255) {
+                    ++cnt;
+                }
+                if (cnt >= 2) {
+                    hot = true;
+                }
+            }
+        }
+    }
+    if (hot) {
+        image.flags |= ImageFlagBits::SharedHotPage;
+        if (image.hash == 0) {
+            image.hash = ComputeSmallOrSampleHash(image.info);
+        }
+    }
+}
+
+bool TextureCache::IsHotGranuleRange(VAddr addr, u64 size) const noexcept {
+    if (!hot_granule_hits || addr == 0 || size == 0) {
+        return false;
+    }
+    const u64 first_g = addr >> kHotGranuleShift;
+    const u64 last_g = (addr + size - 1ULL) >> kHotGranuleShift;
+    if (last_g >= kHotGranuleCount) {
+        return false;
+    }
+    for (u64 g = first_g; g <= last_g; ++g) {
+        if (hot_granule_hits[g] >= 2) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
     if (image.hash == 0) {
         image.hash = ComputeSmallOrSampleHash(image.info);
     }
     image.flags |= ImageFlagBits::MaybeCpuDirty;
     UntrackImage(image_id);
-    if (image.info.guest_size <= kSharedHotPageMaxBytes &&
-        False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified))) {
-        if (image.hot_page_hits < 255) {
-            ++image.hot_page_hits;
-        }
-        if (image.hot_page_hits >= 2) {
-            image.flags |= ImageFlagBits::SharedHotPage;
-        }
-    }
+    NoteHotImageHit(image);
 }
 
 void TextureCache::TouchImage(const Image& image) {
@@ -257,15 +312,7 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
                                          image.info.size.height, u32(image.info.pixel_format),
                                          u32(image.info.tile_mode));
             UntrackImage(image_id);
-            if (image.info.guest_size <= kSharedHotPageMaxBytes &&
-                False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified))) {
-                if (image.hot_page_hits < 255) {
-                    ++image.hot_page_hits;
-                }
-                if (image.hot_page_hits >= 2) {
-                    image.flags |= ImageFlagBits::SharedHotPage;
-                }
-            }
+            NoteHotImageHit(image);
         } else if (True(image.flags & ImageFlagBits::SharedHotPage)) {
             return;
         } else if (pages_end < end) {
