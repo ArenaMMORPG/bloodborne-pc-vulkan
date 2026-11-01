@@ -174,6 +174,9 @@ public:
             direct_recordings.fetch_add(1, std::memory_order_relaxed);
             TraceDirectRecording(__builtin_return_address(0));
         }
+        // The caller may bind its own pipeline / push descriptors on the raw command buffer
+        // (blitter, depth resolve): the next draw must rebind its graphics pipeline and descriptors.
+        ++descriptor_state_epoch;
         EnsureSubmissionProfileOpen();
         return current_cmdbuf;
     }
