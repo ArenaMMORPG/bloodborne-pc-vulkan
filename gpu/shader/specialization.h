@@ -250,6 +250,160 @@ struct StageSpecialization {
         return true;
     }
 
+    /// Zero-allocation exact specialization match against live `cur_info` user data (`*this ==
+    /// StageSpecialization(cur_info, cur_rt, profile, cur_start)`), using pre-parsed `cur_fetch`.
+    [[nodiscard]] bool MatchesInPlace(const Info& cur_info, const RuntimeInfo& cur_rt,
+                                      const Profile& profile, Backend::Bindings cur_start,
+                                      const Gcn::FetchShaderData* cur_fetch) const {
+        if (!Valid()) {
+            return false;
+        }
+        if (cur_info.sw_stage == SwStage::TessellationControl ||
+            cur_info.sw_stage == SwStage::TessellationEval) {
+            return false;
+        }
+        if (runtime_info != cur_rt) {
+            return false;
+        }
+        if (fetch_shader_data.has_value() != (cur_fetch != nullptr)) {
+            return false;
+        }
+        if (cur_fetch) {
+            if (!(*fetch_shader_data == *cur_fetch)) {
+                return false;
+            }
+            if (cur_info.sw_stage == SwStage::Vertex) {
+                if (vs_attribs.size() != cur_fetch->attributes.size()) {
+                    return false;
+                }
+                for (size_t i = 0; i < cur_fetch->attributes.size(); ++i) {
+                    VsAttribSpecialization aspec{};
+                    const auto& desc = cur_fetch->attributes[i];
+                    const auto sharp = desc.GetSharp(cur_info);
+                    if (sharp) {
+                        using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
+                        if (const auto step_rate = desc.GetStepRate();
+                            step_rate != InstanceIdType::None) {
+                            aspec.divisor = step_rate == InstanceIdType::OverStepRate0
+                                                ? cur_rt.sw.vs.step_rate_0
+                                                : (step_rate == InstanceIdType::OverStepRate1
+                                                       ? cur_rt.sw.vs.step_rate_1
+                                                       : 1);
+                        }
+                        aspec.num_class = ::Gcn::GetNumberClass(sharp.GetNumberFmt());
+                        aspec.dst_select = sharp.DstSelect();
+                    }
+                    if (vs_attribs[i] != aspec) {
+                        return false;
+                    }
+                }
+            } else if (!vs_attribs.empty()) {
+                return false;
+            }
+        } else if (!vs_attribs.empty()) {
+            return false;
+        }
+
+        if (fmasks.size() != cur_info.fmasks.size()) {
+            return false;
+        }
+        bool cur_any_bit = false;
+        for (size_t i = 0; i < cur_info.fmasks.size(); ++i) {
+            FMaskSpecialization fspec{};
+            const auto sharp = cur_info.fmasks[i].GetSharp(cur_info);
+            if (sharp) {
+                cur_any_bit = true;
+                fspec.width = sharp.width;
+                fspec.height = sharp.height;
+            }
+            if (fmasks[i] != fspec) {
+                return false;
+            }
+        }
+
+        const bool buffers_match_size = (buffers.size() == cur_info.buffers.size());
+        const bool images_match_size = (images.size() == cur_info.images.size());
+        const bool samplers_match_size = (samplers.size() == cur_info.samplers.size());
+
+        for (size_t i = 0; i < cur_info.buffers.size(); ++i) {
+            const auto& desc = cur_info.buffers[i];
+            const auto sharp = desc.GetSharp(cur_info);
+            if (!sharp) {
+                continue;
+            }
+            cur_any_bit = true;
+            if (!buffers_match_size || !(start == cur_start)) {
+                return false;
+            }
+            BufferSpecialization bspec{};
+            bspec.stride = sharp.GetStride();
+            bspec.paged = IsPagedBuffer(profile.paged_buffers, sharp, cur_info.pgm_hash,
+                                        profile.buffer_copy_shader_hash);
+            bspec.is_formatted = desc.is_formatted;
+            bspec.swizzle_enable = sharp.swizzle_enable;
+            if (bspec.is_formatted) {
+                bspec.data_format = static_cast<u32>(sharp.GetDataFmt());
+                bspec.num_format = static_cast<u32>(sharp.GetNumberFmt());
+                bspec.dst_select = sharp.DstSelect();
+                bspec.num_conversion = sharp.GetNumberConversion();
+            }
+            if (bspec.swizzle_enable) {
+                bspec.index_stride = sharp.index_stride;
+                bspec.element_size = sharp.element_size;
+            }
+            if (buffers[i] != bspec) {
+                return false;
+            }
+        }
+
+        for (size_t i = 0; i < cur_info.images.size(); ++i) {
+            const auto& desc = cur_info.images[i];
+            const auto sharp = desc.GetSharp(cur_info);
+            if (!sharp) {
+                continue;
+            }
+            cur_any_bit = true;
+            if (!images_match_size || !(start == cur_start)) {
+                return false;
+            }
+            ImageSpecialization ispec{};
+            ispec.type = sharp.GetViewType(desc.is_array);
+            ispec.is_integer = ::Gcn::IsInteger(sharp.GetNumberFmt());
+            ispec.is_storage = desc.is_written;
+            ispec.is_cube = sharp.IsCube();
+            if (ispec.is_storage) {
+                ispec.dst_select = sharp.DstSelect();
+            } else {
+                ispec.is_srgb = sharp.GetNumberFmt() == ::Gcn::NumberFormat::Srgb;
+            }
+            ispec.num_conversion = sharp.GetNumberConversion();
+            ispec.num_bindings = desc.NumBindings(cur_info);
+            if (images[i] != ispec) {
+                return false;
+            }
+        }
+
+        if (bitset.none() && !cur_any_bit) {
+            return true;
+        }
+        if (!(start == cur_start) || !buffers_match_size || !images_match_size ||
+            !samplers_match_size) {
+            return false;
+        }
+        for (size_t i = 0; i < cur_info.samplers.size(); ++i) {
+            SamplerSpecialization sspec{};
+            const auto sharp = cur_info.samplers[i].GetSharp(cur_info);
+            if (sharp) {
+                sspec.force_unnormalized = sharp.force_unnormalized;
+                sspec.force_degamma = sharp.force_degamma;
+            }
+            if (samplers[i] != sspec) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void Serialize(Serialization::Archive& ar) const;
     bool Deserialize(Serialization::Archive& ar);
 };

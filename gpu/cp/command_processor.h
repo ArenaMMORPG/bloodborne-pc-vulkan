@@ -147,13 +147,6 @@ public:
     u16 last_db_uid{};
     /// Register blocks written since the last draw handed to the draw recording thread.
     RegDirty pipe_dirty;
-    /// Block 4: register blocks written since the GPU thread's last pipeline selection
-    /// (PipelineCache fast select). PostDraw folds `pipe_dirty` in before clearing it.
-    RegDirty sel_dirty;
-    void FoldSelDirty() noexcept {
-        sel_dirty.blocks |= pipe_dirty.blocks;
-        sel_dirty.reset |= pipe_dirty.reset;
-    }
     /// Running checksum of graphics-register packets (ApplyGraphicsRegisterPacket).
     u64 gfx_reg_checksum{};
 

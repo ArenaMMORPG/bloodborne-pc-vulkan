@@ -613,8 +613,25 @@ private:
     u64 texture_set_hits = 0, texture_set_misses = 0;
     std::array<u64, 4> texture_set_why{}; ///< misses: other key, generation, image check, new
     /// Returns true when the stage's images were bound from the memo.
-    bool BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
-                             u32 first_image_idx, bool& barrier, TextureSet*& slot, u64& out_key);
+    bool BindTexturesFromSet(const Shader::Info& stage, const u64* image_hashes,
+                             u64 precomputed_key, u32 first_image_idx, bool& barrier,
+                             TextureSet*& slot, u64& out_key);
+    struct StageBVertexMemoEntry {
+        u64 key = 0;
+        u64 erase_gen = 0;
+        u32 frame_number = ~0u;
+        const GraphicsPipeline* pipeline = nullptr;
+        u32 step_rate_0 = 0;
+        u32 step_rate_1 = 0;
+        u32 count = 0;
+        u32 num_ranges = 0;
+        u64 buffers_hash = 0;
+        std::array<Gcn::Buffer, 16> vsharps{};
+        std::array<vk::VertexInputAttributeDescription2EXT, 16> attributes{};
+        std::array<vk::VertexInputBindingDescription2EXT, 16> bindings{};
+        std::array<std::pair<VAddr, VAddr>, 16> ranges{};
+    };
+    std::unique_ptr<std::array<StageBVertexMemoEntry, 128>> stage_b_vertex_memo;
     boost::container::small_vector<DirectCopyTextureRegionArgs, 16> pending_tex_copies;
     vk::Pipeline bound_graphics_pipeline{};
     u64 bound_graphics_epoch = 0;

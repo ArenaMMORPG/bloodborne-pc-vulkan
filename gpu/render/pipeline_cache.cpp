@@ -311,24 +311,38 @@ struct PipelineCache::FastSelect {
         u32 perm_idx = 0;
         Shader::RuntimeInfo runtime_info{};
     };
+    struct CachedFetch {
+        std::vector<u32> words;
+        Shader::Gcn::FetchShaderData data;
+    };
     static constexpr u32 MaxStages = 2; ///< VS mode: fragment (optional), vertex
-    std::array<Stage, MaxStages> stages{};
-    u32 num_stages = 0;
+    static constexpr u32 MaxSigWords = 72;
+    static constexpr u32 NumSets = 512;
+    static constexpr u32 NumWays = 4;
+    static constexpr u32 TableSize = NumSets * NumWays;
+
+    struct Entry {
+        u64 key = 0;
+        u64 last_use = 0;
+        const GraphicsPipeline* pipeline = nullptr;
+        u16 sig_words = 0;
+        u8 num_stages = 0;
+        bool motion = false;
+        bool motion_possible = false;
+        std::array<u32, MaxSigWords> sig{};
+        std::array<Stage, MaxStages> stages{};
+    };
+
+    std::array<Entry, TableSize> entries{};
+    std::unordered_map<const u32*, CachedFetch> fetch_map;
+    std::array<std::pair<const u32*, const CachedFetch*>, 64> fetch_mru{};
+    u64 use_clock = 0;
+
     std::array<Stage, MaxStages> pending{};
     u32 num_pending = 0;
     bool pending_ok = true;
     bool pending_motion_possible = false;
-    bool valid = false;
-    bool synced = false; ///< `snapshot` holds the register file as of the last sync
-    const GraphicsPipeline* pipeline = nullptr;
-    DrawIndirectParams params{};
-    bool motion = false;
-    bool motion_possible = false;
-    u64 positions_address = 0;
-    bool object_motion = false;
-    int upscaler = 0;
-    std::unique_ptr<std::array<u32, Gcn::Regs::NumRegs>> snapshot =
-        std::make_unique<std::array<u32, Gcn::Regs::NumRegs>>();
+
     u64 hits = 0, full = 0, miss_regs = 0, miss_program = 0, miss_spec = 0, miss_motion = 0;
     u64 not_eligible = 0, verify_bad = 0, calls = 0;
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
@@ -336,7 +350,13 @@ struct PipelineCache::FastSelect {
 
 void PipelineCache::InvalidateFastSelect() {
     if (fast) {
-        fast->valid = false;
+        for (auto& e : fast->entries) {
+            e.key = 0;
+            e.pipeline = nullptr;
+        }
+        fast->fetch_map.clear();
+        fast->fetch_mru.fill({});
+        fast->use_clock = 0;
     }
 }
 
@@ -792,34 +812,80 @@ bool FastSelectVerify() {
     return verify;
 }
 
-/// Per 32-word register block: the words the graphics pipeline selection depends on. Left out:
-/// the graphics stages' user data (read through the specialization check instead) and the
-/// draw arguments every draw packet writes (index count/base/offset, instances, initiator).
-const std::array<u32, Gcn::RegDirty::NumBlocks>& FastSelectRelevantMasks() {
-    static const auto masks = [] {
-        std::array<u32, Gcn::RegDirty::NumBlocks> m{};
-        m.fill(~0u);
-        const auto drop = [&](u32 word) {
-            m[word / Gcn::RegDirty::BlockWords] &= ~(1u << (word % Gcn::RegDirty::BlockWords));
-        };
-        // SPI_SHADER_PGM_LO_{PS,VS,GS,ES,HS,LS} at 0x2C08 + 0x40 * stage: address (2 words),
-        // RSRC1/RSRC2 (2 words), then the 16 user data words.
-        for (u32 stage = 0; stage < 6; ++stage) {
-            const u32 base = 0x2C08u + stage * 0x40u;
-            for (u32 w = base + 4u; w < base + 20u; ++w) {
-                drop(w);
-            }
+/// Packs every register field and global setting that `RefreshGraphicsKey` + `BuildRuntimeInfo`
+/// read in `VgtStages::Vs` + `IsVertexInputDynamicState()` mode into `out` (~25-40 words).
+/// Returns 0 if the draw configuration is not eligible for fast selection.
+u32 BuildFastSelectSig(const Gcn::Regs& regs, const DrawIndirectParams& params,
+                       bool dynamic_vertex_input,
+                       std::array<u32, 72>& out) noexcept {
+    if (!dynamic_vertex_input ||
+        regs.stage_enable.raw != Gcn::ShaderStageEnable::VgtStages::Vs ||
+        regs.num_interp > 32u) {
+        return 0;
+    }
+    std::memcpy(&out[0], &regs.reg_array[0x2C08], 4 * sizeof(u32)); // PS address + settings
+    std::memcpy(&out[4], &regs.reg_array[0x2C48], 4 * sizeof(u32)); // VS address + settings
+
+    const bool obj_motion = BbSettings::Get().object_motion.load(std::memory_order_relaxed);
+    const int upscaler = BbSettings::Get().upscaler.load(std::memory_order_relaxed);
+    const bool has_pos = (Shader::MotionVectors::positions_address != 0);
+
+    out[8] = u32(params.vertex_sgpr_offset) | (u32(params.instance_sgpr_offset) << 16);
+    out[9] = u32(obj_motion) |
+             (u32(has_pos) << 1) |
+             (u32(upscaler & 0xFF) << 4) |
+             (u32(!regs.depth_render_override.disable_viewport_clamp) << 12) |
+             (u32(regs.polygon_control.provoking_vtx_last) << 13) |
+             (u32(regs.polygon_control.PolyMode()) << 14) |
+             (u32(regs.barycentric_control.front_face_all_bits) << 18) |
+             (u32(IsDualSourceBlend(regs.blend_control[0])) << 19) |
+             (u32(regs.aa_config.NumSamples()) << 20);
+    out[10] = u32(regs.primitive_type);
+    out[11] = regs.reg_array[0xA204]; // PA_CL_CLIP_CNTL
+    out[12] = regs.reg_array[0xA207]; // PA_CL_VS_OUT_CNTL
+    out[13] = u32(regs.color_control.mode) |
+              (u32(regs.color_control.rop3) << 8) |
+              (u32(regs.z_export_format) << 16);
+    out[14] = regs.color_shader_mask.raw;
+    out[15] = regs.color_target_mask.raw;
+    out[16] = regs.color_export_format.raw;
+    out[17] = regs.reg_array[0xA203]; // DB_SHADER_CONTROL
+    out[18] = regs.reg_array[0xA1B3]; // SPI_PS_INPUT_ENA
+    out[19] = regs.reg_array[0xA1B4]; // SPI_PS_INPUT_ADDR
+    out[20] = regs.vgt_instance_step_rate_0;
+    out[21] = regs.vgt_instance_step_rate_1;
+
+    const auto& db = regs.depth_buffer;
+    const bool db_d = db.DepthValid();
+    const bool db_s = db.StencilValid();
+    const bool color_disabled =
+        (regs.color_control.mode == Gcn::ColorControl::OperationMode::Disable);
+    u32 bound_mask = 0;
+    u32 idx = 23;
+    for (u32 cb = 0; cb < Gcn::NUM_COLOR_BUFFERS; ++cb) {
+        if (!color_disabled && regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) {
+            bound_mask |= (1u << cb);
+            const auto& col_buf = regs.color_buffers[cb];
+            out[idx++] = (col_buf.info.raw & 0x00023FFCu) |
+                         (u32(col_buf.attrib.num_fragments_log2) << 24) |
+                         0x80000000u;
+            out[idx++] = (regs.blend_control[cb].enable && !col_buf.info.blend_bypass)
+                             ? regs.reg_array[0xA1E0 + cb]
+                             : 0u;
         }
-        drop(BbCp::Reg::VgtIndxOffset);
-        drop(BbCp::Reg::VgtDmaBaseHi);
-        drop(BbCp::Reg::VgtDmaBase);
-        drop(BbCp::Reg::VgtDrawInitiator);
-        drop(BbCp::Reg::VgtDmaMaxSize);
-        drop(BbCp::Reg::VgtNumIndices);
-        drop(BbCp::Reg::VgtNumInstances);
-        return m;
-    }();
-    return masks;
+    }
+    const u32 n_interp = regs.num_interp;
+    out[22] = (db_d ? (u32(db.z_info.format) | 0x8u) : 0u) |
+              ((db_s ? (u32(db.stencil_info.format) | 0x8u) : 0u) << 4) |
+              (u32((db_d || db_s) ? db.NumSamples() : 1u) << 8) |
+              (bound_mask << 14) |
+              (n_interp << 22) |
+              (u32(bool(regs.color_buffers[Shader::MotionVectors::Output])) << 28);
+    if (n_interp != 0) {
+        std::memcpy(&out[idx], &regs.reg_array[0xA191], n_interp * sizeof(u32));
+        idx += n_interp;
+    }
+    return idx;
 }
 } // namespace
 
@@ -843,106 +909,139 @@ void PipelineCache::NoteFastProgram(Program* program, HwStage hw_stage, SwStage 
     st.perm_idx = static_cast<u32>(perm_idx);
 }
 
-void PipelineCache::SyncFastSnapshot() {
-    auto& f = *fast;
-    auto& cp = *liverpool;
-    auto& snap = *f.snapshot;
-    if (!f.synced || cp.sel_dirty.reset || cp.pipe_dirty.reset) {
-        std::memcpy(snap.data(), cp.regs.reg_array.data(), sizeof(snap));
-        f.synced = true;
-    } else {
-        RegDirty dirty{};
-        dirty.blocks = cp.sel_dirty.blocks | cp.pipe_dirty.blocks;
-        dirty.ForEachBlock([&](size_t block) {
-            const size_t at = block * RegDirty::BlockWords;
-            std::memcpy(snap.data() + at, cp.regs.reg_array.data() + at,
-                        RegDirty::BlockWords * sizeof(u32));
-        });
-    }
-    cp.sel_dirty.Clear();
-}
-
 void PipelineCache::CommitFastSelect(const GraphicsPipeline* pipeline,
                                      const DrawIndirectParams& params) {
     auto& f = *fast;
     const auto& regs = liverpool->regs;
-    f.valid = false;
-    const bool eligible = pipeline && f.pending_ok && f.num_pending > 0 &&
-                          regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::Vs &&
-                          instance.IsVertexInputDynamicState();
-    if (eligible) {
-        for (u32 i = 0; i < f.num_pending; ++i) {
-            f.stages[i] = f.pending[i];
-            f.stages[i].runtime_info = sel.runtime_infos[static_cast<u32>(f.pending[i].sw_stage)];
-        }
-        f.num_stages = f.num_pending;
-        f.pipeline = pipeline;
-        f.params = params;
-        f.motion = sel.motion;
-        f.motion_possible = f.pending_motion_possible;
-        f.positions_address = Shader::MotionVectors::positions_address;
-        f.object_motion = BbSettings::Get().object_motion.load(std::memory_order_relaxed);
-        f.upscaler = BbSettings::Get().upscaler.load(std::memory_order_relaxed);
-        f.valid = true;
-    } else {
+    if (!pipeline || !f.pending_ok || f.num_pending == 0) {
         ++f.not_eligible;
+        return;
     }
-    SyncFastSnapshot();
+    std::array<u32, FastSelect::MaxSigWords> sig{};
+    const u32 sig_len =
+        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(), sig);
+    if (sig_len == 0) {
+        ++f.not_eligible;
+        return;
+    }
+    const u64 sig_key = XXH3_64bits(sig.data(), sig_len * sizeof(u32)) | 1ULL;
+    const size_t set_base =
+        ((sig_key >> 1) & (FastSelect::NumSets - 1)) * FastSelect::NumWays;
+
+    FastSelect::Entry* target = nullptr;
+    for (u32 w = 0; w < FastSelect::NumWays; ++w) {
+        auto& cand = f.entries[set_base + w];
+        if (cand.key == sig_key && cand.pipeline == pipeline && cand.sig_words == sig_len &&
+            std::memcmp(cand.sig.data(), sig.data(), sig_len * sizeof(u32)) == 0) {
+            target = &cand;
+            break;
+        }
+    }
+    if (!target) {
+        target = &f.entries[set_base];
+        for (u32 w = 1; w < FastSelect::NumWays; ++w) {
+            auto& cand = f.entries[set_base + w];
+            if (cand.key == 0) {
+                target = &cand;
+                break;
+            }
+            if (cand.last_use < target->last_use) {
+                target = &cand;
+            }
+        }
+    }
+
+    target->key = sig_key;
+    target->last_use = ++f.use_clock;
+    target->pipeline = pipeline;
+    target->sig_words = static_cast<u16>(sig_len);
+    target->num_stages = static_cast<u8>(f.num_pending);
+    target->motion = sel.motion;
+    target->motion_possible = f.pending_motion_possible;
+    std::memcpy(target->sig.data(), sig.data(), sig_len * sizeof(u32));
+    for (u32 i = 0; i < f.num_pending; ++i) {
+        target->stages[i] = f.pending[i];
+        target->stages[i].runtime_info =
+            sel.runtime_infos[static_cast<u32>(f.pending[i].sw_stage)];
+    }
 }
 
 const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& params) {
     auto& f = *fast;
-    if (!f.valid || !f.synced) {
+    const auto& regs = liverpool->regs;
+    std::array<u32, FastSelect::MaxSigWords> sig{};
+    const u32 sig_len =
+        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(), sig);
+    if (sig_len == 0) {
+        ++f.not_eligible;
         return nullptr;
     }
-    auto& cp = *liverpool;
-    if (params.vertex_sgpr_offset != f.params.vertex_sgpr_offset ||
-        params.instance_sgpr_offset != f.params.instance_sgpr_offset ||
-        cp.sel_dirty.reset || cp.pipe_dirty.reset ||
-        f.positions_address != Shader::MotionVectors::positions_address ||
-        f.object_motion != BbSettings::Get().object_motion.load(std::memory_order_relaxed) ||
-        f.upscaler != BbSettings::Get().upscaler.load(std::memory_order_relaxed)) {
-        ++f.miss_regs;
-        return nullptr;
-    }
-    // The registers the last full selection read, unchanged since (value compare of the
-    // blocks written since, user data and draw arguments left out).
-    const auto& masks = FastSelectRelevantMasks();
-    const auto& regs = cp.regs;
-    const auto& snap = *f.snapshot;
-    RegDirty dirty{};
-    dirty.blocks = cp.sel_dirty.blocks | cp.pipe_dirty.blocks;
-    bool changed = false;
-    dirty.ForEachBlock([&](size_t block) {
-        const u32 mask = masks[block];
-        if (changed || mask == 0) {
-            return;
-        }
-        const size_t at = block * RegDirty::BlockWords;
-        const u32* cur = regs.reg_array.data() + at;
-        const u32* old = snap.data() + at;
-        if (mask == ~0u) {
-            changed = std::memcmp(cur, old, RegDirty::BlockWords * sizeof(u32)) != 0;
-            return;
-        }
-        for (u32 w = 0; w < RegDirty::BlockWords; ++w) {
-            if (((mask >> w) & 1u) && cur[w] != old[w]) {
-                changed = true;
-                return;
+    const u64 sig_key = XXH3_64bits(sig.data(), sig_len * sizeof(u32)) | 1ULL;
+    const size_t set_base =
+        ((sig_key >> 1) & (FastSelect::NumSets - 1)) * FastSelect::NumWays;
+
+    FastSelect::Entry* first_match = nullptr;
+    u32 matching_ways_mask = 0;
+    for (u32 w = 0; w < FastSelect::NumWays; ++w) {
+        auto& cand = f.entries[set_base + w];
+        if (cand.key == sig_key && cand.sig_words == sig_len &&
+            std::memcmp(cand.sig.data(), sig.data(), sig_len * sizeof(u32)) == 0) {
+            if (!first_match) {
+                first_match = &cand;
             }
+            matching_ways_mask |= (1u << w);
         }
-    });
-    if (changed) {
+    }
+    if (!first_match) {
         ++f.miss_regs;
         return nullptr;
     }
-    // Each stage: the same program still there, its user data refreshed (the pipeline's stage
-    // Info is the program's, as after a full selection), and the specialization of the
-    // permutation used.
-    Shader::Backend::Bindings binding{};
+
+    const auto lookup_fetch = [&](const Shader::Info& info) -> const Shader::Gcn::FetchShaderData* {
+        const u32* const code =
+            Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+        if (!code) {
+            return nullptr;
+        }
+        auto& mru = f.fetch_mru[(reinterpret_cast<uintptr_t>(code) >> 4) & 63];
+        if (!BbToggle::Disabled(BbToggle::FetchShaderCache) && mru.first == code && mru.second &&
+            std::memcmp(code, mru.second->words.data(),
+                        mru.second->words.size() * sizeof(u32)) == 0) {
+            return &mru.second->data;
+        }
+        if (const auto it = f.fetch_map.find(code);
+            !BbToggle::Disabled(BbToggle::FetchShaderCache) && it != f.fetch_map.end() &&
+            std::memcmp(code, it->second.words.data(),
+                        it->second.words.size() * sizeof(u32)) == 0) {
+            mru = {code, &it->second};
+            return &it->second.data;
+        }
+        if (program_write_sync) {
+            program_write_sync(reinterpret_cast<VAddr>(code), 256);
+        }
+        if (!FetchCodeDecodes(code)) {
+            return nullptr;
+        }
+        auto parsed = Shader::Gcn::ParseFetchShader(info);
+        if (!parsed || parsed->size == 0 || (parsed->size & 3u) != 0) {
+            return nullptr;
+        }
+        if (f.fetch_map.size() >= 4096) {
+            f.fetch_map.clear();
+            f.fetch_mru.fill({});
+        }
+        auto& slot = f.fetch_map[code];
+        slot.words.assign(code, code + (parsed->size / sizeof(u32)));
+        slot.data = std::move(*parsed);
+        mru = {code, &slot};
+        return &slot.data;
+    };
+
+    // Refresh user data & fetch shader once per stage across all candidate ways in the set.
+    std::array<const Shader::Gcn::FetchShaderData*, FastSelect::MaxStages> cur_fetch{};
     const Shader::Info* vs_info = nullptr;
-    for (u32 i = 0; i < f.num_stages; ++i) {
-        auto& st = f.stages[i];
+    for (u32 i = 0; i < first_match->num_stages; ++i) {
+        const auto& st = first_match->stages[i];
         const auto* pgm = regs.ProgramForStage(static_cast<u32>(st.hw_stage));
         if (!pgm) {
             ++f.miss_program;
@@ -975,37 +1074,93 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
         info.user_data = pgm->user_data;
         info.RefreshFlatBuf();
         if (info.has_fetch_shader) {
-            const u32* fetch = Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
-            if (fetch && program_write_sync) {
-                program_write_sync(reinterpret_cast<VAddr>(fetch), 256);
-            }
-            if (!FetchCodeDecodes(fetch)) {
+            cur_fetch[i] = lookup_fetch(info);
+            if (!cur_fetch[i]) {
                 ++f.miss_program;
                 return nullptr;
             }
         }
-        const auto spec = Shader::StageSpecialization(info, st.runtime_info, profile, binding);
-        auto& modules = st.program->modules;
-        if (st.perm_idx >= modules.size() || !(modules[st.perm_idx].spec == spec)) {
-            ++f.miss_spec;
-            return nullptr;
-        }
-        st.program->last_used = st.perm_idx;
-        info.AddBindings(binding);
         if (st.sw_stage == SwStage::Vertex) {
             vs_info = &info;
         }
     }
-    if (f.motion_possible) {
-        const bool motion = AllMotionEnv() || (vs_info && VsSelectsMotion(*vs_info));
-        if (motion != f.motion) {
-            ++f.miss_motion;
-            return nullptr;
+
+    const bool cur_motion = first_match->motion_possible &&
+                            (AllMotionEnv() || (vs_info && VsSelectsMotion(*vs_info)));
+
+    bool saw_motion_mismatch = false;
+    for (u32 w = 0; w < FastSelect::NumWays; ++w) {
+        if (((matching_ways_mask >> w) & 1u) == 0) {
+            continue;
+        }
+        auto& way = f.entries[set_base + w];
+        if (way.num_stages != first_match->num_stages) {
+            continue;
+        }
+        if (way.motion_possible && way.motion != cur_motion) {
+            saw_motion_mismatch = true;
+            continue;
+        }
+        bool programs_ok = true;
+        std::array<const Shader::Gcn::FetchShaderData*, FastSelect::MaxStages> way_fetch =
+            cur_fetch;
+        for (u32 i = 0; i < way.num_stages; ++i) {
+            const auto& fst = first_match->stages[i];
+            const auto& wst = way.stages[i];
+            if (wst.hw_stage != fst.hw_stage || wst.pgm_base != fst.pgm_base ||
+                wst.shader_hash != fst.shader_hash) {
+                programs_ok = false;
+                break;
+            }
+            if (wst.program != fst.program) {
+                const auto* pgm = regs.ProgramForStage(static_cast<u32>(wst.hw_stage));
+                auto& winfo = wst.program->info;
+                winfo.pgm_base = wst.pgm_base;
+                winfo.user_data = pgm->user_data;
+                winfo.RefreshFlatBuf();
+                if (winfo.has_fetch_shader) {
+                    way_fetch[i] = lookup_fetch(winfo);
+                    if (!way_fetch[i]) {
+                        programs_ok = false;
+                        break;
+                    }
+                } else {
+                    way_fetch[i] = nullptr;
+                }
+            }
+        }
+        if (!programs_ok) {
+            continue;
+        }
+        Shader::Backend::Bindings binding{};
+        bool spec_ok = true;
+        for (u32 i = 0; i < way.num_stages; ++i) {
+            const auto& st = way.stages[i];
+            const auto& modules = st.program->modules;
+            auto& info = st.program->info;
+            if (st.perm_idx >= modules.size() ||
+                !modules[st.perm_idx].spec.MatchesInPlace(info, st.runtime_info, profile, binding,
+                                                          way_fetch[i])) {
+                spec_ok = false;
+                break;
+            }
+            info.AddBindings(binding);
+        }
+        if (spec_ok) {
+            for (u32 i = 0; i < way.num_stages; ++i) {
+                way.stages[i].program->last_used = way.stages[i].perm_idx;
+            }
+            way.last_use = ++f.use_clock;
+            ++f.hits;
+            return way.pipeline;
         }
     }
-    SyncFastSnapshot();
-    ++f.hits;
-    return f.pipeline;
+    if (saw_motion_mismatch) {
+        ++f.miss_motion;
+    } else {
+        ++f.miss_spec;
+    }
+    return nullptr;
 }
 
 void PipelineCache::PrintFastSelectStats() {

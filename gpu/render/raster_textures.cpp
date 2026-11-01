@@ -128,8 +128,28 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
     u64 set_key = 0;
+    std::array<Gcn::Image, TextureSet::MaxImages> local_image_sharps{};
+    std::array<u64, TextureSet::MaxImages> local_image_hashes{};
+    bool have_local_sharps = false;
+    if (!on_helper && !prepared && !stage.images.empty() &&
+        stage.images.size() <= TextureSet::MaxImages &&
+        !BbToggle::Disabled(BbToggle::TextureSetMemo) && !FrameCapture::Active()) {
+        const u32 cnt = static_cast<u32>(stage.images.size());
+        for (u32 i = 0; i < cnt; ++i) {
+            const auto& res = stage.images[i];
+            local_image_sharps[i] = res.GetSharp(stage);
+            local_image_hashes[i] = ImageDescHash(local_image_sharps[i], res);
+        }
+        have_local_sharps = true;
+    }
+    const Gcn::Image* const eff_image_sharps =
+        prepared ? prepared->image_sharps : (have_local_sharps ? local_image_sharps.data() : nullptr);
+    const u64* const eff_image_hashes =
+        prepared ? prepared->image_hashes : (have_local_sharps ? local_image_hashes.data() : nullptr);
+    const u64 eff_precomputed_key = prepared ? prepared->image_set_key : 0;
     if (!on_helper &&
-        BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot, set_key)) {
+        BindTexturesFromSet(stage, eff_image_hashes, eff_precomputed_key, first_image_idx, barrier,
+                            set_slot, set_key)) {
         // Descriptor writes: one per image (no mip arrays in a memoized set).
         for (u32 i = 0; i < stage.images.size(); ++i) {
             set_writes[write_index++] = vk::WriteDescriptorSet{
@@ -172,7 +192,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     for (u32 image_index = 0; image_index < stage.images.size(); ++image_index) {
         const auto& image_desc = stage.images[image_index];
         auto tsharp =
-            prepared ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
+            eff_image_sharps ? eff_image_sharps[image_index] : image_desc.GetSharp(stage);
         u8 srv_gen8 = 0u;
         u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
         // bbport: a hash lookup per texture per draw for a diagnostic only.
@@ -229,7 +249,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 
         auto& desc_entry = ResolveImageDescEntry(
             tsharp, srv_uid, srv_gen8, image_desc,
-            prepared ? &prepared->image_hashes[image_index] : nullptr);
+            eff_image_hashes ? &eff_image_hashes[image_index] : nullptr);
         // BB_SCENE_DEBUG: proxied scene targets this binding reads at the native size, and why.
         const auto debug_native = [&](const VideoCore::Image& image) {
             if (!scene_debug_frame || proxy_candidate || !image.scene_proxy) return;
@@ -558,7 +578,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             ++texture_set_misses;
             victim.key = set_key;
             victim.stage = &stage;
-            std::copy_n(prepared->image_hashes, stage.images.size(), victim.hashes.begin());
+            if (eff_image_hashes) {
+                std::copy_n(eff_image_hashes, stage.images.size(), victim.hashes.begin());
+            }
             set_slot = &victim;
         }
         // Remember the set: the same T#s resolve the same way while no image is (un)registered,
@@ -747,18 +769,18 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
     }
 }
 
-bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
-                                     u32 first_image_idx, bool& barrier, TextureSet*& slot,
-                                     u64& out_key) {
+bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image_hashes,
+                                     u64 precomputed_key, u32 first_image_idx, bool& barrier,
+                                     TextureSet*& slot, u64& out_key) {
     out_key = 0;
     const u32 count = static_cast<u32>(stage.images.size());
-    if (!prepared || count == 0 || count > TextureSet::MaxImages ||
+    if (!image_hashes || count == 0 || count > TextureSet::MaxImages ||
         BbToggle::Disabled(BbToggle::TextureSetMemo) || FrameCapture::Active()) {
         return false;
     }
-    u64 key = prepared->image_set_key;
-    if (key == 0) [[unlikely]] {
-        key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64),
+    u64 key = precomputed_key;
+    if (key == 0) {
+        key = XXH3_64bits_withSeed(image_hashes, count * sizeof(u64),
                                    reinterpret_cast<u64>(&stage)) |
               1ULL;
     }
@@ -772,8 +794,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
 
     const auto key_matches = [&](const TextureSet& cand) {
         return cand.key == key && cand.stage == &stage &&
-               std::equal(cand.hashes.begin(), cand.hashes.begin() + count,
-                          prepared->image_hashes);
+               std::equal(cand.hashes.begin(), cand.hashes.begin() + count, image_hashes);
     };
     TextureSet* matched = nullptr;
     if (key_matches(pair[0])) {

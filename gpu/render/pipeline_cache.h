@@ -248,19 +248,16 @@ private:
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<PendingPipeline>> pending_graphics;
     std::unordered_map<u64, TargetStreak> target_streaks;
 
-    /// Block 4 step 1 (BB_FAST_SELECT, default on): the GPU thread's own pipeline selection
-    /// without speculative helpers. The last full selection is reused while no selection-relevant
-    /// register changed (everything but stage user data and draw arguments, compared against a
-    /// snapshot) and every stage's specialization, recomputed from the current user data, equals
-    /// the permutation used. BB_FAST_SELECT_VERIFY=1 also runs the full selection on each reuse
-    /// and reports any different pipeline.
+    /// Block 4 (BB_FAST_SELECT, default on): 2,048-entry (512 sets x 4 ways) direct Stage A
+    /// graphics pipeline selection cache keyed on the ~25-40 selection-relevant register words
+    /// plus zero-allocation in-place stage specialization verification. BB_FAST_SELECT_VERIFY=1
+    /// cross-checks every hit against full selection.
     struct FastSelect;
     std::unique_ptr<FastSelect> fast;
     const GraphicsPipeline* SelectGraphicsPipelineFull(const DrawIndirectParams params,
                                                        bool indirect);
     const GraphicsPipeline* TryFastSelect(const DrawIndirectParams& params);
     void CommitFastSelect(const GraphicsPipeline* pipeline, const DrawIndirectParams& params);
-    void SyncFastSnapshot();
     void NoteFastProgram(Program* program, Shader::HwStage hw_stage, Shader::SwStage sw_stage,
                          VAddr pgm_base, u64 shader_hash, size_t perm_idx);
     void PrintFastSelectStats();

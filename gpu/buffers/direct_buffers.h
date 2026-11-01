@@ -139,6 +139,9 @@ public:
     [[nodiscard]] bool HasPendingWritebacks() const noexcept {
         return !dirty_writeback_bases.empty();
     }
+    [[nodiscard]] u64 EraseGeneration() const noexcept {
+        return erase_generation;
+    }
 
     /// Stage B: drains pending RegisterImmutable / RegisterNative / RetireRange events in exact
     /// stream order without breaking active RenderPasses, and reclaims retired buffers whose GPU

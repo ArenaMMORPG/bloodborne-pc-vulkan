@@ -506,6 +506,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 !BbToggle::Disabled(BbToggle::PreparedResources)
             ? &prepared->vertex
             : nullptr;
+    StageBVertexMemoEntry* memo_hit_slot = nullptr;
+    StageBVertexMemoEntry* memo_fill_slot = nullptr;
     if (ready) {
         attributes.assign(ready->attributes, ready->attributes + ready->count);
         bindings.assign(ready->bindings, ready->bindings + ready->count);
@@ -519,6 +521,52 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 std::printf("CE stats: prepared V#s differed from the packet's in %llu of %llu "
                             "draws\n",
                             (unsigned long long)differed, (unsigned long long)compared);
+            }
+        }
+    } else if (instance.IsVertexInputDynamicState() && fetch && !packet_vsharps.empty() &&
+               packet_vsharps.size() == fetch->attributes.size() && packet_vsharps.size() <= 16 &&
+               !FrameCapture::Active() && !BbCeStats::Enabled()) {
+        if (!stage_b_vertex_memo) [[unlikely]] {
+            stage_b_vertex_memo = std::make_unique<std::array<StageBVertexMemoEntry, 128>>();
+        }
+        const u32 cnt = static_cast<u32>(packet_vsharps.size());
+        const u32 step0 = regs.vgt_instance_step_rate_0;
+        const u32 step1 = regs.vgt_instance_step_rate_1;
+        const u32 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
+        const u64 cur_erase_gen = direct_buffers.EraseGeneration();
+        const u64 seed = reinterpret_cast<uintptr_t>(pipeline) ^
+                         (u64(step0) * 0x9E3779B97F4A7C15ULL) ^
+                         (u64(step1) * 0xBF58476D1CE4E5B9ULL);
+        const u64 vsharp_hash =
+            XXH3_64bits(packet_vsharps.data(), cnt * sizeof(Gcn::Buffer));
+        const u64 memo_key = (vsharp_hash ^ seed) | 1ULL;
+        auto& slot = (*stage_b_vertex_memo)[(memo_key >> 1) & 127];
+        if (slot.key == memo_key && slot.frame_number == cur_frame &&
+            slot.erase_gen == cur_erase_gen && slot.pipeline == pipeline &&
+            slot.step_rate_0 == step0 && slot.step_rate_1 == step1 && slot.count == cnt &&
+            std::memcmp(slot.vsharps.data(), packet_vsharps.data(), cnt * sizeof(Gcn::Buffer)) ==
+                0) {
+            attributes.assign(slot.attributes.begin(), slot.attributes.begin() + cnt);
+            bindings.assign(slot.bindings.begin(), slot.bindings.begin() + cnt);
+            guest_buffers.assign(slot.vsharps.begin(), slot.vsharps.begin() + cnt);
+            memo_hit_slot = &slot;
+        } else {
+            pipeline->GetVertexInputs(attributes, bindings, divisors, guest_buffers, step0, step1,
+                                      packet_vsharps);
+            if (attributes.size() == cnt && bindings.size() == cnt && guest_buffers.size() == cnt) {
+                slot.key = memo_key;
+                slot.erase_gen = cur_erase_gen;
+                slot.frame_number = cur_frame;
+                slot.pipeline = pipeline;
+                slot.step_rate_0 = step0;
+                slot.step_rate_1 = step1;
+                slot.count = cnt;
+                slot.buffers_hash = vsharp_hash;
+                std::memcpy(slot.vsharps.data(), packet_vsharps.data(), cnt * sizeof(Gcn::Buffer));
+                std::copy_n(attributes.begin(), cnt, slot.attributes.begin());
+                std::copy_n(bindings.begin(), cnt, slot.bindings.begin());
+                slot.num_ranges = 0;
+                memo_fill_slot = &slot;
             }
         }
     } else {
@@ -550,9 +598,12 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     if (motion_draw && !guest_buffers.empty()) {
         // Include every stream: identical position buffers can be paired with different
         // skinning/instance data. Index topology and base offsets are matched separately.
-        motion_geometry = ready ? ready->buffers_hash
-                                : XXH3_64bits(guest_buffers.data(),
-                                              guest_buffers.size() * sizeof(Gcn::Buffer));
+        motion_geometry = ready           ? ready->buffers_hash
+                          : memo_hit_slot ? memo_hit_slot->buffers_hash
+                          : memo_fill_slot
+                              ? memo_fill_slot->buffers_hash
+                              : XXH3_64bits(guest_buffers.data(),
+                                            guest_buffers.size() * sizeof(Gcn::Buffer));
     }
     // Object motion research: vertex streams of G-buffer draws.
     if (FrameCapture::Active() && gbuffer_draw) {
@@ -577,6 +628,10 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     if (ready) {
         for (u32 i = 0; i < ready->num_ranges; ++i) {
             ranges.push_back({ready->ranges[i].base, ready->ranges[i].end});
+        }
+    } else if (memo_hit_slot) {
+        for (u32 i = 0; i < memo_hit_slot->num_ranges; ++i) {
+            ranges.push_back({memo_hit_slot->ranges[i].first, memo_hit_slot->ranges[i].second});
         }
     } else {
         VertexInputs<Range> streams;
@@ -611,6 +666,12 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 cur_exact_end = VideoCore::DirectBuffers::LookupExactBufferEnd(stream.begin);
             } else {
                 ranges.back().end = std::max(ranges.back().end, stream.end);
+            }
+        }
+        if (memo_fill_slot && ranges.size() <= memo_fill_slot->ranges.size()) {
+            memo_fill_slot->num_ranges = static_cast<u32>(ranges.size());
+            for (u32 i = 0; i < memo_fill_slot->num_ranges; ++i) {
+                memo_fill_slot->ranges[i] = {ranges[i].begin, ranges[i].end};
             }
         }
     }
