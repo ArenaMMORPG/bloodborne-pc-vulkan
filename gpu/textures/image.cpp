@@ -277,13 +277,19 @@ void Image::GetBarriers(Barriers& out, vk::ImageLayout dst_layout, vk::AccessFla
         });
     };
 
-    if (!partial && parts.empty()) {
-        backing->settled = false;
-        if (NeedsBarrier(whole, dst_layout, dst_mask)) {
-            barrier(whole, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS);
+    if (parts.empty()) {
+        if (!NeedsBarrier(whole, dst_layout, dst_mask)) {
+            whole.pl_stage |= dst_stage;
+            whole.access_mask |= dst_mask;
+            whole.layout = dst_layout;
+            return;
         }
-        whole = target;
-        return;
+        if (!partial) {
+            backing->settled = false;
+            barrier(whole, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS);
+            whole = target;
+            return;
+        }
     }
 
     // Per level and layer: the parts in the range (all of them when the whole image goes to

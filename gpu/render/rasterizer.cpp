@@ -379,6 +379,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             return (env ? std::strtoull(env, nullptr, 10) : 16ull) << 20;
         }();
         buffer_cache.Preupload(budget);
+        prompts->Update();
     }
     const auto& regs = Regs();
     // bbport: the pass copying a finished frame to a display buffer; the previous draw's
@@ -420,6 +421,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         }
     }
     const auto is_attachmentless_noop = [&] {
+        if (pipeline->GetStages()[u32(Shader::SwStage::Fragment)] != nullptr) {
+            return false;
+        }
+        const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+        if (vs.pgm_hash != 0x89cda9e4ull) {
+            return false;
+        }
         const auto& key = pipeline->GetGraphicsKey();
         if (regs.color_control.mode != Gcn::ColorControl::OperationMode::Disable) {
             for (s32 cb = 0; cb < std::bit_width(key.mrt_mask); ++cb) {
@@ -433,19 +441,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             (regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid())) {
             return false;
         }
-        if (pipeline->GetStages()[u32(Shader::SwStage::Fragment)] != nullptr) {
-            return false;
-        }
-        const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
-        return vs.pgm_hash == 0x89cda9e4ull && !vs.uses_dma &&
+        return !vs.uses_dma &&
                !std::ranges::any_of(vs.buffers, [](const auto& b) { return b.is_written; }) &&
                !std::ranges::any_of(vs.images, [](const auto& i) { return i.is_written; });
     }();
     if (is_attachmentless_noop) {
         return;
     }
-    // bbport: the key guide icons for the device in use (a change: uploaded before this draw).
-    prompts->Update();
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
     motion_geometry = 0;
@@ -717,38 +719,56 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
-    const auto* ps_info = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
-    Breadcrumbs::Crumb crumb{
-        .kind = is_indexed ? Breadcrumbs::Kind::DrawIndexed : Breadcrumbs::Kind::Draw,
-        .hash = {vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0},
-        .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
-        .count = {num_indices, num_instances, 0},
-    };
-    // On NVIDIA by default (its hangs give no fault address): it costs the recording thread a
-    // few T# and V# reads a draw. BB_BREADCRUMB_READS=1 / 0: on / off everywhere.
-    static const bool crumb_reads = [&] {
-        const char* env = std::getenv("BB_BREADCRUMB_READS");
-        return env ? env[0] == '1' : instance.GetVendorID() == 0x10de;
-    }();
-    if (crumb_reads && Breadcrumbs::Enabled()) {
-        NoteCrumbReads(crumb, pipeline, regs, is_indexed, index_offset);
-    }
-    const Scissors check_scissors =
-        DynCheck::Enabled() ? scheduler.GetDynamicState().CurrentScissors() : Scissors{};
-    const Viewports check_viewports =
-        DynCheck::Enabled() ? scheduler.GetDynamicState().CurrentViewports() : Viewports{};
-    const u64 check_vs = vs_info.pgm_hash, check_ps = ps_info ? ps_info->pgm_hash : 0;
-    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-        if (DynCheck::Enabled()) {
-            DynCheck::Draw(cmdbuf, check_viewports, check_scissors, check_vs, check_ps);
-        }
+    if (!Breadcrumbs::Enabled() && !DynCheck::Enabled()) [[likely]] {
+        // N3.2: 24-byte explicit draw closure instead of 712-byte `[=]` closure capturing
+        // 392-byte `Viewports` + 264-byte `Scissors` boost::static_vectors + 168-byte Crumb.
         if (is_indexed) {
-            cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
+            scheduler.Record([handle, num_indices, num_instances, first_vertex,
+                              first_instance](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+                                   first_instance);
+            });
         } else {
-            cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+            scheduler.Record([handle, num_indices, num_instances, first_vertex,
+                              first_instance](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+            });
         }
-    });
+    } else {
+        const auto* ps_info = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        Breadcrumbs::Crumb crumb{
+            .kind = is_indexed ? Breadcrumbs::Kind::DrawIndexed : Breadcrumbs::Kind::Draw,
+            .hash = {vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0},
+            .program = {vs_info.ProgramBase(), ps_info ? ps_info->ProgramBase() : 0},
+            .count = {num_indices, num_instances, 0},
+        };
+        static const bool crumb_reads = [&] {
+            const char* env = std::getenv("BB_BREADCRUMB_READS");
+            return env ? env[0] == '1' : instance.GetVendorID() == 0x10de;
+        }();
+        if (crumb_reads && Breadcrumbs::Enabled()) {
+            NoteCrumbReads(crumb, pipeline, regs, is_indexed, index_offset);
+        }
+        const Scissors check_scissors =
+            DynCheck::Enabled() ? scheduler.GetDynamicState().CurrentScissors() : Scissors{};
+        const Viewports check_viewports =
+            DynCheck::Enabled() ? scheduler.GetDynamicState().CurrentViewports() : Viewports{};
+        const u64 check_vs = vs_info.pgm_hash, check_ps = ps_info ? ps_info->pgm_hash : 0;
+        scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+            if (DynCheck::Enabled()) {
+                DynCheck::Draw(cmdbuf, check_viewports, check_scissors, check_vs, check_ps);
+            }
+            if (is_indexed) {
+                cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+                                   first_instance);
+            } else {
+                cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+            }
+        });
+    }
     // BB_TRACE_SHADER with BB_GPU_PROFILE: a mark right after the traced vertex shader's draws,
     // so the profile splits their pass into the draw and what follows it unlabeled.
     if (auto* profiler = GpuProfiler::Get()) {
@@ -1762,31 +1782,52 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     const u64 args_offset = checked_offset;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
-    const auto* vs_crumb = pipeline->GetStages()[u32(Shader::SwStage::Vertex)];
-    const auto* ps_crumb = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
-    const Breadcrumbs::Crumb crumb{
-        .kind = Breadcrumbs::Kind::DrawIndirect,
-        .hash = {vs_crumb ? vs_crumb->pgm_hash : 0, ps_crumb ? ps_crumb->pgm_hash : 0},
-        .program = {vs_crumb ? vs_crumb->ProgramBase() : 0,
-                    ps_crumb ? ps_crumb->ProgramBase() : 0},
-        .address = indirect.args,
-        .count = {max_count, stride, 0},
-    };
-    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
-        if (is_indexed) {
-            if (counts) {
-                cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset, max_count,
-                                                stride);
+    if (!Breadcrumbs::Enabled()) [[likely]] {
+        scheduler.Record([handle, is_indexed, counts, args, args_offset, counts_offset, max_count,
+                          stride](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+            if (is_indexed) {
+                if (counts) {
+                    cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset,
+                                                    max_count, stride);
+                } else {
+                    cmdbuf.drawIndexedIndirect(args, args_offset, max_count, stride);
+                }
+            } else if (counts) {
+                cmdbuf.drawIndirectCount(args, args_offset, counts, counts_offset, max_count,
+                                         stride);
             } else {
-                cmdbuf.drawIndexedIndirect(args, args_offset, max_count, stride);
+                cmdbuf.drawIndirect(args, args_offset, max_count, stride);
             }
-        } else if (counts) {
-            cmdbuf.drawIndirectCount(args, args_offset, counts, counts_offset, max_count, stride);
-        } else {
-            cmdbuf.drawIndirect(args, args_offset, max_count, stride);
-        }
-    });
+        });
+    } else {
+        const auto* vs_crumb = pipeline->GetStages()[u32(Shader::SwStage::Vertex)];
+        const auto* ps_crumb = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const Breadcrumbs::Crumb crumb{
+            .kind = Breadcrumbs::Kind::DrawIndirect,
+            .hash = {vs_crumb ? vs_crumb->pgm_hash : 0, ps_crumb ? ps_crumb->pgm_hash : 0},
+            .program = {vs_crumb ? vs_crumb->ProgramBase() : 0,
+                        ps_crumb ? ps_crumb->ProgramBase() : 0},
+            .address = indirect.args,
+            .count = {max_count, stride, 0},
+        };
+        scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+            if (is_indexed) {
+                if (counts) {
+                    cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset,
+                                                    max_count, stride);
+                } else {
+                    cmdbuf.drawIndexedIndirect(args, args_offset, max_count, stride);
+                }
+            } else if (counts) {
+                cmdbuf.drawIndirectCount(args, args_offset, counts, counts_offset, max_count,
+                                         stride);
+            } else {
+                cmdbuf.drawIndirect(args, args_offset, max_count, stride);
+            }
+        });
+    }
 
     ResetBindings(false);
     runtime.AccessBuffer(buffer, base, static_cast<u64>(stride) * max_count,
@@ -1937,16 +1978,23 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
     }
-    const Breadcrumbs::Crumb crumb{
-        .kind = Breadcrumbs::Kind::Dispatch,
-        .hash = {cs.pgm_hash, 0},
-        .program = {cs.ProgramBase(), 0},
-        .count = {dim_x, dim_y, dim_z},
-    };
-    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
-        cmdbuf.dispatch(dim_x, dim_y, dim_z);
-    });
+    if (!Breadcrumbs::Enabled()) [[likely]] {
+        scheduler.Record([handle, dim_x, dim_y, dim_z](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+            cmdbuf.dispatch(dim_x, dim_y, dim_z);
+        });
+    } else {
+        const Breadcrumbs::Crumb crumb{
+            .kind = Breadcrumbs::Kind::Dispatch,
+            .hash = {cs.pgm_hash, 0},
+            .program = {cs.ProgramBase(), 0},
+            .count = {dim_x, dim_y, dim_z},
+        };
+        scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+            cmdbuf.dispatch(dim_x, dim_y, dim_z);
+        });
+    }
     // BB_TRACE_SHADER with BB_GPU_PROFILE: a mark right after the traced compute shader's
     // dispatch, so the profile splits its label into the dispatch itself and what follows it
     // (barriers, unlabeled commands) up to the next mark.
@@ -2038,22 +2086,29 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
                             {buffer_infos.data(), buffer_infos.size()}, true);
 
     const vk::Pipeline handle = pipeline->Handle();
-    const vk::Buffer raw_args = buffer->Handle();
-    const u64 raw_offset = base;
-    const u32 args_slot = Breadcrumbs::ArgsSlot();
-    const Breadcrumbs::Crumb crumb{
-        .kind = Breadcrumbs::Kind::DispatchIndirect,
-        .hash = {cs_crumb.pgm_hash, 0},
-        .program = {cs_crumb.ProgramBase(), 0},
-        .address = address,
-        .count = {buffer_cache.IsInPlace(address, size) ? 1u : 0u, 0, 0},
-        .args_slot = args_slot,
-    };
-    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
-        Breadcrumbs::CopyArgs(cmdbuf, raw_args, raw_offset, args_slot); // what the game wrote
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
-        cmdbuf.dispatchIndirect(args, args_offset);
-    });
+    if (!Breadcrumbs::Enabled()) [[likely]] {
+        scheduler.Record([handle, args, args_offset](vk::CommandBuffer cmdbuf) {
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+            cmdbuf.dispatchIndirect(args, args_offset);
+        });
+    } else {
+        const vk::Buffer raw_args = buffer->Handle();
+        const u64 raw_offset = base;
+        const u32 args_slot = Breadcrumbs::ArgsSlot();
+        const Breadcrumbs::Crumb crumb{
+            .kind = Breadcrumbs::Kind::DispatchIndirect,
+            .hash = {cs_crumb.pgm_hash, 0},
+            .program = {cs_crumb.ProgramBase(), 0},
+            .address = address,
+            .count = {buffer_cache.IsInPlace(address, size) ? 1u : 0u, 0, 0},
+            .args_slot = args_slot,
+        };
+        scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
+            Breadcrumbs::CopyArgs(cmdbuf, raw_args, raw_offset, args_slot);
+            cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
+            cmdbuf.dispatchIndirect(args, args_offset);
+        });
+    }
 
     ResetBindings(true);
     runtime.AccessBuffer(buffer, base, size, vk::PipelineStageFlagBits2::eDrawIndirect,

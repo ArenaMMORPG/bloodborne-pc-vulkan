@@ -178,6 +178,11 @@ void PrepareResources(const Shader::Info& info, PreparedStage& stage, FlatArena&
     stage.image_hashes = arena.AppendArray(hashes.data(), hashes.size());
     stage.sampler_sharps = arena.AppendArray(samplers.data(), samplers.size());
     stage.buffer_sharps = arena.AppendArray(buffers.data(), buffers.size());
+    stage.image_set_key =
+        hashes.empty() ? 0ULL
+                       : (XXH3_64bits_withSeed(hashes.data(), hashes.size() * sizeof(u64),
+                                               reinterpret_cast<u64>(&info)) |
+                          1ULL);
     stage.num_images = static_cast<u32>(images.size());
     stage.num_samplers = static_cast<u32>(samplers.size());
     stage.num_buffers = static_cast<u32>(buffers.size());

@@ -1540,7 +1540,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         return true;
     };
 
-    constexpr u64 kMaxStageBufferBytes = 4ULL << 20;
+    constexpr u64 kMaxStageBufferBytes = 512ULL << 10;
     for (u32 idx = 0; idx < regions.size(); ++idx) {
         const auto& reg = regions[idx];
         if (reg.byte_size == 0 || reg.byte_size > kMaxStageBufferBytes || reg.dst_va >= kMaxGuestVa) {

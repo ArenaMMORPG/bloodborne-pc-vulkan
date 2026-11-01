@@ -44,6 +44,7 @@ struct PreparedStage {
     const u64* image_hashes;
     const Gcn::Sampler* sampler_sharps;
     const Gcn::Buffer* buffer_sharps;
+    u64 image_set_key = 0;
     u32 num_images, num_samplers, num_buffers;
 };
 

@@ -488,8 +488,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     image.usage.texture = 1u;
                     image_infos.emplace_back(VK_NULL_HANDLE, proxy->view, proxy->layout);
                     if (set_ok && binding_index < resolved.size()) {
-                        resolved[binding_index] = {image_id, true, proxy->view, image.backing,
-                                                   image.image_uid, desc.view_info.range};
+                        resolved[binding_index] = {image_id, true, false, proxy->view,
+                                                   image.backing, image.image_uid,
+                                                   desc.view_info.range};
                     }
                     ++proxy_samples;
                     continue;
@@ -510,17 +511,35 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             image_infos.emplace_back(VK_NULL_HANDLE, view, layout);
             if (set_ok && binding_index < resolved.size()) {
-                resolved[binding_index] = {image_id, false, *image_view.image_view, image.backing,
-                                           image.image_uid, desc.view_info.range};
+                const bool imm_ro =
+                    !is_storage && !image.info.props.is_depth && !image.scene_proxy &&
+                    !image.MaybePromptIcon() && !image.prompt_atlas &&
+                    !True(image.flags & VideoCore::ImageFlagBits::GpuModified) &&
+                    texture_cache.IsRegisteredImmutable(image_id, image.image_uid);
+                resolved[binding_index] = {image_id, false, imm_ro, *image_view.image_view,
+                                           image.backing, image.image_uid, desc.view_info.range};
                 set_ok = !is_storage && !binding.force_general && !binding.is_target;
             }
         }
     }
-    if (local_native_hits != 0) {
-        BbStats::native_tex_hits.fetch_add(local_native_hits, std::memory_order_relaxed);
-    }
-    if (local_native_misses != 0) {
-        BbStats::native_tex_misses.fetch_add(local_native_misses, std::memory_order_relaxed);
+    if (!on_helper && !bind_helper.Available()) {
+        if (local_native_hits != 0) {
+            BbStats::native_tex_hits.store(
+                BbStats::native_tex_hits.load(std::memory_order_relaxed) + local_native_hits,
+                std::memory_order_relaxed);
+        }
+        if (local_native_misses != 0) {
+            BbStats::native_tex_misses.store(
+                BbStats::native_tex_misses.load(std::memory_order_relaxed) + local_native_misses,
+                std::memory_order_relaxed);
+        }
+    } else {
+        if (local_native_hits != 0) {
+            BbStats::native_tex_hits.fetch_add(local_native_hits, std::memory_order_relaxed);
+        }
+        if (local_native_misses != 0) {
+            BbStats::native_tex_misses.fetch_add(local_native_misses, std::memory_order_relaxed);
+        }
     }
 
     if (set_ok && image_bindings.size() == stage.images.size()) {
@@ -531,18 +550,23 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         set_slot->count = static_cast<u32>(stage.images.size());
         set_slot->native_count = static_cast<u8>(resolved_native_count);
         bool all_imm = true;
+        u8 valid_cnt = 0;
         for (u32 k = 0; k < set_slot->count; ++k) {
             set_slot->entries[k] = resolved[k];
-            if (resolved[k].id &&
-                (resolved[k].proxy ||
-                 !texture_cache.IsRegisteredImmutable(resolved[k].id, resolved[k].image_uid))) {
-                all_imm = false;
+            if (resolved[k].id) {
+                ++valid_cnt;
+                if (resolved[k].proxy ||
+                    !texture_cache.IsRegisteredImmutable(resolved[k].id, resolved[k].image_uid)) {
+                    all_imm = false;
+                }
             }
         }
+        set_slot->valid_entries = valid_cnt;
         set_slot->all_direct_immutable = all_imm;
     } else if (set_slot) {
         set_slot->key = 0;
         set_slot->native_count = 0;
+        set_slot->valid_entries = 0;
         set_slot->all_direct_immutable = false;
     }
 
@@ -681,11 +705,24 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
         set_write.pImageInfo = &image_infos.back();
     }
 
-    if (local_native_hits != 0) {
-        BbStats::native_tex_hits.fetch_add(local_native_hits, std::memory_order_relaxed);
-    }
-    if (local_native_misses != 0) {
-        BbStats::native_tex_misses.fetch_add(local_native_misses, std::memory_order_relaxed);
+    if (!bind_helper.Available()) {
+        if (local_native_hits != 0) {
+            BbStats::native_tex_hits.store(
+                BbStats::native_tex_hits.load(std::memory_order_relaxed) + local_native_hits,
+                std::memory_order_relaxed);
+        }
+        if (local_native_misses != 0) {
+            BbStats::native_tex_misses.store(
+                BbStats::native_tex_misses.load(std::memory_order_relaxed) + local_native_misses,
+                std::memory_order_relaxed);
+        }
+    } else {
+        if (local_native_hits != 0) {
+            BbStats::native_tex_hits.fetch_add(local_native_hits, std::memory_order_relaxed);
+        }
+        if (local_native_misses != 0) {
+            BbStats::native_tex_misses.fetch_add(local_native_misses, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -696,14 +733,12 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
         BbToggle::Disabled(BbToggle::TextureSetMemo) || FrameCapture::Active()) {
         return false;
     }
-    for (const auto& image : stage.images) {
-        if (image.is_written || image.mip_fallback_mode != Shader::MipStorageFallbackMode::None) {
-            return false;
-        }
+    u64 key = prepared->image_set_key;
+    if (key == 0) [[unlikely]] {
+        key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64),
+                                   reinterpret_cast<u64>(&stage)) |
+              1ULL;
     }
-    u64 key = XXH3_64bits_withSeed(prepared->image_hashes, count * sizeof(u64),
-                                   reinterpret_cast<u64>(&stage));
-    key |= 1; // 0 marks an empty slot
     auto* pair = &texture_sets[(key % (texture_sets.size() / 2)) * 2];
     const u64 generation = texture_cache.RegistryGeneration();
     const u64 scene_gen = scene_targets->Generation();
@@ -721,12 +756,19 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     }
 
     if (!matched) {
+        for (const auto& image : stage.images) {
+            if (image.is_written ||
+                image.mip_fallback_mode != Shader::MipStorageFallbackMode::None) {
+                return false;
+            }
+        }
         TextureSet& victim = pair[0].last_use <= pair[1].last_use ? pair[0] : pair[1];
         ++texture_set_why[victim.key != 0 ? 0 : 3];
         ++texture_set_misses;
         victim.key = key;
         victim.stage = &stage;
         victim.count = 0;
+        victim.valid_entries = 0;
         victim.generation = ~0ull;
         victim.all_direct_immutable = false;
         victim.last_use = ++texture_set_use_counter;
@@ -759,62 +801,126 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
         ++texture_set_why[set.count == 0 ? 3 : 1];
         ++texture_set_misses;
         set.count = 0;
+        set.valid_entries = 0;
         set.generation = ~0ull;
         set.all_direct_immutable = false;
         return false;
     }
+
+    const bool prompts_on = prompts->Active();
+    const bool upscaler_on = upscaler->Enabled();
+    const auto record_set_stats = [&]() noexcept {
+        ++texture_set_hits;
+        const u32 valid_entries = set.valid_entries;
+        const u32 set_nat = std::min<u32>(set.native_count, valid_entries);
+        if (!bind_helper.Available()) {
+            if (set_nat != 0) {
+                BbStats::native_tex_hits.store(
+                    BbStats::native_tex_hits.load(std::memory_order_relaxed) + set_nat,
+                    std::memory_order_relaxed);
+            }
+            if (valid_entries > set_nat) {
+                BbStats::native_tex_misses.store(
+                    BbStats::native_tex_misses.load(std::memory_order_relaxed) +
+                        (valid_entries - set_nat),
+                    std::memory_order_relaxed);
+            }
+        } else {
+            if (set_nat != 0) {
+                BbStats::native_tex_hits.fetch_add(set_nat, std::memory_order_relaxed);
+            }
+            if (valid_entries > set_nat) {
+                BbStats::native_tex_misses.fetch_add(valid_entries - set_nat,
+                                                     std::memory_order_relaxed);
+            }
+        }
+        slot = nullptr;
+    };
+
+    // N3.2: Single-pass zero-write fast path when every non-null texture in the set is a settled
+    // read-only DirectImmutable asset in ShaderReadOnlyOptimal (no LRU churn, no bound_images
+    // write+clear, no Image cache-line dirtying, and no Runtime::Transit / GetBarriers calls).
+    if (set.all_direct_immutable && !prompts_on && !upscaler_on) {
+        bool fast_ok = true;
+        for (u32 i = 0; i < count; ++i) {
+            const auto& entry = set.entries[i];
+            if (!entry.id) {
+                image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
+                continue;
+            }
+            if (!entry.immutable_ro) {
+                fast_ok = false;
+                break;
+            }
+            const auto& image = texture_cache.GetImageUntouched(entry.id);
+            if (image.backing != entry.backing || image.binding.needs_rebind ||
+                image.binding.is_target ||
+                VideoCore::True(image.flags &
+                                (VideoCore::ImageFlagBits::Dirty |
+                                 VideoCore::ImageFlagBits::GpuModified |
+                                 VideoCore::ImageFlagBits::SharedHotPage)) ||
+                !image.backing->subresource_states.empty() ||
+                image.backing->state.layout != vk::ImageLayout::eShaderReadOnlyOptimal ||
+                image.backing->state.access_mask != vk::AccessFlagBits2::eShaderRead) {
+                fast_ok = false;
+                break;
+            }
+            image_infos.emplace_back(VK_NULL_HANDLE, entry.view,
+                                     vk::ImageLayout::eShaderReadOnlyOptimal);
+        }
+        if (fast_ok) {
+            record_set_stats();
+            return true;
+        }
+        image_infos.resize(first_image_idx);
+    }
+
+    const bool proxies_on = !BbToggle::Disabled(BbToggle::SampleSceneProxies);
     // Every image still has the backing its view belongs to and needs no refresh.
     for (u32 i = 0; i < count; ++i) {
         const auto& entry = set.entries[i];
         if (!entry.id) {
             continue;
         }
-        auto& image = texture_cache.GetImage(entry.id);
+        auto& image = texture_cache.GetImageUntouched(entry.id);
         // A key guide icon the GPU copied in, recognised by its bytes (then not from the set).
-        if (image.MaybePromptIcon() && prompts->Active()) {
+        if (prompts_on && image.MaybePromptIcon()) {
             image.prompt_icon =
                 u8(BbPrompts::IconOf(reinterpret_cast<const void*>(image.info.guest_address), 1024));
         }
         // Proxy entries need a current proxy; native entries of a proxied image go through
         // BindTextures, which may sample the proxy instead.
-        const bool proxies_on = !BbToggle::Disabled(BbToggle::SampleSceneProxies);
         if (image.backing != entry.backing || image.binding.needs_rebind ||
             image.binding.is_target || !texture_cache.IsUpToDate(entry.id) ||
-            ((image.prompt_icon || image.prompt_atlas) && prompts->Active()) ||
+            (prompts_on && (image.prompt_icon || image.prompt_atlas)) ||
             (entry.proxy ? !proxies_on ||
                                !scene_targets->ProxyCurrent(image, entry.range.base.level,
                                                             entry.range.extent.levels)
                          : image.scene_proxy && proxies_on) ||
-            (upscaler->Enabled() && upscaler->RedirectsSampled(entry.id))) {
+            (upscaler_on && upscaler->RedirectsSampled(entry.id))) {
             ++texture_set_why[2];
             ++texture_set_misses;
             set.generation = ~0ull;
             return false;
         }
     }
-    ++texture_set_hits;
-    u32 valid_entries = 0;
-    for (u32 i = 0; i < count; ++i) {
-        if (set.entries[i].id) {
-            ++valid_entries;
-        }
-    }
-    const u32 set_nat = std::min<u32>(set.native_count, valid_entries);
-    if (set_nat != 0) {
-        BbStats::native_tex_hits.fetch_add(set_nat, std::memory_order_relaxed);
-    }
-    if (valid_entries > set_nat) {
-        BbStats::native_tex_misses.fetch_add(valid_entries - set_nat, std::memory_order_relaxed);
-    }
-    slot = nullptr;
+    record_set_stats();
     for (u32 i = 0; i < count; ++i) {
         const auto& entry = set.entries[i];
         if (!entry.id) {
             image_infos.emplace_back(VK_NULL_HANDLE, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
             continue;
         }
-        texture_cache.MarkFound(entry.id);
         auto& image = texture_cache.GetImageUntouched(entry.id);
+        if (entry.immutable_ro && !prompts_on && !upscaler_on &&
+            image.backing->subresource_states.empty() &&
+            image.backing->state.layout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+            image.backing->state.access_mask == vk::AccessFlagBits2::eShaderRead) {
+            image_infos.emplace_back(VK_NULL_HANDLE, entry.view,
+                                     vk::ImageLayout::eShaderReadOnlyOptimal);
+            continue;
+        }
+        texture_cache.MarkFound(entry.id);
         image.binding.is_bound = 1u;
         bound_images.emplace_back(entry.id);
         image.usage.texture = 1u;
@@ -838,7 +944,6 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
                                    read_access, entry.range);
         image_infos.emplace_back(VK_NULL_HANDLE, entry.view, image.backing->state.layout);
     }
-    (void)first_image_idx;
     return true;
 }
 

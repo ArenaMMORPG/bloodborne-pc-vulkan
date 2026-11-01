@@ -581,6 +581,7 @@ private:
     struct TextureSetEntry {
         VideoCore::ImageId id{}; ///< after the depth redirect; null descriptor when invalid
         bool proxy = false; ///< sampled from the scene proxy (view: SampleProxy on each use)
+        bool immutable_ro = false; ///< DirectImmutable non-depth non-proxy read-only texture
         vk::ImageView view;
         const void* backing = nullptr;
         u64 image_uid = 0;
@@ -594,6 +595,7 @@ private:
         u64 last_use = 0;
         u32 count = 0;
         u8 native_count = 0;
+        u8 valid_entries = 0;
         bool all_direct_immutable = false;
         static constexpr u32 MaxImages = 24; ///< larger sets fall back to ImageDescCacheEntry
         std::array<u64, MaxImages> hashes{};

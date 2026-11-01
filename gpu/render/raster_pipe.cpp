@@ -231,7 +231,8 @@ void Rasterizer::FlushStageAReadCoalescer() {
     }
     const bool single = draw_pipe->ResolverCount() == 0;
     const u64 stage_b_retired = draw_pipe->ConsumedPackets();
-    const u64 gpu_retired = AdvanceGpuRetiredPacket();
+    static const bool guest_in_place = VideoCore::GuestInPlace();
+    const u64 gpu_retired = guest_in_place ? AdvanceGpuRetiredPacket() : 0;
     stage_a_cached_gpu_retired = gpu_retired;
     stage_a_last_gpu_retired_pkt = draw_pipe->NextPacket();
     for (auto& entry : stage_a_read_coalescer) {
@@ -245,7 +246,7 @@ void Rasterizer::FlushStageAReadCoalescer() {
         if (m & kCoalesceStageB) {
             pending_reads.Note(entry.addr, entry.size, entry.packet, single, stage_b_retired);
         }
-        if (m & kCoalesceGpuInPl) {
+        if (guest_in_place && (m & kCoalesceGpuInPl)) {
             pending_gpu_reads.Note(entry.addr, entry.size, entry.packet, single, gpu_retired);
         }
         entry.mask = 0;
@@ -258,7 +259,10 @@ void Rasterizer::NotePendingRead(VAddr address, u64 size, bool gpu_in_place) {
         if (FastNonCeRamSkip() && !buffer_cache.IsConstRamRange(address, size)) {
             return;
         }
-        const u8 mask = gpu_in_place ? u8(kCoalesceStageB | kCoalesceGpuInPl) : kCoalesceStageB;
+        static const bool guest_in_place = VideoCore::GuestInPlace();
+        const u8 mask = (gpu_in_place && guest_in_place)
+                            ? u8(kCoalesceStageB | kCoalesceGpuInPl)
+                            : kCoalesceStageB;
         NoteStageACoalescedRead(address, size, draw_pipe->NextPacket(), mask);
     }
 }
@@ -321,12 +325,15 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size) {
             ? 0
             : std::max(untracked_reads_packet,
                        pending_reads.Newest(address, size, min_stage_b));
-    const u64 min_gpu = std::max(untracked_reads_packet, AdvanceGpuRetiredPacket()) + 1;
-    const u64 gpu_packet =
-        size == 0
-            ? 0
-            : std::max(untracked_reads_packet,
-                       pending_gpu_reads.Newest(address, size, min_gpu));
+    static const bool guest_in_place = VideoCore::GuestInPlace();
+    const u64 gpu_packet = [&]() -> u64 {
+        if (!guest_in_place || size == 0) {
+            return 0;
+        }
+        const u64 min_gpu = std::max(untracked_reads_packet, AdvanceGpuRetiredPacket()) + 1;
+        return std::max(untracked_reads_packet,
+                        pending_gpu_reads.Newest(address, size, min_gpu));
+    }();
     if (!ConstRamPipe() || !UseDrawPipe() || size == 0) {
         DrainDrawPipe(DrawPipe::ReasonConstRam);
     } else if (draw_pipe->ReachedPacket(packet)) {
@@ -483,8 +490,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                 u64 hash = 0;
                 u64 frame = ~0ull;
                 u64 ring_pos = 0;
+                bool has_hash = false;
             };
-            static constexpr size_t kRingMemoSize = 2048;
+            static constexpr size_t kRingMemoSize = 4096;
             using RingMemoArray = std::array<RingMemo, kRingMemoSize>;
             thread_local std::unique_ptr<RingMemoArray> tls_ring_memo_ptr;
             if (!tls_ring_memo_ptr) [[unlikely]] {
@@ -492,13 +500,33 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
             auto& tls_ring_memo = *tls_ring_memo_ptr;
             const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
-            const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
-            const size_t slot = ((address >> 4) ^ (size << 3) ^ (address >> 16)) & (kRingMemoSize - 1);
+            const size_t slot =
+                ((address >> 5) ^ (size << 3) ^ (address >> 16)) & (kRingMemoSize - 1);
             auto& memo = tls_ring_memo[slot];
             const u64 cur_pos = constant_ring->Position();
             if (memo.frame == cur_frame && memo.addr == address && memo.size == size &&
-                memo.hash == h && cur_pos - memo.ring_pos < (4ull << 20)) {
-                out.push_back({index, static_cast<u32>(size), memo.offset, address, 0, 0});
+                cur_pos - memo.ring_pos < (24ull << 20)) {
+                if (!memo.has_hash) {
+                    memo.hash = XXH3_64bits(constant_ring->Data(memo.offset), size);
+                    memo.has_hash = true;
+                }
+                const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
+                if (memo.hash == h) {
+                    out.push_back({index, static_cast<u32>(size), memo.offset, address, 0, 0});
+                    return true;
+                }
+                const auto offset = constant_ring->Allocate(size, alignment);
+                if (!offset) {
+                    return false;
+                }
+                u8* dst = constant_ring->Data(*offset);
+                std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+                constant_ring->Flush(*offset, size);
+                memo.offset = static_cast<u32>(*offset);
+                memo.hash = h;
+                memo.ring_pos = constant_ring->Position();
+                memo.has_hash = true;
+                out.push_back({index, static_cast<u32>(size), *offset, address, 0, 0});
                 return true;
             }
             const auto offset = constant_ring->Allocate(size, alignment);
@@ -511,9 +539,10 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             memo.addr = address;
             memo.size = static_cast<u32>(size);
             memo.offset = static_cast<u32>(*offset);
-            memo.hash = h;
+            memo.hash = 0;
             memo.frame = cur_frame;
             memo.ring_pos = constant_ring->Position();
+            memo.has_hash = false;
             out.push_back({index, static_cast<u32>(size), *offset, address, 0, 0});
             return true;
         }
@@ -1171,16 +1200,19 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     BB_SECTION(Packet);
     auto& self = *static_cast<Rasterizer*>(context);
     // The tick the packet ended in (a constant RAM dump over what it reads in place must wait
-    // for that tick: WaitForPendingReads).
+    // for that tick: WaitForPendingReads -> WaitForInPlaceReads, only active with GuestInPlace).
+    static const bool guest_in_place = VideoCore::GuestInPlace();
     struct TickNote {
         Rasterizer& self;
         u64 packet;
         ~TickNote() {
-            auto& entry = (*self.packet_ticks)[packet & 0xFFFF];
-            entry.tick.store(self.scheduler.CurrentTick(), std::memory_order_relaxed);
-            entry.packet.store(packet, std::memory_order_release);
+            if (guest_in_place) [[unlikely]] {
+                auto& entry = (*self.packet_ticks)[packet & 0xFFFF];
+                entry.tick.store(self.scheduler.CurrentTick(), std::memory_order_relaxed);
+                entry.packet.store(packet, std::memory_order_release);
+            }
         }
-    } tick_note{self, self.draw_pipe->RunningPacket()};
+    } tick_note{self, guest_in_place ? self.draw_pipe->RunningPacket() : 0};
     if (*reinterpret_cast<const PacketKind*>(data) == PacketKind::Task) {
         BB_SECTION(Task);
         self.buffer_cache.NewPacket();
@@ -1415,9 +1447,12 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
                 (!FastNonCeRamSkip() || self.buffer_cache.IsConstRamRange(address, size))) {
                 self.pending_reads.NoteTables(address, size, number, false,
                                               self.draw_pipe->ConsumedPackets());
-                self.pending_gpu_reads.NoteTables(
-                    address, size, number, false,
-                    self.gpu_retired_packet.load(std::memory_order_relaxed));
+                static const bool guest_in_place = VideoCore::GuestInPlace();
+                if (guest_in_place) [[unlikely]] {
+                    self.pending_gpu_reads.NoteTables(
+                        address, size, number, false,
+                        self.gpu_retired_packet.load(std::memory_order_relaxed));
+                }
             }
         }
     }
