@@ -207,9 +207,30 @@ public:
     /// The GPU wrote the memory of the image starting at `address` as a buffer.
     /// GPU buffer write: refresh images starting here and wholly covered by max_size.
     void InvalidateMemoryFromGPU(VAddr address, size_t max_size);
-    /// Lock-free check whether any registered image page overlaps [addr, addr + size).
+    /// Lock-free check whether any registered 1 MiB image page overlaps [addr, addr + size).
     [[nodiscard]] bool HasActiveImagePages(VAddr addr, size_t size) const noexcept {
         return size != 0 && registry.AnyPageActive(addr, size);
+    }
+    /// Exact byte-range check whether any registered image overlaps [addr, addr + size).
+    /// Fast lock-free O(1) exit when the 1 MiB page has no images; otherwise verifies exact
+    /// [guest_address, guest_address + guest_size) overlap so buffers sharing a 1 MiB slab with
+    /// unrelated textures are never misclassified as images.
+    [[nodiscard]] bool HasOverlappingImage(VAddr addr, size_t size) const noexcept {
+        if (size == 0 || !registry.AnyPageActive(addr, size)) {
+            return false;
+        }
+        std::scoped_lock lock{mutex};
+        bool found = false;
+        registry.ForEachPage(addr, size, [&](const ImageRegistry::Ids& ids) {
+            for (const ImageId id : ids) {
+                if (slot_images[id].Overlaps(addr, size)) {
+                    found = true;
+                    return true;
+                }
+            }
+            return false;
+        });
+        return found;
     }
     /// The range was unmapped: its images go.
     void UnmapMemory(VAddr cpu_addr, size_t size);
@@ -363,7 +384,7 @@ private:
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
     ImageRegistry registry;
-    std::mutex mutex;
+    mutable std::mutex mutex;
     std::atomic<u64> registry_generation{0};
     const bool readback_linear_images;
 

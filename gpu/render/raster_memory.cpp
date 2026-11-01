@@ -48,7 +48,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
         texture_cache.ClearMeta(address);
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
             !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasActiveImagePages(address, num_bytes)) {
+            !texture_cache.HasOverlappingImage(address, num_bytes)) {
             const auto [nat_buf, nat_off] =
                 direct_buffers.TryResolveWrite(address, num_bytes, /*full_overwrite=*/true);
             if (nat_buf) {
@@ -95,7 +95,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (n1_native_bufs && !dst_gds && !VideoCore::GuestInPlace() &&
         !VideoCore::BufferCache::LayerActive() &&
-        !texture_cache.HasActiveImagePages(dst, num_bytes) && !texture_cache.IsMeta(dst) &&
+        !texture_cache.HasOverlappingImage(dst, num_bytes) && !texture_cache.IsMeta(dst) &&
         (src_gds || !texture_cache.FindImageFromRange(src, num_bytes))) {
         const auto [nat_dst, nat_dst_off] =
             direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true);
@@ -281,8 +281,10 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                 (n1_native_bufs &&
                  (VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.dst_va, reg.byte_size) ||
                   direct_buffers.OverlapsLiveEntry(reg.dst_va, reg.byte_size))) ||
-                (!known_cpu_src && buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) ||
-                texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
+                (!known_cpu_src &&
+                 (buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
+                  texture_cache.HasOverlappingImage(reg.src_va, reg.byte_size))) ||
+                texture_cache.HasOverlappingImage(reg.dst_va, reg.byte_size) ||
                 texture_cache.IsMeta(reg.dst_va)) {
                 all_eligible = false;
                 break;
@@ -450,7 +452,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         const s32 transient_idx = transient_index_by_reg[idx];
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
             !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) &&
+            !texture_cache.HasOverlappingImage(reg.dst_va, reg.byte_size) &&
             !texture_cache.IsMeta(reg.dst_va) &&
             (reg.byte_size < 4096 ||
              !texture_cache.FindImageFromRange(reg.src_va, reg.byte_size, true, 4_MB))) {
@@ -684,7 +686,7 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive() &&
-        !texture_cache.HasActiveImagePages(dst, num_bytes)) {
+        !texture_cache.HasOverlappingImage(dst, num_bytes)) {
         const auto [nat_dst, nat_off] =
             direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true);
         if (nat_dst) {

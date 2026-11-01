@@ -1315,18 +1315,18 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
         static const bool precise_readbacks =
             EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+        static const bool n1_native_buf =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
         if (!stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
-            !BbToggle::Disabled(BbToggle::DeferredStreamCopies)) {
+            !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
+            !(n1_native_buf && upload_size <= 4_MB)) {
             if (const auto offset = stream_buffer.Reserve(upload_size, align)) {
                 u8* const dst = stream_buffer.mapped_data.data() + *offset;
                 const u64 flush_off = *offset;
                 Buffer* const sbuf = &stream_buffer;
                 Core::MemoryManager* const mem = memory;
                 const bool precise = precise_readbacks;
-                static const bool n1_native_buf =
-                    gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-                const u32 inline_copy_cap = n1_native_buf ? 4_MB : 256_KB;
-                if (upload_size <= inline_copy_cap &&
+                if (upload_size <= 256_KB &&
                     !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
                     constexpr u32 kOrderedChunk = 1_MB;
                     for (u32 rel = 0; rel < upload_size; rel += kOrderedChunk) {
@@ -1733,7 +1733,10 @@ std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
         return {nullptr, 0};
     }
     const bool precise = EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
-    if (!scheduler.IsRecordingDeferred() || BbToggle::Disabled(BbToggle::DeferredUploads)) {
+    static const bool n1_native_buf =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if ((n1_native_buf && total_bytes <= 4_MB) || !scheduler.IsRecordingDeferred() ||
+        BbToggle::Disabled(BbToggle::DeferredUploads)) {
         for (const auto& s : slices) {
             u8* dst = staging.mapped + s.staging_rel_offset;
             if (!precise) {
@@ -1752,10 +1755,7 @@ std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
         host_ranges.emplace_back(s.src_va, s.byte_size);
     }
 
-    static const bool n1_native_buf =
-        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    const u64 inline_copy_cap = n1_native_buf ? 4_MB : 256_KB;
-    if (total_bytes <= inline_copy_cap && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+    if (total_bytes <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
         // NOTE: RecordHostCopy pushes into OrderedChunk() (which runs AFTER CurrentChunk() has
         // finished and been recycled), so slices must be captured by value inside OrderedChunk()
         // rather than via RecordData() (which allocates inside CurrentChunk()).
@@ -1832,8 +1832,9 @@ bool BufferCache::OverlapsInPassShadow(VAddr addr, u64 size) const noexcept {
 }
 
 bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, u64 total_bytes) {
-    static const u64 max_inpass_bytes =
-        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers) ? 4_MB : 512_KB;
+    static const bool n1_native_buf =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    static const u64 max_inpass_bytes = n1_native_buf ? 4_MB : 512_KB;
     if (slices.empty() || total_bytes == 0 || total_bytes > max_inpass_bytes) {
         return false;
     }
@@ -1841,7 +1842,7 @@ bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, 
         16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
     const bool precise = EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
     u64 base_off = 0;
-    if (!stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
+    if (!n1_native_buf && !stream_buffer.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
         !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
         !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
         const auto reserved = stream_buffer.Reserve(total_bytes, align);

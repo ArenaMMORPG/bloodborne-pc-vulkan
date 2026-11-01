@@ -3065,7 +3065,9 @@ void CGGpuBlitAndClearPassesGnm_CopyBufferRegionViaCompute(
         GX_CALL(void, 0x26b9850ULL, (void*, void*), sync_tracker, gnmx_ctx);
         const uint64_t dst_va = *reinterpret_cast<const uint64_t*>(dst_buf + 0x08) + dst_offset;
         const uint64_t src_va = *reinterpret_cast<const uint64_t*>(src_buf + 0x08) + src_offset;
-        if (gx_direct_vk::EmitCopyBuffer(gnmx_ctx, dst_va, src_va, copy_bytes)) {
+        const uint32_t copy_flags =
+            (src_buf[0x21] == 3u) ? gx_direct_vk::kCopyFlagKnownCpuSource : 0u;
+        if (gx_direct_vk::EmitCopyBuffer(gnmx_ctx, dst_va, src_va, copy_bytes, copy_flags)) {
             CGSurfaceSyncTrackerGnm_TransitionResourcePostOp(sync_tracker, dst_swz, 0, dst_buf);
             GX_CALL(void, 0x26af700ULL, (void*), gnmx_ctx);
             return;

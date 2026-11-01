@@ -1857,13 +1857,16 @@ void GXGnmCommandContext_CopySubresourceRegion(
         void* gfxCtx = ctxBase + 0x10;
         ctxBase[0xB498] |= 0x01u;
         CGSurfaceSyncTrackerGnm_FlushToGfxContext(ctxBase + 0xB478, gfxCtx);
-        GpuUtil_SingleCopy(
-            gfxCtx,
-            *reinterpret_cast<std::uint64_t*>(dstBase + 0x20),
-            0x6E0000u,
-            *reinterpret_cast<std::uint64_t*>(srcBase + 0x20),
-            0x6E0000u,
-            *reinterpret_cast<std::uint32_t*>(dstBase + 0x2C));
+        const std::uint64_t dst_va = *reinterpret_cast<std::uint64_t*>(dstBase + 0x20);
+        const std::uint64_t src_va = *reinterpret_cast<std::uint64_t*>(srcBase + 0x20);
+        const std::uint32_t copy_bytes = *reinterpret_cast<std::uint32_t*>(dstBase + 0x2C);
+        const std::uint32_t copy_flags =
+            (srcBase[0x39] == 3u) ? gx_direct_vk::kCopyFlagKnownCpuSource : 0u;
+        if (!(gx_direct_vk::EnabledV1Sub(gx_direct_vk::kV1Sub_SingleCopy) &&
+              (copy_bytes == 0u ||
+               gx_direct_vk::EmitCopyBuffer(gfxCtx, dst_va, src_va, copy_bytes, copy_flags)))) {
+            GpuUtil_SingleCopy(gfxCtx, dst_va, 0x6E0000u, src_va, 0x6E0000u, copy_bytes);
+        }
         ctxBase[0xB498] |= 0x01u;
         ctxBase[0xB478] |= 0x01u;
         ctxBase[0xB47F] |= 0x08u;
@@ -1924,13 +1927,16 @@ void GXGnmCommandContext_CopyResource(void* context, void* unused, void* dstReso
         void* gfxCtx = ctxBase + 0x10;
         ctxBase[0xB498] |= 0x01u;
         CGSurfaceSyncTrackerGnm_FlushToGfxContext(ctxBase + 0xB478, gfxCtx);
-        GpuUtil_SingleCopy(
-            gfxCtx,
-            *reinterpret_cast<std::uint64_t*>(dstBase + 0x20),
-            0x6E0000u,
-            *reinterpret_cast<std::uint64_t*>(srcBase + 0x20),
-            0x6E0000u,
-            *reinterpret_cast<std::uint32_t*>(dstBase + 0x2C));
+        const std::uint64_t dst_va = *reinterpret_cast<std::uint64_t*>(dstBase + 0x20);
+        const std::uint64_t src_va = *reinterpret_cast<std::uint64_t*>(srcBase + 0x20);
+        const std::uint32_t copy_bytes = *reinterpret_cast<std::uint32_t*>(dstBase + 0x2C);
+        const std::uint32_t copy_flags =
+            (srcBase[0x39] == 3u) ? gx_direct_vk::kCopyFlagKnownCpuSource : 0u;
+        if (!(gx_direct_vk::EnabledV1Sub(gx_direct_vk::kV1Sub_SingleCopy) &&
+              (copy_bytes == 0u ||
+               gx_direct_vk::EmitCopyBuffer(gfxCtx, dst_va, src_va, copy_bytes, copy_flags)))) {
+            GpuUtil_SingleCopy(gfxCtx, dst_va, 0x6E0000u, src_va, 0x6E0000u, copy_bytes);
+        }
         ctxBase[0xB498] |= 0x01u;
         ctxBase[0xB478] |= 0x01u;
         ctxBase[0xB47F] |= 0x08u;

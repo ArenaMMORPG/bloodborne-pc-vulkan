@@ -160,7 +160,7 @@ bool Rasterizer::WriteDataOnGpu(VAddr address, const void* data, u32 size) {
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive() &&
-        !texture_cache.HasActiveImagePages(address, size) && !texture_cache.IsMeta(address)) {
+        !texture_cache.HasOverlappingImage(address, size) && !texture_cache.IsMeta(address)) {
         if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
             direct_buffers.ProcessEvents(memory);
         }

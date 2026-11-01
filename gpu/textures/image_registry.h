@@ -25,6 +25,10 @@ public:
         Block* block = blocks[(page >> BlockBits) & (NumBlocks - 1)].get();
         return block ? &(*block)[page & (PagesPerBlock - 1)] : nullptr;
     }
+    const Ids* Find(u64 page) const noexcept {
+        const Block* block = blocks[(page >> BlockBits) & (NumBlocks - 1)].get();
+        return block ? &(*block)[page & (PagesPerBlock - 1)] : nullptr;
+    }
     /// The images over `page` (its block made if needed).
     Ids& At(u64 page) {
         auto& block = blocks[(page >> BlockBits) & (NumBlocks - 1)];
@@ -41,6 +45,15 @@ public:
         const u64 last = (address + size - 1) >> PageBits;
         for (u64 page = address >> PageBits; page <= last; ++page) {
             if (Ids* ids = Find(page); ids && !ids->empty() && func(*ids)) {
+                return;
+            }
+        }
+    }
+    template <typename Func>
+    void ForEachPage(VAddr address, u64 size, Func&& func) const {
+        const u64 last = (address + size - 1) >> PageBits;
+        for (u64 page = address >> PageBits; page <= last; ++page) {
+            if (const Ids* ids = Find(page); ids && !ids->empty() && func(*ids)) {
                 return;
             }
         }

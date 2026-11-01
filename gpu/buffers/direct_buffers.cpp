@@ -1191,8 +1191,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             return true;
         }
         u64 base_off = 0;
-        if (!any_shadow_slice && total_bytes > (64ULL << 10) && !sbuf.mapped_data.empty() &&
-            scheduler.IsRecordingDeferred() &&
+        static const bool n1_native_buf =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+        if (!n1_native_buf && !any_shadow_slice && total_bytes > (64ULL << 10) &&
+            !sbuf.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
             !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
             !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
             const auto reserved = sbuf.Reserve(total_bytes, align, /*allow_wait=*/false);
@@ -1399,7 +1401,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
-        if (tex_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
+        if (tex_cache.HasOverlappingImage(reg.dst_va, reg.byte_size) ||
             tex_cache.IsMeta(reg.dst_va)) {
             continue;
         }
@@ -1422,7 +1424,8 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         if (!cue_src) {
             if ((!fast_mapped &&
                  memory->ClampRangeSize(reg.src_va, reg.byte_size) != reg.byte_size) ||
-                (!known_cpu_src && buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size))) {
+                (!known_cpu_src && (buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
+                                    tex_cache.HasOverlappingImage(reg.src_va, reg.byte_size)))) {
                 continue;
             }
         }

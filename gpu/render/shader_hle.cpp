@@ -249,7 +249,7 @@ void FlushPendingHleCopies(Rasterizer& rasterizer) {
         u64 dst_buf_offset = 0;
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
             !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasActiveImagePages(g.dst_va, g.dst_size) &&
+            !texture_cache.HasOverlappingImage(g.dst_va, g.dst_size) &&
             !texture_cache.IsMeta(g.dst_va)) {
             std::tie(dst_buf, dst_buf_offset) =
                 direct_buffers.TryResolveWrite(g.dst_va, g.dst_size, /*full_overwrite=*/true);
