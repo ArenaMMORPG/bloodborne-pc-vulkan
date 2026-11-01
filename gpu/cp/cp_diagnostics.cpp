@@ -120,6 +120,9 @@ struct DcbStats {
     // select, EOS by command, WAIT_REG_MEM by memory space and engine.
     u64 opcodes[256]{}, events[64]{}, eop_data[8]{}, eop_int[4]{}, eos_cmd[8]{}, wait_mem[2][2]{};
     u64 wait_outcome[4]{};
+    // Dwords by opcode, and the port's Direct Vulkan NOP payloads by DirectVk::Op (count, dwords):
+    // what share of the stream is still raw PS4 register/PM4 traffic.
+    u64 op_dwords[256]{}, direct_ops[64]{}, direct_dwords[64]{};
     double wait_ms = 0;
     std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
 };
@@ -171,6 +174,12 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
         const Op op = header.Opcode();
         const u32* body = dcb.data() + at + 1;
         ++st.opcodes[u8(op)];
+        st.op_dwords[u8(op)] += header.BodyWords() + 1;
+        if (op == Op::Nop && header.BodyWords() >= 2 && body[0] == NopPayload::DirectVulkan) {
+            const u32 vk_op = body[1] & 0xFFFFu;
+            st.direct_ops[vk_op & 63u] += 1;
+            st.direct_dwords[vk_op & 63u] += header.BodyWords() + 1;
+        }
         if (op == Op::EventWrite) {
             ++st.events[body[0] & 63];
         } else if (op == Op::EventWriteEop) {
@@ -241,6 +250,21 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
         }
     }
     std::printf("PM4 packets/s:%s\n", line.c_str());
+    line.clear();
+    for (u32 op = 0; op < 256; ++op) {
+        if (st.op_dwords[op]) {
+            line += fmt::format(" {}:{:.0f}", OpName(op), st.op_dwords[op] / secs);
+        }
+    }
+    std::printf("PM4 dwords/s:%s\n", line.c_str());
+    line.clear();
+    for (u32 op = 0; op < 64; ++op) {
+        if (st.direct_ops[op]) {
+            line += fmt::format(" {}:{:.0f}/{:.0f}dw", op, st.direct_ops[op] / secs,
+                                st.direct_dwords[op] / secs);
+        }
+    }
+    std::printf("DirectVk ops/s (op:count/dwords):%s\n", line.c_str());
     line.clear();
     for (u32 event = 0; event < 64; ++event) {
         if (st.events[event]) {
