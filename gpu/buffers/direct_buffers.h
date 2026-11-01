@@ -80,6 +80,13 @@ void DrainEvents(std::vector<Event>& out);
 void RegisterTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
 [[nodiscard]] bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
 [[nodiscard]] bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
+/// N2.5: Registers auxiliary transient CPU command/constant rings (`dcbRingBuffer`, `ccbRingBuffer`,
+/// `CGGlobalRing` DCB/CCB & Yebis2 `g_GlobalCueHeap`) so inline command-buffer constants and
+/// Yebis2 transient quad VBs/CBs stream directly into `stream_buffer` without allocating 64 MiB
+/// `BufferCache` VRAM chunks, arming `mprotect` traps, or registering false `NatBuf` misses.
+void RegisterTransientCpuRing(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] bool IsTransientAuxCpuRing(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] bool IsTransientCpuRingAddress(VAddr addr) noexcept;
 void NoteTransientCueHeapGpuWrite(VAddr addr, u64 byte_size) noexcept;
 [[nodiscard]] bool IsCueHeapEverGpuModified() noexcept;
 void NoteTransientCueHeapAlloc(VAddr addr, u64 byte_size) noexcept;
@@ -146,6 +153,11 @@ public:
     [[nodiscard]] std::pair<const Buffer*, u64> TryResolveRead(VAddr addr, u64 size) noexcept {
         return TryResolveReadClamped(addr, size);
     }
+
+    /// N2.5: O(1) lookup of a valid CPU-side mirror pointer (`cpu_shadow` or untouched
+    /// initial-data guest RAM) for `[addr, addr + size)` when scanning index buffers of dynamic
+    /// `cueHeap` vertex draws; returns `nullptr` if the buffer was GPU-written without a shadow.
+    [[nodiscard]] const u8* TryGetCpuMirrorPtr(VAddr addr, u64 size) noexcept;
 
     /// N1.2 / N1.3: Resolves a non-stream GPU write [addr, addr + size) directly into a native
     /// VkBuffer (flushing any active stream override first and arming WAR barrier tracking when

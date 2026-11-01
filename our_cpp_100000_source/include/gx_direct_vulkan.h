@@ -83,8 +83,10 @@ __attribute__((weak)) void bb_direct_vk_yebis_scene_enter() noexcept;
 __attribute__((weak)) void bb_direct_vk_yebis_scene_leave() noexcept;
 __attribute__((weak)) void bb_direct_vk_note_release_check(uint32_t hr) noexcept;
 
-// V6.1: Zero-fault transient GX cueHeap registration (CPU->GPU staging ring)
+// V6.1 / N2.5: Zero-fault transient GX cueHeap & DCB/CCB/Yebis command ring registration
 __attribute__((weak)) void bb_direct_vk_register_transient_cue_heap(const void* gpu_addr,
+                                                                    uint64_t byte_size) noexcept;
+__attribute__((weak)) void bb_direct_vk_register_transient_cpu_ring(const void* gpu_addr,
                                                                     uint64_t byte_size) noexcept;
 
 // N2.1: Direct Native VkSampler & VkImageView (SRV/UAV) descriptor registration
@@ -609,6 +611,14 @@ inline void RegisterTransientCueHeap(const void* gpu_addr, uint64_t byte_size) n
         return;
     }
     bb_direct_vk_register_transient_cue_heap(gpu_addr, byte_size);
+}
+
+inline void RegisterTransientCpuRing(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!EnabledV6Sub(kV6Sub_ZeroFaultCueStaging) || !bb_direct_vk_register_transient_cpu_ring ||
+        !gpu_addr || byte_size == 0) {
+        return;
+    }
+    bb_direct_vk_register_transient_cpu_ring(gpu_addr, byte_size);
 }
 
 inline void RegisterDirectNativeSampler(void* ssharp_4dw) noexcept {

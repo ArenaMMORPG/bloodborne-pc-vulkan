@@ -1274,6 +1274,42 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
     }
+    // N2.5: Direct zero-fault streaming for auxiliary transient CPU command/constant rings
+    // (`dcbRingBuffer`, `ccbRingBuffer`, `CGGlobalRing` DCB/CCB & Yebis2 `g_GlobalCueHeap`),
+    // avoiding 64 MiB BufferCache VRAM chunks and mprotect(PROT_READ) write faults on DCB rings.
+    if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
+        size != 0 && size <= STREAM_THRESHOLD &&
+        DirectBuffers::IsTransientAuxCpuRing(device_addr, size) &&
+        !gpu_modified_ranges.Intersects(device_addr, size)) {
+        const u64 cur_tick = scheduler.CurrentTick();
+        const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
+        constexpr u64 kAuxRingStamp = ~0ULL;
+        auto& memo = TlsCueMemo()[CueMemoSlotIdx(device_addr, size)];
+        if (memo.addr == device_addr && memo.size == size && memo.tick == cur_tick &&
+            memo.inv_gen == cur_inv && memo.cue_stamp == kAuxRingStamp) {
+            TraceBinding(device_addr, size, false, 3);
+            return {&stream_buffer, memo.offset};
+        }
+        if (stats) {
+            auto& region = Stats().regions[RegionKey(device_addr)];
+            ++region.stream_count;
+            region.stream_bytes += size;
+        }
+        const u64 align = std::max<u64>(
+            16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
+        static const bool precise_readbacks =
+            EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+        const auto [data, offset] = stream_buffer.Map(size, align);
+        if (!precise_readbacks) {
+            std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);
+        } else {
+            memory->CopySparseMemory(device_addr, data, size);
+        }
+        stream_buffer.Commit();
+        memo = {device_addr, size, 0u, scheduler.CurrentTick(), cur_inv, kAuxRingStamp, offset};
+        TraceBinding(device_addr, size, false, 3);
+        return {&stream_buffer, offset};
+    }
     // V6.2 / V7.5: Direct zero-fault streaming for transient `cueHeap` read-only bindings:
     // - Small bindings (`<= 64 KiB`) always stream directly into `stream_buffer`.
     // - Medium dynamic bindings (`64 KiB < size <= 2 MiB`) that are CPU-modified (`IsRegionCpuModified`)
@@ -1312,8 +1348,10 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             }
         }
 
-        const VAddr upload_addr = (size > STREAM_THRESHOLD && has_big_blk) ? blk_base : device_addr;
-        const u32 upload_size = (size > STREAM_THRESHOLD && has_big_blk) ? blk_size : size;
+        const bool promote_big_blk =
+            (size > STREAM_THRESHOLD && has_big_blk && u64(size) * 4ULL >= u64(blk_size));
+        const VAddr upload_addr = promote_big_blk ? blk_base : device_addr;
+        const u32 upload_size = promote_big_blk ? blk_size : size;
         const u64 sub_off = device_addr - upload_addr;
         const u64 cur_stamp = DirectBuffers::ComputeTransientCueStamp(upload_addr, upload_size);
         auto& memo = tls_cue_memo[CueMemoSlotIdx(upload_addr, upload_size)];

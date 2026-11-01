@@ -140,6 +140,16 @@ std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_start_p1{};
 std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_end{};
 std::array<std::atomic<u32>, kMaxCueGranules> g_cue_granule_gen{};
 
+// N2.5: Lock-free auxiliary transient CPU command/constant ring directory (`dcbRingBuffer`,
+// `ccbRingBuffer`, `CGGlobalRing` DCB/CCB & Yebis2 `g_GlobalCueHeap`).
+struct AuxCpuRingSlot {
+    std::atomic<VAddr> base{0};
+    std::atomic<VAddr> end{0};
+};
+constexpr size_t kMaxAuxCpuRings = 32;
+std::array<AuxCpuRingSlot, kMaxAuxCpuRings> g_aux_cpu_rings{};
+std::atomic<u32> g_aux_cpu_ring_count{0};
+
 inline void AtomicMaxU32(std::atomic<u32>& cell, u32 val) noexcept {
     u32 cur = cell.load(std::memory_order_relaxed);
     while (cur < val && !cell.compare_exchange_weak(cur, val, std::memory_order_release,
@@ -234,6 +244,11 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
                 cell.store(0u, std::memory_order_relaxed);
             }
         }
+        g_aux_cpu_ring_count.store(0u, std::memory_order_relaxed);
+        for (auto& slot : g_aux_cpu_rings) {
+            slot.end.store(0ULL, std::memory_order_relaxed);
+            slot.base.store(0ULL, std::memory_order_relaxed);
+        }
         for (auto& set : g_exact_buf_table) {
             for (auto& way : set) {
                 way.addr_and_flag.store(0ULL, std::memory_order_relaxed);
@@ -279,6 +294,64 @@ bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
     }
     const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
     return RangesOverlap(addr, byte_size, base, end - base);
+}
+
+void RegisterTransientCpuRing(VAddr addr, u64 byte_size) noexcept {
+    if (!addr || byte_size == 0) {
+        return;
+    }
+    const VAddr end = addr + byte_size;
+    const u32 cur_n =
+        std::min<u32>(g_aux_cpu_ring_count.load(std::memory_order_acquire), kMaxAuxCpuRings);
+    for (u32 i = 0; i < cur_n; ++i) {
+        const VAddr e = g_aux_cpu_rings[i].end.load(std::memory_order_acquire);
+        const VAddr b = g_aux_cpu_rings[i].base.load(std::memory_order_relaxed);
+        if (b == addr && e >= end) {
+            return;
+        }
+    }
+    const u32 slot = g_aux_cpu_ring_count.fetch_add(1u, std::memory_order_acq_rel);
+    if (slot < kMaxAuxCpuRings) {
+        g_aux_cpu_rings[slot].base.store(addr, std::memory_order_relaxed);
+        g_aux_cpu_rings[slot].end.store(end, std::memory_order_release);
+    }
+}
+
+bool IsTransientAuxCpuRing(VAddr addr, u64 byte_size) noexcept {
+    static const bool enabled =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging);
+    if (!enabled || byte_size == 0) {
+        return false;
+    }
+    const u32 n =
+        std::min<u32>(g_aux_cpu_ring_count.load(std::memory_order_acquire), kMaxAuxCpuRings);
+    for (u32 i = 0; i < n; ++i) {
+        const VAddr end = g_aux_cpu_rings[i].end.load(std::memory_order_acquire);
+        if (end == 0) {
+            continue;
+        }
+        const VAddr base = g_aux_cpu_rings[i].base.load(std::memory_order_relaxed);
+        if (addr >= base && addr < end && (end - addr) >= byte_size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsTransientCpuRingAddress(VAddr addr) noexcept {
+    static const bool enabled =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging);
+    if (!enabled || addr == 0) {
+        return false;
+    }
+    const VAddr cue_end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (cue_end != 0) {
+        const VAddr cue_base = g_cue_heap_base.load(std::memory_order_relaxed);
+        if (addr >= cue_base && addr < cue_end) {
+            return true;
+        }
+    }
+    return IsTransientAuxCpuRing(addr, 1ULL);
 }
 
 void NoteTransientCueWrite(VAddr addr, u64 byte_size) noexcept {
@@ -1058,8 +1131,8 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
             BbStats::native_buf_hits.load(std::memory_order_relaxed) + 1ULL,
             std::memory_order_relaxed);
     };
-    const auto note_miss = [addr, &inout_size]() noexcept {
-        if (!IsTransientCueHeap(addr, inout_size)) {
+    const auto note_miss = [addr]() noexcept {
+        if (!IsTransientCpuRingAddress(addr)) {
             BbStats::native_buf_misses.store(
                 BbStats::native_buf_misses.load(std::memory_order_relaxed) + 1ULL,
                 std::memory_order_relaxed);
@@ -1125,6 +1198,56 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
     }
     note_miss();
     return {nullptr, 0};
+}
+
+const u8* Manager::TryGetCpuMirrorPtr(VAddr addr, u64 size) noexcept {
+    if (size == 0 || addr >= kMaxGuestVa || entries_by_base.empty()) {
+        return nullptr;
+    }
+    const auto resolve_mirror = [&](VAddr base, const Entry& e) noexcept -> const u8* {
+        if (!e.buffer || e.buffer->uav_written || e.gpu_written_without_shadow ||
+            e.needs_zero_init) {
+            return nullptr;
+        }
+        const u64 sub_off = addr - base;
+        if (sub_off >= e.raw_size || (e.raw_size - sub_off) < size) {
+            return nullptr;
+        }
+        if (e.has_cpu_shadow && e.cpu_shadow) {
+            return e.cpu_shadow.get() + sub_off;
+        }
+        if (!e.dirty_writeback && !e.zero_known) {
+            return reinterpret_cast<const u8*>(addr);
+        }
+        return nullptr;
+    };
+
+    const size_t h0 = MruHash(addr);
+    const size_t h1 = (h0 + 1u) & (kMruSlots - 1);
+    for (const size_t idx : {h0, h1}) {
+        const auto& slot = mru[idx];
+        if (slot.erase_gen == erase_generation && slot.entry && addr >= slot.base_addr &&
+            addr < slot.base_addr + slot.alloc_size) {
+            return resolve_mirror(slot.base_addr, *slot.entry);
+        }
+    }
+
+    const u64 page = addr >> kPageShift64K;
+    if ((bitmap_64k[page >> 6] & (1ULL << (page & 63ULL))) == 0ULL) {
+        return nullptr;
+    }
+    auto it = entries_by_base.upper_bound(addr);
+    if (it == entries_by_base.begin()) {
+        return nullptr;
+    }
+    --it;
+    const VAddr base = it->first;
+    const u64 alloc_size = it->second.alloc_size;
+    if (addr >= base && addr < base + alloc_size) {
+        InsertMru(addr, base, alloc_size, &it->second);
+        return resolve_mirror(base, it->second);
+    }
+    return nullptr;
 }
 
 std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, bool full_overwrite,
@@ -2140,6 +2263,14 @@ void bb_direct_vk_register_transient_cue_heap(const void* gpu_addr, uint64_t byt
         return;
     }
     VideoCore::DirectBuffers::RegisterTransientCueHeap(reinterpret_cast<VAddr>(gpu_addr),
+                                                       byte_size);
+}
+
+void bb_direct_vk_register_transient_cpu_ring(const void* gpu_addr, uint64_t byte_size) noexcept {
+    if (!gpu_addr || byte_size == 0) {
+        return;
+    }
+    VideoCore::DirectBuffers::RegisterTransientCpuRing(reinterpret_cast<VAddr>(gpu_addr),
                                                        byte_size);
 }
 

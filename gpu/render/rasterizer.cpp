@@ -521,6 +521,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const bool inputs_resolved = draw_inputs.resolved;
     draw_inputs.pending = false;
     if (!bound) {
+        draw_inputs.pipeline = nullptr;
         return;
     }
     const auto state = BeginRendering(pipeline);
@@ -531,6 +532,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             ResolveIndexBuffer(index_offset);
         }
     }
+    draw_inputs.pipeline = nullptr;
     if (HasPendingHleCopies() && scheduler.WillBeginRendering(state)) {
         FlushPendingHleCopies(*this);
     }

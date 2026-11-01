@@ -614,6 +614,129 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             }
         }
     }
+    const bool is_direct_draw = (pipeline != nullptr && draw_inputs.pipeline == pipeline);
+    bool draw_bounds_computed = false;
+    bool have_vtx_bound = false;
+    u64 draw_vertex_end = 0;
+    u32 draw_vertex_off = 0;
+    u32 draw_instance_off = 0;
+
+    const auto clamp_transient_draw_vb_size = [&](VAddr range_begin, VAddr range_end,
+                                                  u64 min_span, u64 cur_size) -> u64 {
+        if (!is_direct_draw || cur_size <= (16ULL << 10) ||
+            !VideoCore::DirectBuffers::IsTransientCueHeap(range_begin, cur_size)) {
+            return cur_size;
+        }
+        if (!draw_bounds_computed) {
+            draw_bounds_computed = true;
+            const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+            draw_vertex_off = regs.index_offset;
+            draw_instance_off = 0;
+            if (fetch) {
+                const auto ud = vs.UserData();
+                if (draw_vertex_off == 0 && fetch->vertex_offset_sgpr != -1 &&
+                    static_cast<u32>(fetch->vertex_offset_sgpr) < ud.size()) {
+                    draw_vertex_off = ud[fetch->vertex_offset_sgpr];
+                }
+                if (fetch->instance_offset_sgpr != -1 &&
+                    static_cast<u32>(fetch->instance_offset_sgpr) < ud.size()) {
+                    draw_instance_off = ud[fetch->instance_offset_sgpr];
+                }
+            }
+            if (!draw_inputs.is_indexed) {
+                draw_vertex_end = u64(draw_vertex_off) + u64(regs.num_indices);
+                have_vtx_bound = true;
+            } else if (regs.num_indices == 0) {
+                draw_vertex_end = 0;
+                have_vtx_bound = true;
+            } else if (regs.num_indices <= 65536u) {
+                const bool index16 = regs.index_buffer_type.index_type == Gcn::IndexType::Index16;
+                const u32 index_size = index16 ? sizeof(u16) : sizeof(u32);
+                const VAddr ib_addr = regs.index_base_address.Address<VAddr>() +
+                                      u64(draw_inputs.index_offset) * index_size;
+                const u64 ib_bytes = u64(regs.num_indices) * index_size;
+                if (ib_addr != 0 &&
+                    !(HasPendingHleCopies() &&
+                      PendingHleCopiesConflict(ib_addr, ib_bytes, false))) {
+                    const u8* ib_ptr = direct_buffers.TryGetCpuMirrorPtr(ib_addr, ib_bytes);
+                    if (!ib_ptr && !VideoCore::DirectBuffers::IsNativeOwnedAddress(ib_addr)) {
+                        const bool ib_gpu_clean =
+                            VideoCore::DirectBuffers::IsTransientCueHeap(ib_addr, ib_bytes)
+                                ? (!VideoCore::DirectBuffers::IsCueHeapEverGpuModified() ||
+                                   !buffer_cache.IsRegionGpuModified(ib_addr, ib_bytes))
+                                : !buffer_cache.IsRegionGpuModified(ib_addr, ib_bytes);
+                        if (ib_gpu_clean && memory->ClampRangeSize(ib_addr, ib_bytes) == ib_bytes) {
+                            ib_ptr = reinterpret_cast<const u8*>(ib_addr);
+                        }
+                    }
+                    if (ib_ptr) {
+                        const bool prim_restart = regs.enable_primitive_restart != 0;
+                        const s64 v_off = static_cast<s64>(static_cast<s32>(draw_vertex_off));
+                        s64 max_v = -1;
+                        if (index16) {
+                            const u16 restart_val =
+                                static_cast<u16>(regs.primitive_restart_index & 0xFFFFu);
+                            const auto* idx16 = reinterpret_cast<const u16*>(ib_ptr);
+                            for (u32 n = 0; n < regs.num_indices; ++n) {
+                                const u16 idx = idx16[n];
+                                if (prim_restart && idx == restart_val) {
+                                    continue;
+                                }
+                                const s64 v = v_off + static_cast<s64>(idx);
+                                if (v > max_v) {
+                                    max_v = v;
+                                }
+                            }
+                        } else {
+                            const u32 restart_val = regs.primitive_restart_index;
+                            const auto* idx32 = reinterpret_cast<const u32*>(ib_ptr);
+                            for (u32 n = 0; n < regs.num_indices; ++n) {
+                                const u32 idx = idx32[n];
+                                if (prim_restart && idx == restart_val) {
+                                    continue;
+                                }
+                                const s64 v = v_off + static_cast<s64>(idx);
+                                if (v > max_v) {
+                                    max_v = v;
+                                }
+                            }
+                        }
+                        draw_vertex_end = (max_v >= 0) ? static_cast<u64>(max_v + 1) : 0ULL;
+                        have_vtx_bound = true;
+                    }
+                }
+            }
+        }
+        if (!have_vtx_bound) {
+            return cur_size;
+        }
+        const u32 num_inst = regs.num_instances.NumInstances();
+        const size_t stream_cnt = std::min(guest_buffers.size(), bindings.size());
+        u64 needed = min_span;
+        for (size_t k = 0; k < stream_cnt; ++k) {
+            const auto& b = guest_buffers[k];
+            if (b.base_address < range_begin || b.base_address >= range_end) {
+                continue;
+            }
+            const bool is_inst = (bindings[k].inputRate == vk::VertexInputRate::eInstance);
+            const u32 div = bindings[k].divisor;
+            const u64 elem_end =
+                !is_inst ? draw_vertex_end
+                         : (div == 0 ? (u64(draw_instance_off) + 1ULL)
+                                     : (u64(draw_instance_off) +
+                                        (num_inst > 0 ? (u64(num_inst - 1) / u64(div) + 1ULL)
+                                                      : 1ULL)));
+            const u64 stride = b.GetStride();
+            const u64 stream_bytes =
+                (stride == 0)
+                    ? 16ULL
+                    : (elem_end > 0 ? ((elem_end - 1ULL) * stride + std::max<u64>(stride, 16ULL))
+                                    : 16ULL);
+            needed = std::max<u64>(needed, (b.base_address - range_begin) + stream_bytes);
+        }
+        return std::min<u64>(cur_size, Common::AlignUp<u64>(needed, 64ULL));
+    };
+
     for (auto& range : ranges) {
         u64 min_stream_span = 1;
         for (const auto& b : guest_buffers) {
@@ -638,6 +761,7 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 range.offset = 0;
                 size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
                     range.begin, memory->ClampRangeSize(range.begin, raw_range_size));
+                size = clamp_transient_draw_vb_size(range.begin, range.end, min_stream_span, size);
                 std::tie(range.buffer, range.offset) =
                     buffer_cache.ObtainBuffer(range.begin, size, false);
             }
@@ -656,6 +780,7 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             } else {
                 range.buffer = nullptr;
                 range.offset = 0;
+                size = clamp_transient_draw_vb_size(range.begin, range.end, min_stream_span, size);
                 std::tie(range.buffer, range.offset) =
                     buffer_cache.ObtainBuffer(range.begin, size, false);
             }

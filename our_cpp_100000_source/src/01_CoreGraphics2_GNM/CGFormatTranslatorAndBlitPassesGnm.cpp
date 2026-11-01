@@ -1136,12 +1136,16 @@ void CGGpuBlitAndClearPassesGnm_ResolveMsaaColorTarget(
                 tsharp0, src_msaa_tex, src_msaa_tex[0x33], 0u, 0u, 1u, 1u, 0u) != 0) {
         return;
     }
+    gx_direct_vk::RegisterDirectNativeSrv(
+        tsharp0, *reinterpret_cast<const uint32_t*>(src_msaa_tex + 0x10), 0u);
     uint64_t tsharp1[4] = {};
     if (GX_CALL(int32_t, 0x216d900ULL,
                 (void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t),
                 tsharp1, src_fmask_tex, src_fmask_tex[0x33], 0u, 0u, 1u, 3u, 0u) != 0) {
         return;
     }
+    gx_direct_vk::RegisterDirectNativeSrv(
+        tsharp1, *reinterpret_cast<const uint32_t*>(src_fmask_tex + 0x10), 0u);
     auto* t0 = reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0x6930);
     t0[0] = tsharp0[0]; t0[1] = tsharp0[1]; t0[2] = tsharp0[2]; t0[3] = tsharp0[3];
     auto* t1 = reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0x6950);
@@ -2889,6 +2893,8 @@ void CGGpuBlitAndClearPassesGnm_CopyTextureRegionViaCompute(
     }
     GX_CALL(void, 0x1089760ULL, (void*, int32_t, uint32_t),
             srv_tsharp, static_cast<int32_t>(src_swz) >> 16, (src_swz >> 8) & 0xFFu);
+    gx_direct_vk::RegisterDirectNativeSrv(
+        srv_tsharp, *reinterpret_cast<const uint32_t*>(src_tex + 0x10), 0u);
 
     uint64_t uav_tsharp[4] = {};
     if (GX_CALL(int32_t, 0x216d900ULL,
@@ -2898,6 +2904,8 @@ void CGGpuBlitAndClearPassesGnm_CopyTextureRegionViaCompute(
     }
     GX_CALL(void, 0x1089760ULL, (void*, int32_t, uint32_t),
             uav_tsharp, static_cast<int32_t>(dst_swz) >> 16, (dst_swz >> 8) & 0xFFu);
+    gx_direct_vk::RegisterDirectNativeSrv(
+        uav_tsharp, *reinterpret_cast<const uint32_t*>(dst_tex + 0x10), 0u);
 
     uint32_t dst_mip_w = static_cast<uint32_t>(*reinterpret_cast<const uint16_t*>(dst_tex + 0x2c)) >> dst_mip;
     if (!dst_mip_w) dst_mip_w = 1u;

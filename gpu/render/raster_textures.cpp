@@ -11,6 +11,7 @@
 #include <mutex>
 #include "render/raster_internal.h"
 #include "textures/direct_textures.h"
+#include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 namespace Vulkan {
 
@@ -171,7 +172,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         auto tsharp =
             prepared ? prepared->image_sharps[image_index] : image_desc.GetSharp(stage);
         u8 srv_gen8 = 0u;
-        const u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
+        u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
         // bbport: a hash lookup per texture per draw for a diagnostic only.
         static const bool warn_meta = std::getenv("BB_WARN_META_TEXTURE") != nullptr;
         if (warn_meta && texture_cache.IsMeta(tsharp.Address())) {
@@ -195,6 +196,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                         static_cast<u32>(num_fmt));
             bind_null();
             continue;
+        }
+
+        static const bool n2_native_tex =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);
+        if (srv_uid == 0 && n2_native_tex) {
+            if (VideoCore::DirectTextures::RegisterNativeSrv(&tsharp, 0u, false) != 0) {
+                srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
+            }
         }
 
         if (srv_uid != 0) {
@@ -615,7 +624,14 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
         const auto& sampler = stage.samplers[sampler_index];
         auto ssharp =
             prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage);
-        const u16 smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
+        u16 smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
+        static const bool n2_native_tex =
+            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);
+        if (smp_uid == 0 && n2_native_tex) {
+            if (VideoCore::DirectTextures::RegisterNativeSampler(&ssharp) != 0) {
+                smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
+            }
+        }
         vk::Sampler vk_sampler{};
         if (smp_uid != 0 && native_sampler_cache) {
             ++local_native_hits;

@@ -90,9 +90,6 @@ u16 RegisterNativeSampler(void* ssharp_4dw) noexcept {
     std::memcpy(raw, ssharp_4dw, sizeof(raw));
     auto* clean_dw = reinterpret_cast<u32*>(raw);
     clean_dw[3] &= ~kSamplerTagMask;
-    if (raw[0] == 0 && raw[1] == 0) {
-        return 0;
-    }
 
     u64 h = (raw[0] * 0x9E3779B97F4A7C15ULL) ^ (raw[1] * 0xBF58476D1CE4E5B9ULL);
     h ^= (h >> 32);

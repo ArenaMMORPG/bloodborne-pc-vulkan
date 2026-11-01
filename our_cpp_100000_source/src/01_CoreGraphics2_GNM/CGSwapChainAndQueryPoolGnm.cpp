@@ -758,6 +758,7 @@ int32_t CGGlobalRing_Initialize(void* /*unused*/, IAllocator* gpu_alloc) {
     g_RingMemBlock0 = mem;
     g_RingMemBlock1 = mem + 0x400000;
     g_RingFencePtr  = reinterpret_cast<uint64_t*>(mem + 0x800000);
+    gx_direct_vk::RegisterTransientCpuRing(mem, 0x800000ULL);
 
     uint64_t physAddr = 0;
     uint64_t devMemEnd = reinterpret_cast<uint64_t(*)()>(GX_VMA(0x2bbeaa8ULL))();
@@ -776,6 +777,7 @@ int32_t CGGlobalRing_Initialize(void* /*unused*/, IAllocator* gpu_alloc) {
     }
 
     g_GlobalCueHeap = vaddr;
+    gx_direct_vk::RegisterTransientCpuRing(vaddr, 0x20000ULL);
     reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1070c20ULL))(
         reinterpret_cast<void*>(GX_VMA(0x546cab0ULL)), g_RingMemBlock0, 0x400000u);
     reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1070b40ULL))(
@@ -934,6 +936,9 @@ CGQueryLabelPoolGnm* CGQueryLabelPoolGnm_Create(
         return nullptr;
     }
     gx_direct_vk::PrepareDirectSwapQueryWrite(pool->gpu_labels_base, byte_stride * slot_count);
+    if (byte_stride >= 0x1000ULL) {
+        gx_direct_vk::RegisterTransientCpuRing(pool->gpu_labels_base, byte_stride * slot_count);
+    }
     for (size_t i = 0; i < slot_count; ++i) {
         pool->gpu_labels_base[(i + 1) * (byte_stride >> 3) - 1] = 0;
     }

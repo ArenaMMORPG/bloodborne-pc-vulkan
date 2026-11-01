@@ -15,6 +15,7 @@
 #include "cp/cp_packets.h"
 #include "render/vk_draw_prep.h"
 #include "render/gcn_to_vk.h"
+#include "textures/direct_textures.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 #include <xxhash.h>
 
@@ -146,12 +147,29 @@ void PrepareResources(const Shader::Info& info, PreparedStage& stage, FlatArena&
     hashes.clear();
     samplers.clear();
     buffers.clear();
+    static const bool n2_native_tex =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);
     for (const auto& res : info.images) {
-        images.push_back(res.GetSharp(info));
+        auto img = res.GetSharp(info);
+        if (n2_native_tex && img.Address() != 0 &&
+            img.GetDataFmt() != Gcn::DataFormat::FormatInvalid &&
+            (res.post_op != Shader::SharpFetchPostOp::None ||
+             (reinterpret_cast<const u32*>(&img)[7] >> 24) !=
+                 VideoCore::DirectTextures::kSrvTagMagic)) {
+            VideoCore::DirectTextures::RegisterNativeSrv(&img, 0u, false);
+        }
+        images.push_back(img);
         hashes.push_back(ImageDescHash(images.back(), res));
     }
     for (const auto& res : info.samplers) {
-        samplers.push_back(res.GetSharp(info));
+        auto smp = res.GetSharp(info);
+        if (n2_native_tex &&
+            (res.post_op != Shader::SharpFetchPostOp::None ||
+             ((reinterpret_cast<const u32*>(&smp)[3] >> 24) & 0x3Fu) !=
+                 VideoCore::DirectTextures::kSamplerTagMagic)) {
+            VideoCore::DirectTextures::RegisterNativeSampler(&smp);
+        }
+        samplers.push_back(smp);
     }
     for (const auto& res : info.buffers) {
         buffers.push_back(res.IsSpecial() ? Gcn::Buffer::Null() : res.GetSharp(info));
