@@ -856,12 +856,26 @@ void Rasterizer::DirectCopyTextureRegion(const DirectCopyTextureRegionArgs& args
     if (args.copy_w == 0 || args.copy_h == 0 || args.copy_d == 0) {
         return;
     }
+    pending_tex_copies.push_back(args);
+    if (pending_tex_copies.size() < 16 && NextPipePacketIsTextureRegionCopy()) {
+        return;
+    }
+    FlushPendingTextureRegionCopies();
+}
+
+void Rasterizer::FlushPendingTextureRegionCopies() {
+    if (pending_tex_copies.empty()) {
+        return;
+    }
     if (HasPendingHleCopies()) {
-        if ((args.dst_va && args.dst_byte_size &&
-             PendingHleCopiesConflict(args.dst_va, args.dst_byte_size, true)) ||
-            (args.src_va && args.src_byte_size &&
-             PendingHleCopiesConflict(args.src_va, args.src_byte_size, false))) {
-            FlushPendingHleCopies(*this);
+        for (const auto& args : pending_tex_copies) {
+            if ((args.dst_va && args.dst_byte_size &&
+                 PendingHleCopiesConflict(args.dst_va, args.dst_byte_size, true)) ||
+                (args.src_va && args.src_byte_size &&
+                 PendingHleCopiesConflict(args.src_va, args.src_byte_size, false))) {
+                FlushPendingHleCopies(*this);
+                break;
+            }
         }
     }
 
@@ -912,80 +926,120 @@ void Rasterizer::DirectCopyTextureRegion(const DirectCopyTextureRegionArgs& args
         return true;
     };
 
-    VideoCore::ImageId src_id{};
-    VideoCore::SubresourceRange src_view_range{};
-    if (!resolve_copy_image(args.srv_tsharp, false, src_id, src_view_range)) {
-        return;
-    }
+    VideoCore::ImageId group_src_id{};
+    VideoCore::ImageId group_dst_id{};
+    boost::container::small_vector<VideoCore::SubresourceRange, 16> group_src_ranges;
+    boost::container::small_vector<VideoCore::SubresourceRange, 16> group_dst_ranges;
+    boost::container::small_vector<vk::ImageCopy, 16> group_regions;
 
-    VideoCore::ImageId dst_id{};
-    VideoCore::SubresourceRange dst_view_range{};
-    if (!resolve_copy_image(args.uav_tsharp, true, dst_id, dst_view_range)) {
-        return;
-    }
-
-    auto& src_img = texture_cache.GetImage(src_id);
-    auto& dst_img = texture_cache.GetImage(dst_id);
-    if (src_img.info.props.is_depth || dst_img.info.props.is_depth ||
-        src_img.info.props.is_block || dst_img.info.props.is_block ||
-        src_img.info.num_samples != dst_img.info.num_samples ||
-        src_img.info.num_bits != dst_img.info.num_bits) {
-        return;
-    }
-
-    const u32 src_mip =
-        std::min(src_view_range.base.level, src_img.info.resources.levels - 1);
-    const u32 dst_mip =
-        std::min(dst_view_range.base.level, dst_img.info.resources.levels - 1);
-    const bool src_3d = src_img.info.type == Gcn::ImageType::Color3D;
-    const bool dst_3d = dst_img.info.type == Gcn::ImageType::Color3D;
-    const u32 src_layer =
-        src_3d ? 0u : std::min(src_view_range.base.layer, src_img.info.resources.layers - 1);
-    const u32 dst_layer =
-        dst_3d ? 0u : std::min(dst_view_range.base.layer, dst_img.info.resources.layers - 1);
-
-    const u32 src_mip_w = std::max(src_img.info.size.width >> src_mip, 1u);
-    const u32 src_mip_h = std::max(src_img.info.size.height >> src_mip, 1u);
-    const u32 src_mip_d = src_3d ? std::max(src_img.info.size.depth >> src_mip, 1u) : 1u;
-
-    const u32 dst_mip_w = std::max(dst_img.info.size.width >> dst_mip, 1u);
-    const u32 dst_mip_h = std::max(dst_img.info.size.height >> dst_mip, 1u);
-    const u32 dst_mip_d = dst_3d ? std::max(dst_img.info.size.depth >> dst_mip, 1u) : 1u;
-
-    const u32 sz_off = src_3d ? args.src_z : 0u;
-    const u32 dz_off = dst_3d ? args.dst_z : 0u;
-    if (args.src_x >= src_mip_w || args.src_y >= src_mip_h || sz_off >= src_mip_d ||
-        args.dst_x >= dst_mip_w || args.dst_y >= dst_mip_h || dz_off >= dst_mip_d) {
-        return;
-    }
-
-    const u32 ext_w = std::min({args.copy_w, src_mip_w - args.src_x, dst_mip_w - args.dst_x});
-    const u32 ext_h = std::min({args.copy_h, src_mip_h - args.src_y, dst_mip_h - args.dst_y});
-    const u32 ext_d =
-        (src_3d && dst_3d) ? std::min({args.copy_d, src_mip_d - sz_off, dst_mip_d - dz_off}) : 1u;
-    if (ext_w == 0 || ext_h == 0 || ext_d == 0) {
-        return;
-    }
-
-    const VideoCore::SubresourceRange src_range{
-        .base = {.level = src_mip, .layer = src_layer},
-        .extent = {.levels = 1, .layers = 1},
+    const auto flush_group = [&]() {
+        if (group_regions.empty()) {
+            return;
+        }
+        auto& src_img = texture_cache.GetImage(group_src_id);
+        auto& dst_img = texture_cache.GetImage(group_dst_id);
+        runtime.CopyImageSubresources(&src_img, &dst_img, group_src_ranges, group_dst_ranges,
+                                      group_regions);
+        dst_img.gpu_write_tick = scheduler.CurrentTick();
+        group_src_ranges.clear();
+        group_dst_ranges.clear();
+        group_regions.clear();
     };
-    const VideoCore::SubresourceRange dst_range{
-        .base = {.level = dst_mip, .layer = dst_layer},
-        .extent = {.levels = 1, .layers = 1},
-    };
-    const vk::ImageCopy region{
-        .srcSubresource = {src_img.aspect_mask & ~vk::ImageAspectFlagBits::eStencil, src_mip,
-                           src_layer, 1},
-        .srcOffset = {s32(args.src_x), s32(args.src_y), s32(sz_off)},
-        .dstSubresource = {dst_img.aspect_mask & ~vk::ImageAspectFlagBits::eStencil, dst_mip,
-                           dst_layer, 1},
-        .dstOffset = {s32(args.dst_x), s32(args.dst_y), s32(dz_off)},
-        .extent = {ext_w, ext_h, ext_d},
-    };
-    runtime.CopyImageSubresource(&src_img, &dst_img, src_range, dst_range, region);
-    dst_img.gpu_write_tick = scheduler.CurrentTick();
+
+    for (const auto& args : pending_tex_copies) {
+        VideoCore::ImageId src_id{};
+        VideoCore::SubresourceRange src_view_range{};
+        if (!resolve_copy_image(args.srv_tsharp, false, src_id, src_view_range)) {
+            continue;
+        }
+
+        VideoCore::ImageId dst_id{};
+        VideoCore::SubresourceRange dst_view_range{};
+        if (!resolve_copy_image(args.uav_tsharp, true, dst_id, dst_view_range)) {
+            continue;
+        }
+
+        auto& src_img = texture_cache.GetImage(src_id);
+        auto& dst_img = texture_cache.GetImage(dst_id);
+        if (src_img.info.props.is_depth || dst_img.info.props.is_depth ||
+            src_img.info.props.is_block || dst_img.info.props.is_block ||
+            src_img.info.num_samples != dst_img.info.num_samples ||
+            src_img.info.num_bits != dst_img.info.num_bits) {
+            continue;
+        }
+
+        const u32 src_mip = std::min(src_view_range.base.level, src_img.info.resources.levels - 1);
+        const u32 dst_mip = std::min(dst_view_range.base.level, dst_img.info.resources.levels - 1);
+        const bool src_3d = src_img.info.type == Gcn::ImageType::Color3D;
+        const bool dst_3d = dst_img.info.type == Gcn::ImageType::Color3D;
+        const u32 src_layer =
+            src_3d ? 0u : std::min(src_view_range.base.layer, src_img.info.resources.layers - 1);
+        const u32 dst_layer =
+            dst_3d ? 0u : std::min(dst_view_range.base.layer, dst_img.info.resources.layers - 1);
+
+        const u32 src_mip_w = std::max(src_img.info.size.width >> src_mip, 1u);
+        const u32 src_mip_h = std::max(src_img.info.size.height >> src_mip, 1u);
+        const u32 src_mip_d = src_3d ? std::max(src_img.info.size.depth >> src_mip, 1u) : 1u;
+
+        const u32 dst_mip_w = std::max(dst_img.info.size.width >> dst_mip, 1u);
+        const u32 dst_mip_h = std::max(dst_img.info.size.height >> dst_mip, 1u);
+        const u32 dst_mip_d = dst_3d ? std::max(dst_img.info.size.depth >> dst_mip, 1u) : 1u;
+
+        const u32 sz_off = src_3d ? args.src_z : 0u;
+        const u32 dz_off = dst_3d ? args.dst_z : 0u;
+        if (args.src_x >= src_mip_w || args.src_y >= src_mip_h || sz_off >= src_mip_d ||
+            args.dst_x >= dst_mip_w || args.dst_y >= dst_mip_h || dz_off >= dst_mip_d) {
+            continue;
+        }
+
+        const u32 ext_w = std::min({args.copy_w, src_mip_w - args.src_x, dst_mip_w - args.dst_x});
+        const u32 ext_h = std::min({args.copy_h, src_mip_h - args.src_y, dst_mip_h - args.dst_y});
+        const u32 ext_d =
+            (src_3d && dst_3d)
+                ? std::min({args.copy_d, src_mip_d - sz_off, dst_mip_d - dz_off})
+                : 1u;
+        if (ext_w == 0 || ext_h == 0 || ext_d == 0) {
+            continue;
+        }
+
+        const VideoCore::SubresourceRange src_range{
+            .base = {.level = src_mip, .layer = src_layer},
+            .extent = {.levels = 1, .layers = 1},
+        };
+        const VideoCore::SubresourceRange dst_range{
+            .base = {.level = dst_mip, .layer = dst_layer},
+            .extent = {.levels = 1, .layers = 1},
+        };
+        const vk::ImageCopy region{
+            .srcSubresource = {src_img.aspect_mask & ~vk::ImageAspectFlagBits::eStencil, src_mip,
+                               src_layer, 1},
+            .srcOffset = {s32(args.src_x), s32(args.src_y), s32(sz_off)},
+            .dstSubresource = {dst_img.aspect_mask & ~vk::ImageAspectFlagBits::eStencil, dst_mip,
+                               dst_layer, 1},
+            .dstOffset = {s32(args.dst_x), s32(args.dst_y), s32(dz_off)},
+            .extent = {ext_w, ext_h, ext_d},
+        };
+
+        const bool same_subresource =
+            (src_id == dst_id && src_mip == dst_mip && src_layer == dst_layer);
+        if (same_subresource) {
+            flush_group();
+            runtime.CopyImageSubresource(&src_img, &dst_img, src_range, dst_range, region);
+            dst_img.gpu_write_tick = scheduler.CurrentTick();
+            continue;
+        }
+        if (!group_regions.empty() &&
+            (src_id != group_src_id || dst_id != group_dst_id)) {
+            flush_group();
+        }
+        group_src_id = src_id;
+        group_dst_id = dst_id;
+        group_src_ranges.push_back(src_range);
+        group_dst_ranges.push_back(dst_range);
+        group_regions.push_back(region);
+    }
+    flush_group();
+    pending_tex_copies.clear();
 }
 
 void Rasterizer::DirectDecompressDepth(const DirectDecompressDepthArgs& args) {

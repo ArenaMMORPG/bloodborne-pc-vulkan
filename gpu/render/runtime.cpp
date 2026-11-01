@@ -637,6 +637,37 @@ void Runtime::CopyImageSubresource(VideoCore::Image* src, VideoCore::Image* dst,
     MarkCopied(dst, VideoCore::ImageFlagBits::GpuModified);
 }
 
+void Runtime::CopyImageSubresources(VideoCore::Image* src, VideoCore::Image* dst,
+                                    std::span<const VideoCore::SubresourceRange> src_ranges,
+                                    std::span<const VideoCore::SubresourceRange> dst_ranges,
+                                    std::span<const vk::ImageCopy> regions) {
+    if (regions.empty()) {
+        return;
+    }
+    if (regions.size() == 1) {
+        CopyImageSubresource(src, dst, src_ranges[0], dst_ranges[0], regions[0]);
+        return;
+    }
+    SetBackingSamples(dst, dst->info.num_samples);
+    SetBackingSamples(src, src->info.num_samples);
+    scheduler.EndRendering();
+    const TransferMark mark{*this, "image subresource copy", *dst};
+    bool needs_flush = false;
+    for (size_t i = 0; i < regions.size(); ++i) {
+        needs_flush |=
+            Transit(src, Layout::eTransferSrcOptimal, Stage::eCopy, AccessBit::eTransferRead,
+                    src_ranges[i]);
+        needs_flush |=
+            Transit(dst, Layout::eTransferDstOptimal, Stage::eCopy, AccessBit::eTransferWrite,
+                    dst_ranges[i]);
+    }
+    if (needs_flush) {
+        FlushBarriers();
+    }
+    CopyImageRegions(src, dst, regions);
+    MarkCopied(dst, VideoCore::ImageFlagBits::GpuModified);
+}
+
 void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
     if (src->info.num_samples == 1 && dst->info.num_samples == 1) {
         if (instance.IsMaintenance8Supported() ||

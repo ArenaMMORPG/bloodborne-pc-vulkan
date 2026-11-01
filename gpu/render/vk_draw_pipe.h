@@ -107,12 +107,22 @@ public:
         // of 4 separate `memory_order_seq_cst` XCHG instructions per draw packet.
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (has_resolvers && resolvers_sleeping.load(std::memory_order_relaxed)) [[unlikely]] {
-            resolve_wake.fetch_add(1, std::memory_order_release);
-            resolve_wake.notify_all();
+            const u64 backlog_pkts = packets - consumed_packets.load(std::memory_order_relaxed);
+            if (!resolve ? false : (backlog_pkts <= 4 || (packets & 15u) == 0)) {
+                resolve_wake.fetch_add(1, std::memory_order_release);
+                resolve_wake.notify_all();
+            }
         }
         if (sleeping.load(std::memory_order_relaxed)) [[unlikely]] {
             wake.fetch_add(1, std::memory_order_release);
             wake.notify_one();
+        }
+    }
+
+    void WakeResolversIfSleeping() noexcept {
+        if (num_resolvers != 0 && resolvers_sleeping.load(std::memory_order_acquire)) [[unlikely]] {
+            resolve_wake.fetch_add(1, std::memory_order_release);
+            resolve_wake.notify_all();
         }
     }
 
@@ -137,11 +147,15 @@ public:
             return;
         }
         number = std::min(number, packets);
+        if (resolved_prefix < number) {
+            WakeResolversIfSleeping();
+        }
         while (resolved_prefix < number) {
             if (slots[(resolved_prefix + 1) & SlotMask].state.load(std::memory_order_acquire) ==
                 SlotDone) {
                 ++resolved_prefix;
             } else {
+                WakeResolversIfSleeping();
                 ++resolve_waits;
                 __builtin_ia32_pause();
             }
@@ -167,6 +181,7 @@ public:
         if (consumed.load(std::memory_order_acquire) == head) {
             return;
         }
+        WakeResolversIfSleeping();
         ++drains;
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
@@ -205,6 +220,7 @@ public:
         if (ReachedPacket(number)) {
             return;
         }
+        WakeResolversIfSleeping();
         ++drains;
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
@@ -241,6 +257,28 @@ public:
     /// Stage B: bytes of packets committed and not run yet (the work queued for this thread).
     [[nodiscard]] u64 Backlog() const noexcept {
         return published.load(std::memory_order_acquire) - consumed.load(std::memory_order_relaxed);
+    }
+    /// Stage B (inside `handler`): returns the next already-published packet's payload if ready,
+    /// or nullptr if no packet is queued after the currently running one.
+    [[nodiscard]] const u8* PeekNext(u32& out_payload_size) const noexcept {
+        const u64 avail = published.load(std::memory_order_acquire);
+        u64 next_at = stage_b_next_at;
+        if (next_at >= avail) {
+            return nullptr;
+        }
+        const auto* hdr = reinterpret_cast<const Header*>(ring.get() + next_at % Capacity);
+        if (hdr->size == 0) {
+            next_at += Capacity - next_at % Capacity;
+            if (next_at >= avail) {
+                return nullptr;
+            }
+            hdr = reinterpret_cast<const Header*>(ring.get() + next_at % Capacity);
+            if (hdr->size == 0) {
+                return nullptr;
+            }
+        }
+        out_payload_size = hdr->payload;
+        return reinterpret_cast<const u8*>(hdr + 1);
     }
 
     /// Statistics (stage A): packets, drains that had to wait, cycles waited, cycles stage B
@@ -315,15 +353,22 @@ private:
                 // Its resolve worker may still be completing it.
                 const auto& slot = slots[(consumed_packets.load(std::memory_order_relaxed) + 1) &
                                          SlotMask];
-                for (u32 spins = 0; slot.state.load(std::memory_order_acquire) != SlotDone;
-                     ++spins) {
-                    if (spins < 4096) {
-                        __builtin_ia32_pause();
-                    } else {
-                        std::this_thread::yield();
+                if (slot.state.load(std::memory_order_acquire) != SlotDone) {
+                    WakeResolversIfSleeping();
+                    for (u32 spins = 0; slot.state.load(std::memory_order_acquire) != SlotDone;
+                         ++spins) {
+                        if ((spins & 63u) == 0) {
+                            WakeResolversIfSleeping();
+                        }
+                        if (spins < 4096) {
+                            __builtin_ia32_pause();
+                        } else {
+                            std::this_thread::yield();
+                        }
                     }
                 }
             }
+            stage_b_next_at = at + header->size;
             const u64 start = __rdtsc();
             handler(context, reinterpret_cast<const u8*>(header + 1), header->payload);
             const u64 delta = __rdtsc() - start;
@@ -340,25 +385,32 @@ private:
         std::snprintf(name, sizeof(name), "bb:Resolve%u", worker);
         Common::SetCurrentThreadName(name);
         BbThreads::PinToGpuDomain();
-        static const auto spin_time = std::chrono::microseconds([] {
+        static const int spin_us = [] {
             if (const char* env = std::getenv("BB_RESOLVE_SPIN_US")) {
                 return std::max(0, std::atoi(env));
             }
-            return 3;
-        }());
+            return 0;
+        }();
+        static const auto spin_time = std::chrono::microseconds(spin_us);
         const bool single_worker = (num_resolvers == 1);
         u64 single_next = 1;
         while (!stop.stop_requested()) {
             u64 number = single_worker ? single_next : next_claim.load(std::memory_order_relaxed);
             if (number > published_packets.load(std::memory_order_acquire)) {
-                const auto spin_until = std::chrono::steady_clock::now() + spin_time;
+                const auto spin_until =
+                    spin_us > 0 ? (std::chrono::steady_clock::now() + spin_time)
+                                : std::chrono::steady_clock::time_point{};
                 for (u32 spins = 1;
                      number > published_packets.load(std::memory_order_acquire); ++spins) {
                     if (stop.stop_requested()) {
                         return;
                     }
                     __builtin_ia32_pause();
-                    if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
+                    const bool should_sleep =
+                        spin_us == 0 ? ((spins & 7u) == 0)
+                                     : (!(spins & 255u) &&
+                                        std::chrono::steady_clock::now() >= spin_until);
+                    if (should_sleep) {
                         const u32 seen = resolve_wake.load(std::memory_order_seq_cst);
                         resolvers_sleeping.fetch_add(1, std::memory_order_seq_cst);
                         if (number > published_packets.load(std::memory_order_seq_cst) &&
@@ -412,6 +464,7 @@ private:
     std::unique_ptr<u8[]> ring;
     u64 head = 0; ///< stage A's write position
     u32 pending_size = 0;
+    u64 stage_b_next_at = 0; ///< stage B's next packet offset while running current packet
     alignas(64) std::atomic<u64> published{0};
     alignas(64) std::atomic<u64> consumed{0};
     std::atomic<u64> consumed_packets{0}; ///< packets stage B has run (NextPacket numbers)

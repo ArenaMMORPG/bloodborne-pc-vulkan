@@ -127,7 +127,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     BB_SECTION(BindTextures);
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
-    if (!on_helper && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot)) {
+    u64 set_key = 0;
+    if (!on_helper &&
+        BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot, set_key)) {
         // Descriptor writes: one per image (no mip arrays in a memoized set).
         for (u32 i = 0; i < stage.images.size(); ++i) {
             set_writes[write_index++] = vk::WriteDescriptorSet{
@@ -149,7 +151,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     boost::container::small_vector<u32, 8> image_descriptor_array_sizes;
     // TextureSetMemo: what this call resolves, to remember when the set qualifies.
     std::array<TextureSetEntry, TextureSet::MaxImages> resolved{};
-    bool set_ok = set_slot != nullptr;
+    bool set_ok = (set_key != 0);
     // SampleSceneProxies: bindings that may read a reduced scene proxy instead of the native
     // image (normalized sampling only; see Shader::ImageResource::needs_native).
     boost::container::small_vector<bool, 16> binding_proxy_ok;
@@ -543,8 +545,25 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     }
 
     if (set_ok && image_bindings.size() == stage.images.size()) {
+        if (!set_slot) {
+            static_assert(((std::tuple_size_v<decltype(texture_sets)> / 2) &
+                           ((std::tuple_size_v<decltype(texture_sets)> / 2) - 1)) == 0);
+            auto* pair = &texture_sets[((set_key >> 1) & ((texture_sets.size() / 2) - 1)) * 2];
+            TextureSet& victim =
+                pair[0].key == 0
+                    ? pair[0]
+                    : (pair[1].key == 0 ? pair[1]
+                                        : (pair[0].last_use <= pair[1].last_use ? pair[0] : pair[1]));
+            ++texture_set_why[victim.key != 0 ? 0 : 3];
+            ++texture_set_misses;
+            victim.key = set_key;
+            victim.stage = &stage;
+            std::copy_n(prepared->image_hashes, stage.images.size(), victim.hashes.begin());
+            set_slot = &victim;
+        }
         // Remember the set: the same T#s resolve the same way while no image is (un)registered,
         // or across unrelated streaming registrations when all_direct_immutable holds.
+        set_slot->last_use = ++texture_set_use_counter;
         set_slot->generation = texture_cache.RegistryGeneration();
         set_slot->scene_generation = scene_targets->Generation();
         set_slot->count = static_cast<u32>(stage.images.size());
@@ -565,6 +584,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         set_slot->all_direct_immutable = all_imm;
     } else if (set_slot) {
         set_slot->key = 0;
+        set_slot->last_use = 0;
+        set_slot->count = 0;
         set_slot->native_count = 0;
         set_slot->valid_entries = 0;
         set_slot->all_direct_immutable = false;
@@ -727,7 +748,9 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
 }
 
 bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
-                                     u32 first_image_idx, bool& barrier, TextureSet*& slot) {
+                                     u32 first_image_idx, bool& barrier, TextureSet*& slot,
+                                     u64& out_key) {
+    out_key = 0;
     const u32 count = static_cast<u32>(stage.images.size());
     if (!prepared || count == 0 || count > TextureSet::MaxImages ||
         BbToggle::Disabled(BbToggle::TextureSetMemo) || FrameCapture::Active()) {
@@ -739,7 +762,11 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
                                    reinterpret_cast<u64>(&stage)) |
               1ULL;
     }
-    auto* pair = &texture_sets[(key % (texture_sets.size() / 2)) * 2];
+    static_assert(((std::tuple_size_v<decltype(texture_sets)> / 2) &
+                   ((std::tuple_size_v<decltype(texture_sets)> / 2) - 1)) == 0);
+    // `key` always has bit 0 forced to 1 (`| 1ULL`), so shift right by 1 before masking so all
+    // 8192 buckets (16384 ways) are utilized instead of only odd buckets.
+    auto* pair = &texture_sets[((key >> 1) & ((texture_sets.size() / 2) - 1)) * 2];
     const u64 generation = texture_cache.RegistryGeneration();
     const u64 scene_gen = scene_targets->Generation();
 
@@ -762,21 +789,14 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
                 return false;
             }
         }
-        TextureSet& victim = pair[0].last_use <= pair[1].last_use ? pair[0] : pair[1];
-        ++texture_set_why[victim.key != 0 ? 0 : 3];
-        ++texture_set_misses;
-        victim.key = key;
-        victim.stage = &stage;
-        victim.count = 0;
-        victim.valid_entries = 0;
-        victim.generation = ~0ull;
-        victim.all_direct_immutable = false;
-        victim.last_use = ++texture_set_use_counter;
-        std::copy_n(prepared->image_hashes, count, victim.hashes.begin());
-        slot = &victim;
+        // Defer victim allocation until BindTextures confirms `set_ok` so uncacheable draws
+        // (prompt icons/atlas, feedback targets, mip arrays) never evict live cached texture sets.
+        out_key = key;
+        slot = nullptr;
         return false;
     }
 
+    out_key = key;
     TextureSet& set = *matched;
     set.last_use = ++texture_set_use_counter;
     slot = &set;

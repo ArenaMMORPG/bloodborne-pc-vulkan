@@ -197,6 +197,8 @@ public:
     void DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value);
     void DirectClearColorImage(const DirectClearColorArgs& args);
     void DirectCopyTextureRegion(const DirectCopyTextureRegionArgs& args);
+    void FlushPendingTextureRegionCopies();
+    [[nodiscard]] bool NextPipePacketIsTextureRegionCopy() const noexcept;
     void DirectDecompressDepth(const DirectDecompressDepthArgs& args);
     void DirectEliminateFastClear(const DirectEliminateFastClearArgs& args);
     void DirectResolveColor(const DirectResolveColorArgs& args);
@@ -612,7 +614,8 @@ private:
     std::array<u64, 4> texture_set_why{}; ///< misses: other key, generation, image check, new
     /// Returns true when the stage's images were bound from the memo.
     bool BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
-                             u32 first_image_idx, bool& barrier, TextureSet*& slot);
+                             u32 first_image_idx, bool& barrier, TextureSet*& slot, u64& out_key);
+    boost::container::small_vector<DirectCopyTextureRegionArgs, 16> pending_tex_copies;
     /// The prepared sharps of `stage` in the current prepared draw, if they fit it.
     const PreparedStage* FindPreparedStage(const Shader::Info& stage) const;
     /// Whether the helper may bind textures for this pipeline at all (fixed descriptor layout,

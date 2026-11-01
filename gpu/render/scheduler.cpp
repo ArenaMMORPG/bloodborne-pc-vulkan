@@ -122,10 +122,11 @@ Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
         record_chunk = AcquireChunk();
         ordered_chunk = AcquireChunk();
         // G3.1: After N3.2 shrank DrawRecord closures from 712 B to 24 B, a full 2,180-draw frame
-        // totals ~85-100 KiB of closures. Segments of 16 KiB (~350 draws, cut strictly between
-        // render passes in MaybeSplit) balance work evenly across all 3 bb:VkRecorder threads.
+        // With compact 24 B draw closures (N3.2+), a ~2200-draw frame across 2 submissions
+        // totals ~85-100 KiB of closures. Segments of 48 KiB (cut strictly between render passes
+        // in MaybeSplit) keep ~1.4 cmdbufs/submission without excessive descriptor epoch resets.
         const char* segment_kb = std::getenv("BB_VK_SEGMENT_KB");
-        split_bytes = size_t(segment_kb ? std::max(1, std::atoi(segment_kb)) : 16) * 1024;
+        split_bytes = size_t(segment_kb ? std::max(1, std::atoi(segment_kb)) : 48) * 1024;
         const u32 count = RecordingThreadCount();
         for (u32 i = 0; i < count; ++i) {
             auto worker = std::make_unique<Worker>();
@@ -537,8 +538,8 @@ void Scheduler::KickRecording(bool force) {
     if (!force) {
         MaybeSplit();
     }
-    // Batches of ~12 KiB stream promptly to the active worker with compact 24 B draw closures.
-    if (!force && full_chunks.empty() && CurrentChunk().Size() < 12 * 1024) {
+    // Batches of ~16 KiB stream promptly to the active worker with compact 24 B draw closures.
+    if (!force && full_chunks.empty() && CurrentChunk().Size() < 16 * 1024) {
         return;
     }
     HandOver();
@@ -1028,22 +1029,27 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     EndRendering();
     CarrySuspend(false);
     const bool is_frame_end = std::exchange(frame_end_submission, false);
-    const bool had_profile_commands = std::exchange(submission_profile_open, false);
-    GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
-    if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        if (is_frame_end) {
-            submission_in_frame = 0;
-            if (had_profile_commands) {
+    if (submission_profile_open) {
+        GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
+        if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
+            if (is_frame_end) {
+                submission_in_frame = 0;
                 profiler->Mark(0x5B319ull, [] {
                     return std::string{"(after a frame's last submission: presenter, GPU idle)"};
                 });
+            } else {
+                // Numbered within the frame: which of the frame's submissions the GPU waits after.
+                const u32 n = std::min(submission_in_frame++, 15u);
+                profiler->Mark(0x5B320ull + n, [n] {
+                    return fmt::format("(between submissions: GPU idle, after submission {})", n);
+                });
             }
-        } else if (had_profile_commands) {
-            // Numbered within the frame: which of the frame's submissions the GPU waits after.
-            const u32 n = std::min(submission_in_frame++, 15u);
-            profiler->Mark(0x5B320ull + n, [n] {
-                return fmt::format("(between submissions: GPU idle, after submission {})", n);
-            });
+        }
+        submission_profile_open = false;
+    } else {
+        GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
+        if (is_frame_end) {
+            submission_in_frame = 0;
         }
     }
     SyncRecording();
@@ -1084,22 +1090,27 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
     EndRendering();
     CarrySuspend(false);
     const bool is_frame_end = std::exchange(frame_end_submission, false);
-    const bool had_profile_commands = std::exchange(submission_profile_open, false);
-    GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
-    if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        if (is_frame_end) {
-            submission_in_frame = 0;
-            if (had_profile_commands) {
+    if (submission_profile_open) {
+        GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
+        if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
+            if (is_frame_end) {
+                submission_in_frame = 0;
                 profiler->Mark(0x5B319ull, [] {
                     return std::string{"(after a frame's last submission: presenter, GPU idle)"};
                 });
+            } else {
+                // Numbered within the frame: which of the frame's submissions the GPU waits after.
+                const u32 n = std::min(submission_in_frame++, 15u);
+                profiler->Mark(0x5B320ull + n, [n] {
+                    return fmt::format("(between submissions: GPU idle, after submission {})", n);
+                });
             }
-        } else if (had_profile_commands) {
-            // Numbered within the frame: which of the frame's submissions the GPU waits after.
-            const u32 n = std::min(submission_in_frame++, 15u);
-            profiler->Mark(0x5B320ull + n, [n] {
-                return fmt::format("(between submissions: GPU idle, after submission {})", n);
-            });
+        }
+        submission_profile_open = false;
+    } else {
+        GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
+        if (is_frame_end) {
+            submission_in_frame = 0;
         }
     }
     resume_rendering = false;

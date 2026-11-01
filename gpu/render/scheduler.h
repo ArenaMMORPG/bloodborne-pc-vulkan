@@ -168,13 +168,13 @@ public:
     /// records directly (Record() included, so callers may mix both) until the next
     /// KickRecording() or submission.
     [[gnu::noinline]] vk::CommandBuffer CommandBuffer() {
-        EnsureSubmissionProfileOpen();
         ProducerScope producer{*this, "CommandBuffer"};
         if (!workers.empty() && !direct_mode) {
             EnterDirectMode();
             direct_recordings.fetch_add(1, std::memory_order_relaxed);
             TraceDirectRecording(__builtin_return_address(0));
         }
+        EnsureSubmissionProfileOpen();
         return current_cmdbuf;
     }
 

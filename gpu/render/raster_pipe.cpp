@@ -4,6 +4,7 @@
 
 #include "render/raster_internal.h"
 #include "buffers/direct_buffers.h"
+#include "cp/cp_tasks.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
 
 extern "C" bool BbLookupMappedEnd(u64 address, uintptr_t& out_end);
@@ -1181,6 +1182,22 @@ std::array<void*, TaskKinds> task_kinds{};
 std::array<u64, TaskKinds> task_cycles{}, task_counts{};
 } // namespace
 
+bool Rasterizer::NextPipePacketIsTextureRegionCopy() const noexcept {
+    if (!DrawPipe::OnStageB() || !draw_pipe) {
+        return false;
+    }
+    u32 next_sz = 0;
+    const u8* next_pkt = draw_pipe->PeekNext(next_sz);
+    if (!next_pkt || next_sz < sizeof(TaskPacket)) {
+        return false;
+    }
+    if (*reinterpret_cast<const PacketKind*>(next_pkt) != PacketKind::Task) {
+        return false;
+    }
+    const auto& task = *reinterpret_cast<const TaskPacket*>(next_pkt);
+    return task.task == &BbCp::Tasks::DirectVkCopyTextureRegionTask;
+}
+
 void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     BB_SECTION(Packet);
     auto& self = *static_cast<Rasterizer*>(context);
@@ -1202,6 +1219,10 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         BB_SECTION(Task);
         self.buffer_cache.NewPacket();
         const auto& task = *reinterpret_cast<const TaskPacket*>(data);
+        if (!self.pending_tex_copies.empty() &&
+            task.task != &BbCp::Tasks::DirectVkCopyTextureRegionTask) [[unlikely]] {
+            self.FlushPendingTextureRegionCopies();
+        }
         if (BbSections::Enabled()) {
             const u64 t0 = __rdtsc();
             task.task(self, data + sizeof(TaskPacket));
@@ -1218,6 +1239,9 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         }
         task.task(self, data + sizeof(TaskPacket));
         return;
+    }
+    if (!self.pending_tex_copies.empty()) [[unlikely]] {
+        self.FlushPendingTextureRegionCopies();
     }
     const auto& packet = *reinterpret_cast<const DrawPacket*>(data);
     const u8* in = data + sizeof(DrawPacket);

@@ -95,6 +95,10 @@ public:
                               const VideoCore::SubresourceRange& src_range,
                               const VideoCore::SubresourceRange& dst_range,
                               const vk::ImageCopy& region);
+    void CopyImageSubresources(VideoCore::Image* src, VideoCore::Image* dst,
+                               std::span<const VideoCore::SubresourceRange> src_ranges,
+                               std::span<const VideoCore::SubresourceRange> dst_ranges,
+                               std::span<const vk::ImageCopy> regions);
     /// Between color and depth images (one of them may be multisampled depth).
     void CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst);
     void CopyDepthStencil(VideoCore::Image* src, VideoCore::Image* dst,
