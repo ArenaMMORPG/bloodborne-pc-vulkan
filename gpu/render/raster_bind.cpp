@@ -615,8 +615,6 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         }
     }
     for (auto& range : ranges) {
-        u64 size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-            range.begin, memory->ClampRangeSize(range.begin, range.end - range.begin));
         u64 min_stream_span = 1;
         for (const auto& b : guest_buffers) {
             if (b.base_address >= range.begin && b.base_address < range.end) {
@@ -625,21 +623,42 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                                   (b.base_address - range.begin) + std::max<u64>(1, b.GetStride()));
             }
         }
-        if (HasPendingHleCopies() && PendingHleCopiesConflict(range.begin, size)) {
-            FlushPendingHleCopies(*this);
-        }
+        const u64 raw_range_size = range.end - range.begin;
+        u64 size = raw_range_size;
         bool is_direct_buf = false;
-        u64 direct_size = size;
-        std::tie(range.buffer, range.offset) =
-            direct_buffers.TryResolveReadClamped(range.begin, direct_size);
-        if (range.buffer && direct_size >= min_stream_span) {
-            size = direct_size;
-            is_direct_buf = true;
-        } else {
-            range.buffer = nullptr;
-            range.offset = 0;
+        if (!HasPendingHleCopies()) {
+            u64 direct_size = raw_range_size;
             std::tie(range.buffer, range.offset) =
-                buffer_cache.ObtainBuffer(range.begin, size, false);
+                direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            if (range.buffer && direct_size >= min_stream_span) {
+                size = direct_size;
+                is_direct_buf = true;
+            } else {
+                range.buffer = nullptr;
+                range.offset = 0;
+                size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                    range.begin, memory->ClampRangeSize(range.begin, raw_range_size));
+                std::tie(range.buffer, range.offset) =
+                    buffer_cache.ObtainBuffer(range.begin, size, false);
+            }
+        } else {
+            size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                range.begin, memory->ClampRangeSize(range.begin, raw_range_size));
+            if (PendingHleCopiesConflict(range.begin, size)) {
+                FlushPendingHleCopies(*this);
+            }
+            u64 direct_size = size;
+            std::tie(range.buffer, range.offset) =
+                direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            if (range.buffer && direct_size >= min_stream_span) {
+                size = direct_size;
+                is_direct_buf = true;
+            } else {
+                range.buffer = nullptr;
+                range.offset = 0;
+                std::tie(range.buffer, range.offset) =
+                    buffer_cache.ObtainBuffer(range.begin, size, false);
+            }
         }
         if (!is_direct_buf && InPlaceReads::Enabled()) {
             InPlaceReads::Note(range.begin, size, scheduler.CurrentTick(), 0, 2);
@@ -695,10 +714,14 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     }
 
     // Each stream at its offset in its range's buffer (null for streams without memory).
+    const bool dynamic_input = instance.IsVertexInputDynamicState();
     u32 stream_with_memory = 0;
     for (const auto& buffer : guest_buffers) {
-        u64 host_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-            buffer.base_address, buffer.GetSize());
+        u64 host_size = 0;
+        if (!dynamic_input) {
+            host_size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                buffer.base_address, buffer.GetSize());
+        }
         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
             const auto range =
                 ready ? ranges.begin() + ready->range_index[stream_with_memory++]
@@ -709,14 +732,19 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             const u64 host_off = range->offset + buffer.base_address - range->begin;
             v.host_buffers.push_back(range->buffer->Handle());
             v.host_offsets.push_back(host_off);
-            const u64 buf_bytes = range->buffer->SizeBytes();
-            host_size = std::min<u64>(host_size, buf_bytes > host_off ? (buf_bytes - host_off) : 0ULL);
+            if (!dynamic_input) {
+                const u64 buf_bytes = range->buffer->SizeBytes();
+                host_size =
+                    std::min<u64>(host_size, buf_bytes > host_off ? (buf_bytes - host_off) : 0ULL);
+            }
         } else {
             v.host_buffers.push_back(VK_NULL_HANDLE);
             v.host_offsets.push_back(0);
         }
-        v.host_sizes.push_back(host_size);
-        v.host_strides.push_back(buffer.GetStride());
+        if (!dynamic_input) {
+            v.host_sizes.push_back(host_size);
+            v.host_strides.push_back(buffer.GetStride());
+        }
     }
     v.num_buffers = static_cast<u32>(guest_buffers.size());
 }
@@ -1011,44 +1039,62 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         needs_barrier |= runtime.IsGlobalAccessed(desc.is_written);
         return;
     }
-    const u64 clamped_mem_size = memory->ClampRangeSize(address, vsharp.GetSize());
-    if (clamped_mem_size != vsharp.GetSize()) {
-        LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
-                  clamped_mem_size, stage.pgm_hash);
-    }
-    u64 size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-        address, clamped_mem_size, desc.is_written);
-    if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
-        FlushPendingHleCopies(*this);
-    }
+    static const bool n1_native_bufs =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const bool can_try_direct_read =
+        !desc.is_written && (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address)));
     bool is_direct_buf = false;
     const VideoCore::Buffer* buffer = nullptr;
     u64 offset = 0;
-    static const bool n1_native_bufs =
-        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (desc.is_written) {
-        if (n1_native_bufs && !VideoCore::GuestInPlace() &&
-            !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasOverlappingImage(address, size) && !texture_cache.IsMeta(address)) {
-            std::tie(buffer, offset) =
-                direct_buffers.TryResolveWrite(address, size, /*full_overwrite=*/false,
-                                               /*track_access=*/false);
-            if (buffer) {
-                buffer->uav_written = true;
-                is_direct_buf = true;
-                buffer_cache.NoteExternalGpuModified(address, size);
-            }
-        }
-        if (!buffer) {
-            direct_buffers.OnGpuWrite(address, size);
-        }
-    } else if (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address))) {
+    u64 size = vsharp.GetSize();
+    if (can_try_direct_read && !HasPendingHleCopies()) {
         std::tie(buffer, offset) = direct_buffers.TryResolveReadClamped(address, size);
         is_direct_buf = (buffer != nullptr);
-    }
-    if (!buffer) {
-        std::tie(buffer, offset) =
-            buffer_cache.ObtainBuffer(address, size, desc.is_written, desc.is_formatted);
+        if (!buffer) {
+            const u64 clamped_mem_size = memory->ClampRangeSize(address, vsharp.GetSize());
+            if (clamped_mem_size != vsharp.GetSize()) {
+                LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
+                          clamped_mem_size, stage.pgm_hash);
+            }
+            size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, clamped_mem_size, false);
+            std::tie(buffer, offset) =
+                buffer_cache.ObtainBuffer(address, size, false, desc.is_formatted);
+        }
+    } else {
+        const u64 clamped_mem_size = memory->ClampRangeSize(address, vsharp.GetSize());
+        if (clamped_mem_size != vsharp.GetSize()) {
+            LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}", vsharp.GetSize(),
+                      clamped_mem_size, stage.pgm_hash);
+        }
+        size = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+            address, clamped_mem_size, desc.is_written);
+        if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, desc.is_written)) {
+            FlushPendingHleCopies(*this);
+        }
+        if (desc.is_written) {
+            if (n1_native_bufs && !VideoCore::GuestInPlace() &&
+                !VideoCore::BufferCache::LayerActive() &&
+                !texture_cache.HasOverlappingImage(address, size) && !texture_cache.IsMeta(address)) {
+                std::tie(buffer, offset) =
+                    direct_buffers.TryResolveWrite(address, size, /*full_overwrite=*/false,
+                                                   /*track_access=*/false);
+                if (buffer) {
+                    buffer->uav_written = true;
+                    is_direct_buf = true;
+                    buffer_cache.NoteExternalGpuModified(address, size);
+                }
+            }
+            if (!buffer) {
+                direct_buffers.OnGpuWrite(address, size);
+            }
+        } else if (can_try_direct_read) {
+            std::tie(buffer, offset) = direct_buffers.TryResolveReadClamped(address, size);
+            is_direct_buf = (buffer != nullptr);
+        }
+        if (!buffer) {
+            std::tie(buffer, offset) =
+                buffer_cache.ObtainBuffer(address, size, desc.is_written, desc.is_formatted);
+        }
     }
     if (!desc.is_written && !is_direct_buf && InPlaceReads::Enabled()) {
         InPlaceReads::Note(address, size, scheduler.CurrentTick(), stage.pgm_hash, 0);

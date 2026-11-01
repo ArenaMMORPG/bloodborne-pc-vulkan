@@ -694,7 +694,7 @@ void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_lock
         FlushInPassShadows();
     }
     if (DirectBuffers::OverlapsTransientCueHeap(device_addr, size)) {
-        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
+        DirectBuffers::NoteTransientCueWrite(device_addr, size);
     }
     if (LayerMode()) {
         LayerNoteCpuWrite(device_addr, size);
@@ -1156,6 +1156,7 @@ struct CueStreamMemoSlot {
     u32 pad = 0;
     u64 tick = ~0ULL;
     u64 inv_gen = 0;
+    u64 cue_stamp = 0;
     u64 offset = 0;
 };
 constexpr size_t kCueMemoSlots = 512;
@@ -1176,7 +1177,8 @@ bool BufferCache::HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept {
     const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
     const auto& exact = g_tls_cue_memo[CueMemoSlotIdx(device_addr, size)];
     if (exact.addr == device_addr && exact.size == size && exact.tick == cur_tick &&
-        exact.inv_gen == cur_inv) {
+        exact.inv_gen == cur_inv && exact.cue_stamp != 0 &&
+        exact.cue_stamp == DirectBuffers::ComputeTransientCueStamp(device_addr, size)) {
         return true;
     }
     VAddr blk_base = 0;
@@ -1184,7 +1186,8 @@ bool BufferCache::HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept {
     if (DirectBuffers::LookupTransientCueBlock(device_addr, size, blk_base, blk_size)) {
         const auto& blk = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
         if (blk.addr == blk_base && blk.size == blk_size && blk.tick == cur_tick &&
-            blk.inv_gen == cur_inv) {
+            blk.inv_gen == cur_inv && blk.cue_stamp != 0 &&
+            blk.cue_stamp == DirectBuffers::ComputeTransientCueStamp(blk_base, blk_size)) {
             return true;
         }
     }
@@ -1291,7 +1294,9 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         if (has_big_blk) {
             const auto& blk_memo = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
             if (blk_memo.addr == blk_base && blk_memo.size == blk_size &&
-                blk_memo.tick == cur_tick && blk_memo.inv_gen == cur_inv) {
+                blk_memo.tick == cur_tick && blk_memo.inv_gen == cur_inv &&
+                blk_memo.cue_stamp != 0 &&
+                blk_memo.cue_stamp == DirectBuffers::ComputeTransientCueStamp(blk_base, blk_size)) {
                 TraceBinding(device_addr, size, false, 3);
                 return {&stream_buffer, blk_memo.offset + (device_addr - blk_base)};
             }
@@ -1300,9 +1305,10 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         const VAddr upload_addr = (size > STREAM_THRESHOLD && has_big_blk) ? blk_base : device_addr;
         const u32 upload_size = (size > STREAM_THRESHOLD && has_big_blk) ? blk_size : size;
         const u64 sub_off = device_addr - upload_addr;
+        const u64 cur_stamp = DirectBuffers::ComputeTransientCueStamp(upload_addr, upload_size);
         auto& memo = g_tls_cue_memo[CueMemoSlotIdx(upload_addr, upload_size)];
         if (memo.addr == upload_addr && memo.size == upload_size && memo.tick == cur_tick &&
-            memo.inv_gen == cur_inv) {
+            memo.inv_gen == cur_inv && memo.cue_stamp != 0 && memo.cue_stamp == cur_stamp) {
             TraceBinding(device_addr, size, false, 3);
             return {&stream_buffer, memo.offset + sub_off};
         }
@@ -1364,7 +1370,8 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                     }
                 }
                 scheduler.NoteHostCopySource(upload_addr, upload_size);
-                memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, *offset};
+                memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, cur_stamp,
+                        *offset};
                 TraceBinding(device_addr, size, false, 3);
                 return {&stream_buffer, *offset + sub_off};
             }
@@ -1376,7 +1383,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             memory->CopySparseMemory(upload_addr, data, upload_size);
         }
         stream_buffer.Commit();
-        memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, offset};
+        memo = {upload_addr, upload_size, 0u, scheduler.CurrentTick(), cur_inv, cur_stamp, offset};
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset + sub_off};
     }
@@ -1907,6 +1914,7 @@ bool BufferCache::StageInPassCueCopies(std::span<const InPassCopySlice> slices, 
     BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
     for (const auto& s : slices) {
         const u64 stream_off = base_off + s.rel_offset;
+        DirectBuffers::NoteTransientCueWrite(s.dst_va, s.byte_size);
         gpu_modified_ranges.Add(s.dst_va, s.byte_size);
         memory_tracker->MarkRegionAsGpuModified(s.dst_va, s.byte_size);
         BindMemoSlot(s.dst_va, s.byte_size).address = 0;
@@ -3217,9 +3225,7 @@ void BufferCache::ProcessPendingAssets() {
 }
 
 void BufferCache::NoteLateCommandWrite(VAddr addr, const void* data, u64 size) {
-    if (DirectBuffers::OverlapsTransientCueHeap(addr, size)) {
-        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
-    }
+    DirectBuffers::NoteTransientCueWrite(addr, size);
     if (!GuestInPlace() || WriteTracking() || size == 0) {
         return;
     }
@@ -3425,9 +3431,7 @@ void BufferCache::DropShadows(VAddr addr, u64 size) {
 
 bool BufferCache::UpdateGpuWritten(VAddr addr, std::span<const u8> data) {
     const u64 size = data.size();
-    if (DirectBuffers::OverlapsTransientCueHeap(addr, size)) {
-        transient_invalidate_gen.fetch_add(1, std::memory_order_release);
-    }
+    DirectBuffers::NoteTransientCueWrite(addr, size);
     if (!GuestInPlace() || WriteTracking() || size == 0 || ((addr | size) & 3) != 0 ||
         IsAnyInPlace(addr, size) || !memory_tracker->IsRegionGpuModified(addr, size)) {
         return false;

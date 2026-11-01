@@ -92,6 +92,11 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept;
 /// `NO_OVERWRITE` sub-draws share one single `stream_buffer` upload instead of re-copying 3..4 MiB.
 [[nodiscard]] bool LookupTransientCueBlock(VAddr addr, u64 size, VAddr& out_block_base,
                                            u32& out_block_size) noexcept;
+/// N2.4: Lock-free 64 KiB-granule write generation directory over cueHeap so 4/8-byte EoP /
+/// WRITE_DATA status labels never falsely invalidate non-overlapping 4 MiB MapDynamicBuffer_B
+/// dynamic vertex buffer uploads in g_tls_cue_memo.
+void NoteTransientCueWrite(VAddr addr, u64 byte_size) noexcept;
+[[nodiscard]] u64 ComputeTransientCueStamp(VAddr addr, u64 byte_size) noexcept;
 
 /// N1.1 / N1.2 / N1.2c: Global 16 GiB lock-free NativeAllocDirectory ([0x1000000000, 0x1400000000)),
 /// lossless 4-byte-granule NativeOwnedBitmap (0 collisions, 0 evictions, O(1) interior-offset hit),
@@ -187,6 +192,7 @@ private:
         bool has_cpu_shadow{false};
         bool zero_known{false};
         bool gpu_written_without_shadow{false};
+        bool noted_ext_gpu_mod{false};
         u64 raw_size{0};
         u64 alloc_size{0};
         const Buffer* stream_override_buf{nullptr};
@@ -198,9 +204,21 @@ private:
     struct MruSlot {
         VAddr base_addr{0};
         u64 alloc_size{0};
-        const Buffer* buffer{nullptr};
-        u64 base_offset{0};
+        u64 erase_gen{0};
+        Entry* entry{nullptr};
     };
+
+    [[nodiscard]] static constexpr size_t MruHash(VAddr addr) noexcept {
+        return static_cast<size_t>(((addr >> 6) ^ (addr >> 15) ^ (addr >> 23)) & (kMruSlots - 1));
+    }
+    void InsertMru(VAddr query_addr, VAddr base_addr, u64 alloc_size, Entry* entry) noexcept {
+        const size_t h0 = MruHash(query_addr);
+        const size_t h1 = (h0 + 1u) & (kMruSlots - 1);
+        if (mru[h0].base_addr != base_addr || mru[h0].erase_gen != erase_generation) {
+            mru[h1] = mru[h0];
+        }
+        mru[h0] = MruSlot{base_addr, alloc_size, erase_generation, entry};
+    }
 
     void SetBitmapRange(VAddr start, VAddr end) noexcept;
     void RebuildBitmapAroundErase(VAddr erased_start, VAddr erased_end) noexcept;
@@ -215,7 +233,7 @@ private:
     Vulkan::Scheduler& scheduler;
     Vulkan::Runtime& runtime;
 
-    static constexpr size_t kMruSlots = 32;
+    static constexpr size_t kMruSlots = 16384;
     static constexpr u64 kSharedZeroBytes = 1ULL << 20; // 1 MiB shared zero-filled VkBuffer
     std::unique_ptr<Buffer> zero_buffer;
     std::map<VAddr, Entry> entries_by_base;
@@ -223,7 +241,8 @@ private:
     std::vector<Event> deferred_events;
     std::deque<std::pair<u64, std::unique_ptr<Buffer>>> retired;
     std::vector<u64> bitmap_64k;
-    std::array<MruSlot, kMruSlots> mru{};
+    std::vector<MruSlot> mru;
+    u64 erase_generation{1};
     u32 mru_hand{0};
 };
 

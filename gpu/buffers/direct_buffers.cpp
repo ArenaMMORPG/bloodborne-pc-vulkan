@@ -133,9 +133,12 @@ constexpr u64 kCuePageSize = 1ULL << kCuePageShift;
 constexpr size_t kMaxCueHeapPages = static_cast<size_t>(kMaxCueHeapBytes >> kCuePageShift);
 constexpr u64 kMinBigCueBlockBytes = 64ULL << 10;
 constexpr u64 kMaxBigCueBlockBytes = 4ULL << 20;
+constexpr u32 kCueGranuleShift = 16u; // 64 KiB granules (8192 x 4B = 32 KiB)
+constexpr size_t kMaxCueGranules = static_cast<size_t>(kMaxCueHeapBytes >> kCueGranuleShift);
 std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_end_rel{};
 std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_start_p1{};
 std::array<std::atomic<u32>, kMaxCueHeapPages> g_cue_page_big_end{};
+std::array<std::atomic<u32>, kMaxCueGranules> g_cue_granule_gen{};
 
 inline void AtomicMaxU32(std::atomic<u32>& cell, u32 val) noexcept {
     u32 cur = cell.load(std::memory_order_relaxed);
@@ -226,6 +229,11 @@ void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept {
                 cell.store(0u, std::memory_order_relaxed);
             }
         }
+        for (auto& cell : g_cue_granule_gen) {
+            if (cell.load(std::memory_order_relaxed) != 0u) {
+                cell.store(0u, std::memory_order_relaxed);
+            }
+        }
         for (auto& set : g_exact_buf_table) {
             for (auto& way : set) {
                 way.addr_and_flag.store(0ULL, std::memory_order_relaxed);
@@ -273,7 +281,57 @@ bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
     return RangesOverlap(addr, byte_size, base, end - base);
 }
 
+void NoteTransientCueWrite(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0) {
+        return;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    const VAddr max_end = std::min<VAddr>(end, base + kMaxCueHeapBytes);
+    if (addr >= max_end || addr + byte_size <= base) {
+        return;
+    }
+    const u64 rel_start = (addr > base) ? (addr - base) : 0ULL;
+    const u64 rel_end = std::min<u64>((addr + byte_size) - base, max_end - base);
+    if (rel_end <= rel_start) {
+        return;
+    }
+    const size_t first_g = static_cast<size_t>(rel_start >> kCueGranuleShift);
+    const size_t last_g = static_cast<size_t>((rel_end - 1ULL) >> kCueGranuleShift);
+    for (size_t g = first_g; g <= last_g; ++g) {
+        g_cue_granule_gen[g].fetch_add(1u, std::memory_order_release);
+    }
+}
+
+u64 ComputeTransientCueStamp(VAddr addr, u64 byte_size) noexcept {
+    if (byte_size == 0) {
+        return 0;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        return 0;
+    }
+    const VAddr base = g_cue_heap_base.load(std::memory_order_relaxed);
+    const VAddr max_end = std::min<VAddr>(end, base + kMaxCueHeapBytes);
+    if (addr < base || addr >= max_end || (max_end - addr) < byte_size) {
+        return 0;
+    }
+    const u64 rel_start = addr - base;
+    const u64 rel_end = rel_start + byte_size;
+    const size_t first_g = static_cast<size_t>(rel_start >> kCueGranuleShift);
+    const size_t last_g = static_cast<size_t>((rel_end - 1ULL) >> kCueGranuleShift);
+    u64 sum = 1ULL;
+    for (size_t g = first_g; g <= last_g; ++g) {
+        sum += g_cue_granule_gen[g].load(std::memory_order_acquire);
+    }
+    return sum;
+}
+
 void NoteTransientCueHeapGpuWrite(VAddr addr, u64 byte_size) noexcept {
+    NoteTransientCueWrite(addr, byte_size);
     if (!g_cue_heap_gpu_modified.load(std::memory_order_relaxed) &&
         OverlapsTransientCueHeap(addr, byte_size)) [[unlikely]] {
         g_cue_heap_gpu_modified.store(true, std::memory_order_release);
@@ -288,6 +346,7 @@ void NoteTransientCueHeapAlloc(VAddr addr, u64 byte_size) noexcept {
     if (byte_size == 0) {
         return;
     }
+    NoteTransientCueWrite(addr, byte_size);
     const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
     if (end == 0) {
         return;
@@ -348,6 +407,7 @@ void NoteTransientCueHeapFree(VAddr addr, u64 byte_size) noexcept {
     if (byte_size == 0) {
         return;
     }
+    NoteTransientCueWrite(addr, byte_size);
     const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
     if (end == 0) {
         return;
@@ -853,7 +913,7 @@ void DrainEvents(std::vector<Event>& out) {
 Manager::Manager(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                  Vulkan::Runtime& runtime_)
     : instance{instance_}, scheduler{scheduler_}, runtime{runtime_},
-      bitmap_64k(kBitmapWords, 0ULL) {}
+      bitmap_64k(kBitmapWords, 0ULL), mru(kMruSlots) {}
 
 Manager::~Manager() = default;
 
@@ -914,40 +974,9 @@ bool Manager::AnyBitmap64k(VAddr addr, u64 size) const noexcept {
     return false;
 }
 
-void Manager::ClearMruFor(const Buffer* buf) noexcept {
-    for (auto& slot : mru) {
-        if (slot.buffer == buf) {
-            slot = {};
-        }
-    }
-}
+void Manager::ClearMruFor(const Buffer*) noexcept {}
 
-void Manager::UpdateMruEntry(VAddr base_addr, u64 alloc_size, const Buffer* buf,
-                             u64 base_offset) noexcept {
-    if (!buf) {
-        for (auto& slot : mru) {
-            if (slot.base_addr == base_addr) {
-                slot = {};
-            }
-        }
-        return;
-    }
-    bool updated_existing = false;
-    for (auto& slot : mru) {
-        if (slot.base_addr == base_addr) {
-            slot.alloc_size = alloc_size;
-            slot.buffer = buf;
-            slot.base_offset = base_offset;
-            updated_existing = true;
-        }
-    }
-    if (!updated_existing) {
-        const size_t h0 =
-            static_cast<size_t>(((base_addr >> 12) ^ (base_addr >> 20)) & (kMruSlots - 1));
-        mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-        mru[h0] = MruSlot{base_addr, alloc_size, buf, base_offset};
-    }
-}
+void Manager::UpdateMruEntry(VAddr, u64, const Buffer*, u64) noexcept {}
 
 void Manager::ReclaimCompleted() noexcept {
     while (!retired.empty() && scheduler.IsFree(retired.front().first)) {
@@ -965,6 +994,7 @@ void Manager::RetireOverlapping(VAddr addr, u64 size, bool clear_global_owned) {
         --it;
     }
     const u64 tick = scheduler.CurrentTick();
+    bool erased_any = false;
     while (it != entries_by_base.end() && it->first < range_end) {
         const VAddr e_start = it->first;
         const u64 e_size = it->second.alloc_size;
@@ -973,8 +1003,7 @@ void Manager::RetireOverlapping(VAddr addr, u64 size, bool clear_global_owned) {
             ++it;
             continue;
         }
-        UpdateMruEntry(e_start, 0, nullptr, 0);
-        ClearMruFor(it->second.buffer.get());
+        erased_any = true;
         if (clear_global_owned) {
             ClearNativeOwnedRange(e_start, e_size);
             SetExactNativeBufferOwned(e_start, false);
@@ -982,6 +1011,9 @@ void Manager::RetireOverlapping(VAddr addr, u64 size, bool clear_global_owned) {
         retired.emplace_back(tick, std::move(it->second.buffer));
         it = entries_by_base.erase(it);
         RebuildBitmapAroundErase(e_start, e_end);
+    }
+    if (erased_any) {
+        ++erase_generation;
     }
 }
 
@@ -1040,18 +1072,33 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
 
     static const bool n1_enabled =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    const size_t h0 = static_cast<size_t>(((addr >> 12) ^ (addr >> 20)) & (kMruSlots - 1));
+    const auto resolve_entry = [&](VAddr base, Entry& e) noexcept -> std::pair<const Buffer*, u64> {
+        const u64 sub_off = addr - base;
+        const u64 rem = e.alloc_size - sub_off;
+        if (inout_size <= rem || n1_enabled) {
+            if (inout_size > rem) {
+                const u64 raw_rem = (e.raw_size > sub_off) ? (e.raw_size - sub_off) : rem;
+                inout_size = std::min<u64>(raw_rem, rem);
+            }
+            const Buffer* active_buf =
+                e.stream_override_buf
+                    ? e.stream_override_buf
+                    : (e.needs_zero_init && zero_buffer ? zero_buffer.get() : e.buffer.get());
+            const u64 active_off = e.stream_override_buf ? e.stream_override_off : 0ULL;
+            note_hit();
+            return {active_buf, active_off + sub_off};
+        }
+        return {nullptr, 0};
+    };
+
+    const size_t h0 = MruHash(addr);
     const size_t h1 = (h0 + 1u) & (kMruSlots - 1);
     for (const size_t idx : {h0, h1}) {
         const auto& slot = mru[idx];
-        if (slot.buffer && addr >= slot.base_addr && addr < slot.base_addr + slot.alloc_size) {
-            const u64 rem = slot.alloc_size - (addr - slot.base_addr);
-            if (inout_size <= rem || n1_enabled) {
-                if (inout_size > rem) {
-                    inout_size = rem;
-                }
-                note_hit();
-                return {slot.buffer, slot.base_offset + (addr - slot.base_addr)};
+        if (slot.erase_gen == erase_generation && slot.entry && addr >= slot.base_addr &&
+            addr < slot.base_addr + slot.alloc_size) {
+            if (const auto res = resolve_entry(slot.base_addr, *slot.entry); res.first) {
+                return res;
             }
         }
     }
@@ -1071,22 +1118,9 @@ std::pair<const Buffer*, u64> Manager::TryResolveReadClamped(VAddr addr,
     const VAddr base = it->first;
     const u64 alloc_size = it->second.alloc_size;
     if (addr >= base && addr < base + alloc_size) {
-        const u64 rem = alloc_size - (addr - base);
-        if (inout_size <= rem || n1_enabled) {
-            if (inout_size > rem) {
-                inout_size = rem;
-            }
-            const Buffer* active_buf = it->second.stream_override_buf
-                                           ? it->second.stream_override_buf
-                                           : (it->second.needs_zero_init && zero_buffer
-                                                  ? zero_buffer.get()
-                                                  : it->second.buffer.get());
-            const u64 active_off =
-                it->second.stream_override_buf ? it->second.stream_override_off : 0ULL;
-            mru[h1] = mru[h0];
-            mru[h0] = MruSlot{base, alloc_size, active_buf, active_off};
-            note_hit();
-            return {active_buf, active_off + (addr - base)};
+        if (const auto res = resolve_entry(base, it->second); res.first) {
+            InsertMru(addr, base, alloc_size, &it->second);
+            return res;
         }
     }
     note_miss();
@@ -1098,48 +1132,71 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, boo
     if (size == 0 || addr >= kMaxGuestVa || entries_by_base.empty() || !AnyBitmap64k(addr, size)) {
         return {nullptr, 0};
     }
-    Vulkan::DirectShaders::InvalidateRange(addr, size);
 
-    auto it = entries_by_base.upper_bound(addr);
-    if (it != entries_by_base.begin()) {
-        --it;
-        const VAddr base = it->first;
-        const u64 alloc_size = it->second.alloc_size;
-        if (addr >= base && addr + size <= base + alloc_size) {
-            if (it->second.dirty_writeback) {
-                FlushPendingWritebacks();
-                it = entries_by_base.find(base);
-                if (it == entries_by_base.end() || !it->second.buffer) {
-                    return {nullptr, 0};
-                }
-            }
-            const Buffer* dst_buf = it->second.buffer.get();
-            it->second.gpu_written_without_shadow = true;
-            it->second.has_cpu_shadow = false;
-            it->second.zero_known = false;
-            it->second.cpu_shadow.reset();
-            if (it->second.needs_zero_init) {
-                it->second.needs_zero_init = false;
-                if (!full_overwrite || addr > base || size < dst_buf->SizeBytes()) {
-                    runtime.FillBuffer(dst_buf, 0, dst_buf->SizeBytes(), 0);
-                    runtime.FlushBarriers();
-                }
-                UpdateMruEntry(base, alloc_size, dst_buf, 0);
-            }
-            const u64 dst_off = addr - base;
-            if (track_access) {
-                runtime.AccessBuffer(dst_buf, dst_off, size,
-                                     vk::PipelineStageFlagBits2::eAllGraphics |
-                                         vk::PipelineStageFlagBits2::eComputeShader,
-                                     vk::AccessFlagBits2::eShaderRead |
-                                         vk::AccessFlagBits2::eUniformRead |
-                                         vk::AccessFlagBits2::eVertexAttributeRead |
-                                         vk::AccessFlagBits2::eIndexRead |
-                                         vk::AccessFlagBits2::eIndirectCommandRead);
-            }
-            return {dst_buf, dst_off};
+    Entry* hit_entry = nullptr;
+    VAddr hit_base = 0;
+    const size_t h0 = MruHash(addr);
+    const size_t h1 = (h0 + 1u) & (kMruSlots - 1);
+    for (const size_t idx : {h0, h1}) {
+        const auto& slot = mru[idx];
+        if (slot.erase_gen == erase_generation && slot.entry && addr >= slot.base_addr &&
+            addr + size <= slot.base_addr + slot.alloc_size) {
+            hit_entry = slot.entry;
+            hit_base = slot.base_addr;
+            break;
         }
     }
+    if (!hit_entry) {
+        auto it = entries_by_base.upper_bound(addr);
+        if (it != entries_by_base.begin()) {
+            --it;
+            if (addr >= it->first && addr + size <= it->first + it->second.alloc_size) {
+                hit_entry = &it->second;
+                hit_base = it->first;
+                InsertMru(addr, hit_base, hit_entry->alloc_size, hit_entry);
+            }
+        }
+    }
+    if (hit_entry) {
+        const VAddr base = hit_base;
+        if (hit_entry->dirty_writeback) {
+            FlushPendingWritebacks();
+            auto it = entries_by_base.find(base);
+            if (it == entries_by_base.end() || !it->second.buffer) {
+                return {nullptr, 0};
+            }
+            hit_entry = &it->second;
+        }
+        if (!hit_entry->noted_ext_gpu_mod) {
+            hit_entry->noted_ext_gpu_mod = true;
+            Vulkan::DirectShaders::InvalidateRange(base, hit_entry->alloc_size);
+        }
+        const Buffer* dst_buf = hit_entry->buffer.get();
+        hit_entry->gpu_written_without_shadow = true;
+        hit_entry->has_cpu_shadow = false;
+        hit_entry->zero_known = false;
+        hit_entry->cpu_shadow.reset();
+        if (hit_entry->needs_zero_init) {
+            hit_entry->needs_zero_init = false;
+            if (!full_overwrite || addr > base || size < dst_buf->SizeBytes()) {
+                runtime.FillBuffer(dst_buf, 0, dst_buf->SizeBytes(), 0);
+                runtime.FlushBarriers();
+            }
+        }
+        const u64 dst_off = addr - base;
+        if (track_access) {
+            runtime.AccessBuffer(dst_buf, dst_off, size,
+                                 vk::PipelineStageFlagBits2::eAllGraphics |
+                                     vk::PipelineStageFlagBits2::eComputeShader,
+                                 vk::AccessFlagBits2::eShaderRead |
+                                     vk::AccessFlagBits2::eUniformRead |
+                                     vk::AccessFlagBits2::eVertexAttributeRead |
+                                     vk::AccessFlagBits2::eIndexRead |
+                                     vk::AccessFlagBits2::eIndirectCommandRead);
+        }
+        return {dst_buf, dst_off};
+    }
+    Vulkan::DirectShaders::InvalidateRange(addr, size);
     NoteTransientCueHeapGpuWrite(addr, size);
     RetireOverlapping(addr, size);
     return {nullptr, 0};
@@ -1166,6 +1223,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         bool full_overwrite{false};
         bool use_shadow{false};
         bool emit_to_stream{true};
+        Entry* entry{nullptr};
         VAddr base_va{0};
         VAddr src_va{0};
         u32 dst_in_buf_off{0};
@@ -1249,11 +1307,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             for (u32 k = 0; k < staged_count; ++k) {
                 const auto& s = staged[k];
                 if (s.use_shadow) {
-                    auto it = entries_by_base.find(s.base_va);
-                    if (it == entries_by_base.end()) {
+                    if (!s.entry) {
                         continue;
                     }
-                    auto& e = it->second;
+                    auto& e = *s.entry;
                     if (s.full_overwrite) {
                         if (!e.cpu_shadow) {
                             e.cpu_shadow = std::make_unique_for_overwrite<u8[]>(s.slice_span);
@@ -1313,14 +1370,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         for (u32 k = 0; k < staged_count; ++k) {
             const auto& s = staged[k];
             out_handled[s.region_idx] = 1u;
-            if (!s.emit_to_stream) {
+            if (!s.emit_to_stream || !s.entry) {
                 continue;
             }
-            auto it = entries_by_base.find(s.base_va);
-            if (it == entries_by_base.end()) {
-                continue;
-            }
-            auto& e = it->second;
+            auto& e = *s.entry;
             const u64 stream_off = base_off + s.rel_offset;
             e.needs_zero_init = false;
             e.stream_override_buf = &sbuf;
@@ -1329,9 +1382,11 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
                 e.dirty_writeback = true;
                 dirty_writeback_bases.push_back(s.base_va);
             }
-            UpdateMruEntry(s.base_va, e.alloc_size, &sbuf, stream_off);
-            buf_cache.NoteExternalGpuModified(s.base_va, e.alloc_size);
-            Vulkan::DirectShaders::InvalidateRange(s.base_va, e.alloc_size);
+            if (!e.noted_ext_gpu_mod) {
+                e.noted_ext_gpu_mod = true;
+                buf_cache.NoteExternalGpuModified(s.base_va, e.alloc_size);
+                Vulkan::DirectShaders::InvalidateRange(s.base_va, e.alloc_size);
+            }
         }
         staged_count = 0;
         total_bytes = 0;
@@ -1345,18 +1400,37 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
-        const u64 page = reg.dst_va >> kPageShift64K;
-        if ((bitmap_64k[page >> 6] & (1ULL << (page & 63ULL))) == 0ULL) {
-            continue;
+        VAddr base_va = 0;
+        Entry* entry_ptr = nullptr;
+        const size_t mh0 = MruHash(reg.dst_va);
+        const size_t mh1 = (mh0 + 1u) & (kMruSlots - 1);
+        for (const size_t midx : {mh0, mh1}) {
+            const auto& slot = mru[midx];
+            if (slot.erase_gen == erase_generation && slot.entry &&
+                reg.dst_va >= slot.base_addr &&
+                reg.dst_va + reg.byte_size <= slot.base_addr + slot.alloc_size) {
+                base_va = slot.base_addr;
+                entry_ptr = slot.entry;
+                break;
+            }
         }
-
-        auto it = entries_by_base.upper_bound(reg.dst_va);
-        if (it == entries_by_base.begin()) {
-            continue;
+        if (!entry_ptr) {
+            const u64 page = reg.dst_va >> kPageShift64K;
+            if ((bitmap_64k[page >> 6] & (1ULL << (page & 63ULL))) == 0ULL) {
+                continue;
+            }
+            auto it = entries_by_base.upper_bound(reg.dst_va);
+            if (it == entries_by_base.begin()) {
+                continue;
+            }
+            --it;
+            base_va = it->first;
+            entry_ptr = &it->second;
+            if (reg.dst_va >= base_va && reg.dst_va < base_va + entry_ptr->alloc_size) {
+                InsertMru(reg.dst_va, base_va, entry_ptr->alloc_size, entry_ptr);
+            }
         }
-        --it;
-        const VAddr base_va = it->first;
-        const auto& e = it->second;
+        const auto& e = *entry_ptr;
         if (!e.buffer || reg.dst_va < base_va ||
             reg.dst_va + reg.byte_size > base_va + e.alloc_size ||
             e.alloc_size > (512ULL << 10)) {
@@ -1463,6 +1537,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             .full_overwrite = full_overwrite,
             .use_shadow = use_shadow,
             .emit_to_stream = true,
+            .entry = entry_ptr,
             .base_va = base_va,
             .src_va = reg.src_va,
             .dst_in_buf_off = static_cast<u32>(dst_in_buf_off),
@@ -1750,13 +1825,10 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entry.stream_override_buf = sbuf_ptr;
                 entry.stream_override_off = stream_off;
                 entry.buffer = std::move(buf);
-                entries_by_base[ev.addr] = std::move(entry);
+                auto& inserted = (entries_by_base[ev.addr] = std::move(entry));
                 dirty_writeback_bases.push_back(ev.addr);
                 SetBitmapRange(ev.addr, ev.addr + guest_span);
-                const size_t h0 =
-                    static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
-                mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-                mru[h0] = MruSlot{ev.addr, guest_span, sbuf_ptr, stream_off};
+                InsertMru(ev.addr, ev.addr, guest_span, &inserted);
                 continue;
             }
 
@@ -1774,15 +1846,13 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entry.raw_size = raw_size;
                 entry.alloc_size = guest_span;
                 entry.buffer = std::move(buf);
-                entries_by_base[ev.addr] = std::move(entry);
-                SetBitmapRange(ev.addr, ev.addr + guest_span);
                 if (active_buf_cache) {
                     active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
+                    entry.noted_ext_gpu_mod = true;
                 }
-                const size_t h0 =
-                    static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
-                mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-                mru[h0] = MruSlot{ev.addr, guest_span, zero_buffer.get(), 0};
+                auto& inserted = (entries_by_base[ev.addr] = std::move(entry));
+                SetBitmapRange(ev.addr, ev.addr + guest_span);
+                InsertMru(ev.addr, ev.addr, guest_span, &inserted);
                 continue;
             }
             u64 stream_off = 0;
@@ -1807,16 +1877,14 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
             entry.stream_override_buf = sbuf_ptr;
             entry.stream_override_off = stream_off;
             entry.buffer = std::move(buf);
-            entries_by_base[ev.addr] = std::move(entry);
-            dirty_writeback_bases.push_back(ev.addr);
-            SetBitmapRange(ev.addr, ev.addr + guest_span);
             if (active_buf_cache) {
                 active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
+                entry.noted_ext_gpu_mod = true;
             }
-            const size_t h0 =
-                static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
-            mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-            mru[h0] = MruSlot{ev.addr, guest_span, sbuf_ptr, stream_off};
+            auto& inserted = (entries_by_base[ev.addr] = std::move(entry));
+            dirty_writeback_bases.push_back(ev.addr);
+            SetBitmapRange(ev.addr, ev.addr + guest_span);
+            InsertMru(ev.addr, ev.addr, guest_span, &inserted);
             continue;
         }
 
@@ -1825,6 +1893,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                             MemoryType::DeviceLocal, debug_name);
         bool lazy_zero = false;
+        bool noted_ext = false;
         std::unique_ptr<u8[]> init_shadow{};
         if (ev.has_initial_data != 0) {
             if (want_init_shadow) {
@@ -1863,16 +1932,17 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
             lazy_zero = true;
             if (active_buf_cache) {
                 active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
+                noted_ext = true;
             }
         } else {
             runtime.FillBuffer(buf.get(), 0, vk_alloc_size, 0);
             if (active_buf_cache) {
                 active_buf_cache->NoteExternalGpuModified(ev.addr, guest_span);
+                noted_ext = true;
             }
             needs_barrier_flush = true;
         }
 
-        const Buffer* mru_ptr = lazy_zero ? zero_buffer.get() : buf.get();
         Entry entry{};
         entry.resource_id = ev.resource_id;
         entry.bind_flags = ev.bind_flags;
@@ -1880,16 +1950,14 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         entry.needs_zero_init = lazy_zero;
         entry.has_cpu_shadow = (init_shadow != nullptr);
         entry.zero_known = (ev.has_initial_data == 0);
+        entry.noted_ext_gpu_mod = noted_ext;
         entry.raw_size = raw_size;
         entry.alloc_size = guest_span;
         entry.cpu_shadow = std::move(init_shadow);
         entry.buffer = std::move(buf);
-        entries_by_base[ev.addr] = std::move(entry);
+        auto& inserted = (entries_by_base[ev.addr] = std::move(entry));
         SetBitmapRange(ev.addr, ev.addr + guest_span);
-        const size_t h0 =
-            static_cast<size_t>(((ev.addr >> 12) ^ (ev.addr >> 20)) & (kMruSlots - 1));
-        mru[(h0 + 1u) & (kMruSlots - 1)] = mru[h0];
-        mru[h0] = MruSlot{ev.addr, guest_span, mru_ptr, 0};
+        InsertMru(ev.addr, ev.addr, guest_span, &inserted);
 
         if (uploaded_bytes_since_flush >= (32ULL << 20)) {
             FlushPendingWritebacks();
