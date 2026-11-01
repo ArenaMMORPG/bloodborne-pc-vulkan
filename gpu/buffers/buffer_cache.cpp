@@ -1160,7 +1160,15 @@ struct CueStreamMemoSlot {
     u64 offset = 0;
 };
 constexpr size_t kCueMemoSlots = 512;
-thread_local std::array<CueStreamMemoSlot, kCueMemoSlots> g_tls_cue_memo{};
+using CueMemoArray = std::array<CueStreamMemoSlot, kCueMemoSlots>;
+
+inline CueMemoArray& TlsCueMemo() {
+    thread_local std::unique_ptr<CueMemoArray> ptr;
+    if (!ptr) [[unlikely]] {
+        ptr = std::make_unique<CueMemoArray>();
+    }
+    return *ptr;
+}
 
 inline size_t CueMemoSlotIdx(VAddr base_addr, u32 block_size) noexcept {
     return static_cast<size_t>(((base_addr >> 6) ^ (base_addr >> 15) ^ (u64(block_size) << 2)) &
@@ -1173,9 +1181,10 @@ bool BufferCache::HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept {
         !DirectBuffers::IsTransientCueHeap(device_addr, size)) {
         return false;
     }
+    auto& tls_cue_memo = TlsCueMemo();
     const u64 cur_tick = scheduler.CurrentTick();
     const u64 cur_inv = transient_invalidate_gen.load(std::memory_order_acquire);
-    const auto& exact = g_tls_cue_memo[CueMemoSlotIdx(device_addr, size)];
+    const auto& exact = tls_cue_memo[CueMemoSlotIdx(device_addr, size)];
     if (exact.addr == device_addr && exact.size == size && exact.tick == cur_tick &&
         exact.inv_gen == cur_inv && exact.cue_stamp != 0 &&
         exact.cue_stamp == DirectBuffers::ComputeTransientCueStamp(device_addr, size)) {
@@ -1184,7 +1193,7 @@ bool BufferCache::HasCueStreamMemo(VAddr device_addr, u32 size) const noexcept {
     VAddr blk_base = 0;
     u32 blk_size = 0;
     if (DirectBuffers::LookupTransientCueBlock(device_addr, size, blk_base, blk_size)) {
-        const auto& blk = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
+        const auto& blk = tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
         if (blk.addr == blk_base && blk.size == blk_size && blk.tick == cur_tick &&
             blk.inv_gen == cur_inv && blk.cue_stamp != 0 &&
             blk.cue_stamp == DirectBuffers::ComputeTransientCueStamp(blk_base, blk_size)) {
@@ -1287,12 +1296,13 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         // `[blk_base, blk_base + blk_size)` has already been uploaded in this submit, serving all
         // `NO_OVERWRITE` sub-draws at `device_addr = blk_base + vb_offset` in O(1) without
         // re-copying 3..4 MiB per draw or overflowing `stream_buffer`.
+        auto& tls_cue_memo = TlsCueMemo();
         VAddr blk_base = 0;
         u32 blk_size = 0;
         const bool has_big_blk =
             DirectBuffers::LookupTransientCueBlock(device_addr, size, blk_base, blk_size);
         if (has_big_blk) {
-            const auto& blk_memo = g_tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
+            const auto& blk_memo = tls_cue_memo[CueMemoSlotIdx(blk_base, blk_size)];
             if (blk_memo.addr == blk_base && blk_memo.size == blk_size &&
                 blk_memo.tick == cur_tick && blk_memo.inv_gen == cur_inv &&
                 blk_memo.cue_stamp != 0 &&
@@ -1306,7 +1316,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         const u32 upload_size = (size > STREAM_THRESHOLD && has_big_blk) ? blk_size : size;
         const u64 sub_off = device_addr - upload_addr;
         const u64 cur_stamp = DirectBuffers::ComputeTransientCueStamp(upload_addr, upload_size);
-        auto& memo = g_tls_cue_memo[CueMemoSlotIdx(upload_addr, upload_size)];
+        auto& memo = tls_cue_memo[CueMemoSlotIdx(upload_addr, upload_size)];
         if (memo.addr == upload_addr && memo.size == upload_size && memo.tick == cur_tick &&
             memo.inv_gen == cur_inv && memo.cue_stamp != 0 && memo.cue_stamp == cur_stamp) {
             TraceBinding(device_addr, size, false, 3);

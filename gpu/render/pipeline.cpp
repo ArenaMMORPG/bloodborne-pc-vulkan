@@ -186,7 +186,18 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                                  uses_push_descriptors && scheduler.IsRendering() &&
                                  scheduler.IsRecordingDeferred();
     if (can_delta_track) {
-        static thread_local GfxPushStateTracker tracker{};
+        struct GfxPushTlsScratch {
+            GfxPushStateTracker tracker{};
+            boost::container::small_vector<vk::WriteDescriptorSet, 64> delta_writes;
+            boost::container::small_vector<vk::DescriptorImageInfo, 48> delta_images;
+            boost::container::small_vector<vk::DescriptorBufferInfo, 32> delta_buffers;
+            boost::container::small_vector<u32, 64> info_indices;
+        };
+        static thread_local std::unique_ptr<GfxPushTlsScratch> tls_scratch;
+        if (!tls_scratch) [[unlikely]] {
+            tls_scratch = std::make_unique<GfxPushTlsScratch>();
+        }
+        auto& tracker = tls_scratch->tracker;
         const u64 epoch = scheduler.DescriptorStateEpoch();
         if (!tracker.Matches(&scheduler, epoch, layout)) {
             tracker.Reset(&scheduler, epoch, layout);
@@ -217,13 +228,10 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                          within(write.pBufferInfo, write.descriptorCount, buffer_infos));
              }));
         if (bulk) {
-            static thread_local boost::container::small_vector<vk::WriteDescriptorSet, 64>
-                delta_writes;
-            static thread_local boost::container::small_vector<vk::DescriptorImageInfo, 48>
-                delta_images;
-            static thread_local boost::container::small_vector<vk::DescriptorBufferInfo, 32>
-                delta_buffers;
-            static thread_local boost::container::small_vector<u32, 64> info_indices;
+            auto& delta_writes = tls_scratch->delta_writes;
+            auto& delta_images = tls_scratch->delta_images;
+            auto& delta_buffers = tls_scratch->delta_buffers;
+            auto& info_indices = tls_scratch->info_indices;
             delta_writes.clear();
             delta_images.clear();
             delta_buffers.clear();

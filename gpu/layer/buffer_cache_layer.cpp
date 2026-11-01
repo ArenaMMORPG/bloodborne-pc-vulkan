@@ -2002,7 +2002,12 @@ bool BufferCache::LayerMirrored(VAddr addr, u64 size) {
         u64 first = 0, end = 0, version = ~0ULL;
         bool mirrored = false;
     };
-    thread_local std::array<Memo, 1024> memo{};
+    using MemoArray = std::array<Memo, 1024>;
+    thread_local std::unique_ptr<MemoArray> memo_ptr;
+    if (!memo_ptr) [[unlikely]] {
+        memo_ptr = std::make_unique<MemoArray>();
+    }
+    auto& memo = *memo_ptr;
     const u32 shift = Layer().BlockShift();
     const u64 first = addr >> shift, end = ((addr + size - 1) >> shift) + 1;
     auto& m = memo[(first ^ (end << 7)) & (memo.size() - 1)];

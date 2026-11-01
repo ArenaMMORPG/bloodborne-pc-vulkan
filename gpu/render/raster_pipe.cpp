@@ -485,7 +485,12 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                 u64 ring_pos = 0;
             };
             static constexpr size_t kRingMemoSize = 2048;
-            thread_local std::array<RingMemo, kRingMemoSize> tls_ring_memo{};
+            using RingMemoArray = std::array<RingMemo, kRingMemoSize>;
+            thread_local std::unique_ptr<RingMemoArray> tls_ring_memo_ptr;
+            if (!tls_ring_memo_ptr) [[unlikely]] {
+                tls_ring_memo_ptr = std::make_unique<RingMemoArray>();
+            }
+            auto& tls_ring_memo = *tls_ring_memo_ptr;
             const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
             const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
             const size_t slot = ((address >> 4) ^ (size << 3) ^ (address >> 16)) & (kRingMemoSize - 1);
