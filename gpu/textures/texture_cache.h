@@ -366,10 +366,14 @@ private:
         constexpr u32 Dirty = u32(ImageFlagBits::Dirty);
         constexpr u32 Registered = u32(ImageFlagBits::Registered);
         constexpr u32 SharedHot = u32(ImageFlagBits::SharedHotPage);
+        constexpr u32 DirectImm = u32(ImageFlagBits::DirectImmutable);
+        const bool lru_ok =
+            ((flags & DirectImm) != 0 && total_used_memory < trigger_gc_memory) ||
+            (image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8);
         return (flags & (Dirty | Registered)) == Registered &&
                ((flags & SharedHot) == 0 || image.hot_check_tick == gc_tick) &&
                image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
-               image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8;
+               lru_ok;
     }
     u64 CurrentTick() const;
 

@@ -490,7 +490,6 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                 u64 hash = 0;
                 u64 frame = ~0ull;
                 u64 ring_pos = 0;
-                bool has_hash = false;
             };
             static constexpr size_t kRingMemoSize = 4096;
             using RingMemoArray = std::array<RingMemo, kRingMemoSize>;
@@ -500,33 +499,16 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
             auto& tls_ring_memo = *tls_ring_memo_ptr;
             const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
+            // Hash strictly from cached DDR5 guest RAM (`address`) — NEVER read back from
+            // `constant_ring->Data(...)`, which is Write-Combined uncached PCIe ReBAR VRAM!
+            const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
             const size_t slot =
                 ((address >> 5) ^ (size << 3) ^ (address >> 16)) & (kRingMemoSize - 1);
             auto& memo = tls_ring_memo[slot];
             const u64 cur_pos = constant_ring->Position();
             if (memo.frame == cur_frame && memo.addr == address && memo.size == size &&
-                cur_pos - memo.ring_pos < (24ull << 20)) {
-                if (!memo.has_hash) {
-                    memo.hash = XXH3_64bits(constant_ring->Data(memo.offset), size);
-                    memo.has_hash = true;
-                }
-                const u64 h = XXH3_64bits(reinterpret_cast<const void*>(address), size);
-                if (memo.hash == h) {
-                    out.push_back({index, static_cast<u32>(size), memo.offset, address, 0, 0});
-                    return true;
-                }
-                const auto offset = constant_ring->Allocate(size, alignment);
-                if (!offset) {
-                    return false;
-                }
-                u8* dst = constant_ring->Data(*offset);
-                std::memcpy(dst, reinterpret_cast<const void*>(address), size);
-                constant_ring->Flush(*offset, size);
-                memo.offset = static_cast<u32>(*offset);
-                memo.hash = h;
-                memo.ring_pos = constant_ring->Position();
-                memo.has_hash = true;
-                out.push_back({index, static_cast<u32>(size), *offset, address, 0, 0});
+                memo.hash == h && cur_pos - memo.ring_pos < (24ull << 20)) {
+                out.push_back({index, static_cast<u32>(size), memo.offset, address, 0, 0});
                 return true;
             }
             const auto offset = constant_ring->Allocate(size, alignment);
@@ -539,10 +521,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             memo.addr = address;
             memo.size = static_cast<u32>(size);
             memo.offset = static_cast<u32>(*offset);
-            memo.hash = 0;
+            memo.hash = h;
             memo.frame = cur_frame;
             memo.ring_pos = constant_ring->Position();
-            memo.has_hash = false;
             out.push_back({index, static_cast<u32>(size), *offset, address, 0, 0});
             return true;
         }
