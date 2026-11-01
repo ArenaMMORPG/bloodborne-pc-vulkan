@@ -365,35 +365,41 @@ void Display::VblankThread(std::stop_token stop) {
     Common::AccurateTimer timer{vblank_period};
 
     // A frame limit (EmulatorSettings::GetFrameLimit): a flip waits for its slot; slots advance
-    // by one period (no drift) and never lag more than one behind. When BbFrameRate::Unlocked()
-    // already paces Main to BB_FPS_LIMIT / SetLimit(), skip redundant VideoOut throttling so two
-    // asynchronous clocks do not beat against each other.
+    // by one period (no drift) and never lag more than one behind. VblankThread spawns during
+    // bbgpu_init BEFORE bbgpu_patch_image installs BbFrameRate hooks, so BbFrameRate::Unlocked()
+    // must be queried dynamically inside the loop rather than cached at thread start.
     const u32 configured_limit = EmulatorSettings.GetFrameLimit();
-    const bool guest_paced = BbFrameRate::CleanPacerEnabled() && BbFrameRate::Unlocked();
-    const u32 frame_limit = guest_paced ? 0u : configured_limit;
-    const auto frame_period = frame_limit ? std::chrono::nanoseconds(1'000'000'000 / frame_limit)
-                                          : std::chrono::nanoseconds(0);
+    const bool clean_pacer = BbFrameRate::CleanPacerEnabled();
+    const auto configured_period = configured_limit
+                                       ? std::chrono::nanoseconds(1'000'000'000 / configured_limit)
+                                       : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
     std::printf("VideoOut: vblank %u Hz, frame limit %u FPS%s\n",
                 EmulatorSettings.GetVblankFrequency(), configured_limit,
-                (guest_paced && configured_limit) ? " (paced on Main)" : "");
+                (clean_pacer && configured_limit) ? " (deferred to Main once unlocked)" : "");
     // With a frame limit or the uncapped presets a flip is shown as soon as it arrives (and its
     // slot allows), between vblanks, instead of at the next vblank.
-    const bool immediate_flips =
-        configured_limit != 0 || EmulatorSettings.IsUncappedVblank() || guest_paced;
-    const auto flip = [&](const Request& request, std::chrono::steady_clock::time_point now) {
-        if (frame_limit) {
-            next_flip = std::max(next_flip + frame_period, now - frame_period);
-        }
-        Flip(request);
-    };
+    const bool base_immediate_flips =
+        configured_limit != 0 || EmulatorSettings.IsUncappedVblank();
 
     Port& port = main_port;
     while (!stop.stop_requested()) {
+        const bool guest_paced = clean_pacer && BbFrameRate::Unlocked();
+        const bool throttle_flips = configured_limit != 0 && !guest_paced;
+        const bool immediate_flips = base_immediate_flips || guest_paced;
+        const auto flip = [&](const Request& request, std::chrono::steady_clock::time_point now) {
+            if (throttle_flips) {
+                next_flip = std::max(next_flip + configured_period, now - configured_period);
+            } else {
+                next_flip = now;
+            }
+            Flip(request);
+        };
+
         timer.Start();
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
         const auto now = std::chrono::steady_clock::now();
-        if ((!frame_limit || now >= next_flip) &&
+        if ((!throttle_flips || now >= next_flip) &&
             port.vblank_status.count % u64(port.flip_rate + 1) == 0) {
             Request request;
             if (TakeRequest(request)) {
@@ -424,7 +430,7 @@ void Display::VblankThread(std::stop_token stop) {
                     break;
                 }
             }
-            if (std::chrono::steady_clock::now() < next_flip) {
+            if (throttle_flips && std::chrono::steady_clock::now() < next_flip) {
                 if (next_flip >= tick_deadline) {
                     break;
                 }
