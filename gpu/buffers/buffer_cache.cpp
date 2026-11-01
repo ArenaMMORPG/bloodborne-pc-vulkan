@@ -1323,17 +1323,28 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 Buffer* const sbuf = &stream_buffer;
                 Core::MemoryManager* const mem = memory;
                 const bool precise = precise_readbacks;
-                if (upload_size <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
-                    scheduler.RecordHostCopy(
-                        [upload_addr, dst, upload_size, flush_off, sbuf, mem, precise] {
-                            if (!precise) {
-                                std::memcpy(dst, reinterpret_cast<const void*>(upload_addr),
-                                            upload_size);
-                            } else {
-                                mem->CopySparseMemory(upload_addr, dst, upload_size);
-                            }
-                            sbuf->Flush(flush_off, upload_size);
-                        });
+                static const bool n1_native_buf =
+                    gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+                const u32 inline_copy_cap = n1_native_buf ? 4_MB : 256_KB;
+                if (upload_size <= inline_copy_cap &&
+                    !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+                    constexpr u32 kOrderedChunk = 1_MB;
+                    for (u32 rel = 0; rel < upload_size; rel += kOrderedChunk) {
+                        const u32 chunk = std::min<u32>(kOrderedChunk, upload_size - rel);
+                        const VAddr src_chunk = upload_addr + rel;
+                        u8* const dst_chunk = dst + rel;
+                        const u64 f_off = flush_off + rel;
+                        scheduler.RecordHostCopy(
+                            [src_chunk, dst_chunk, chunk, f_off, sbuf, mem, precise] {
+                                if (!precise) {
+                                    std::memcpy(dst_chunk, reinterpret_cast<const void*>(src_chunk),
+                                                chunk);
+                                } else {
+                                    mem->CopySparseMemory(src_chunk, dst_chunk, chunk);
+                                }
+                                sbuf->Flush(f_off, chunk);
+                            });
+                    }
                 } else {
                     constexpr u32 kChunk = 1_MB;
                     for (u32 rel = 0; rel < upload_size; rel += kChunk) {
@@ -1741,7 +1752,10 @@ std::pair<const Buffer*, u64> BufferCache::StageTransientHostBatch(
         host_ranges.emplace_back(s.src_va, s.byte_size);
     }
 
-    if (total_bytes <= 256_KB && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
+    static const bool n1_native_buf =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const u64 inline_copy_cap = n1_native_buf ? 4_MB : 256_KB;
+    if (total_bytes <= inline_copy_cap && !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
         // NOTE: RecordHostCopy pushes into OrderedChunk() (which runs AFTER CurrentChunk() has
         // finished and been recycled), so slices must be captured by value inside OrderedChunk()
         // rather than via RecordData() (which allocates inside CurrentChunk()).

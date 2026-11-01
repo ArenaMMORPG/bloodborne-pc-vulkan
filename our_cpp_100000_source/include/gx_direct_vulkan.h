@@ -666,6 +666,12 @@ enum class Op : uint32_t {
     TimestampQuery           = 24u,
 };
 
+// Tag stored in `CopyRegion::reserved` / `CopyRecord::reserved` when the C++20 engine itself
+// populated `src_va` via CPU `memcpy` / `MapDynamicBuffer_B` / `StagingPool_Suballocate64K`,
+// allowing `StageNativeCpuCopyBatch` & `DirectCopyBuffers` to bypass false-positive 4 KiB-page
+// `IsRegionGpuModified` flags on shared `cueHeap` / `dcbHeap` pages.
+inline constexpr uint32_t kCopyFlagKnownCpuSource = 0x43505531u; // 'CPU1'
+
 struct CopyRegion {
     uint64_t dst_va;
     uint64_t src_va;
@@ -825,7 +831,11 @@ inline bool EmitCopyBufferBatch(void* dcb_raw, const CopyRegion* regions, uint32
     return true;
 }
 
-inline bool EmitCopyBuffer(void* dcb_raw, uint64_t dst_va, uint64_t src_va, uint64_t byte_size) noexcept {
+inline bool EmitCopyBuffer(void* dcb_raw,
+                           uint64_t dst_va,
+                           uint64_t src_va,
+                           uint64_t byte_size,
+                           uint32_t flags = 0u) noexcept {
     if (!dcb_raw || !dst_va || !src_va || byte_size == 0ULL) {
         return true;
     }
@@ -833,7 +843,7 @@ inline bool EmitCopyBuffer(void* dcb_raw, uint64_t dst_va, uint64_t src_va, uint
     constexpr uint64_t kMaxChunk = 0x10000000ULL;
     while (byte_size != 0ULL) {
         const uint32_t chunk = (byte_size > kMaxChunk) ? static_cast<uint32_t>(kMaxChunk) : static_cast<uint32_t>(byte_size);
-        const CopyRegion reg{dst_va, src_va, chunk, 0u};
+        const CopyRegion reg{dst_va, src_va, chunk, flags};
         if (!EmitCopyBufferBatch(dcb_raw, &reg, 1u)) {
             return false;
         }
@@ -842,6 +852,13 @@ inline bool EmitCopyBuffer(void* dcb_raw, uint64_t dst_va, uint64_t src_va, uint
         byte_size -= chunk;
     }
     return true;
+}
+
+inline bool EmitCopyBufferFromCpu(void* dcb_raw,
+                                  uint64_t dst_va,
+                                  uint64_t src_va,
+                                  uint64_t byte_size) noexcept {
+    return EmitCopyBuffer(dcb_raw, dst_va, src_va, byte_size, kCopyFlagKnownCpuSource);
 }
 
 inline bool EmitFillBuffer(void* dcb_raw, uint64_t dst_va, uint64_t byte_size, uint32_t fill_value) noexcept {

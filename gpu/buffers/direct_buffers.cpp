@@ -1158,7 +1158,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         return;
     }
 
-    static constexpr u64 kMaxCpuShadowBytes = 256ULL << 10; // 256 KiB CPU shadow cap
+    static constexpr u64 kMaxCpuShadowBytes = 512ULL << 10; // 512 KiB CPU shadow cap
 
     struct StagedSlice {
         u32 region_idx{0};
@@ -1410,9 +1410,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
+        const bool known_cpu_src = (reg.flags == gx_direct_vk::kCopyFlagKnownCpuSource);
         const bool cue_src =
             IsTransientCueHeap(reg.src_va, reg.byte_size) &&
-            (!IsCueHeapEverGpuModified() ||
+            (known_cpu_src || !IsCueHeapEverGpuModified() ||
              !buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size));
         uintptr_t mapped_end = 0;
         const bool fast_mapped =
@@ -1421,7 +1422,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         if (!cue_src) {
             if ((!fast_mapped &&
                  memory->ClampRangeSize(reg.src_va, reg.byte_size) != reg.byte_size) ||
-                buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) {
+                (!known_cpu_src && buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size))) {
                 continue;
             }
         }
@@ -1680,6 +1681,11 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         if (ev.kind == EventKind::RetireRange) {
             if (ev.addr != 0 && ev.byte_size != 0) {
                 RetireOverlapping(ev.addr, ev.byte_size, /*clear_global_owned=*/false);
+                if (!OverlapsLiveEntry(ev.addr, ev.byte_size)) {
+                    if (auto* buf = g_active_buf_cache.load(std::memory_order_acquire)) {
+                        buf->ClearExternalGpuModified(ev.addr, ev.byte_size);
+                    }
+                }
             }
             continue;
         }

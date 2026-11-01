@@ -204,6 +204,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                 .dst_va = reg.dst_va,
                 .src_va = reg.src_va,
                 .byte_size = sz,
+                .flags = reg.reserved,
             };
             if (sz != 0) {
                 ++active_count;
@@ -269,6 +270,10 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
                 continue;
             }
+            const bool known_cpu_src =
+                (reg.reserved == gx_direct_vk::kCopyFlagKnownCpuSource) &&
+                !VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.src_va, reg.byte_size) &&
+                !direct_buffers.OverlapsLiveEntry(reg.src_va, reg.byte_size);
             const bool valid_cpu_src =
                 VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
                 (n1_native_bufs && memory->ClampRangeSize(reg.src_va, reg.byte_size) == reg.byte_size);
@@ -276,7 +281,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                 (n1_native_bufs &&
                  (VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.dst_va, reg.byte_size) ||
                   direct_buffers.OverlapsLiveEntry(reg.dst_va, reg.byte_size))) ||
-                buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
+                (!known_cpu_src && buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) ||
                 texture_cache.HasActiveImagePages(reg.dst_va, reg.byte_size) ||
                 texture_cache.IsMeta(reg.dst_va)) {
                 all_eligible = false;
@@ -334,8 +339,12 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             if (!reg.dst_va || !reg.src_va || reg.byte_size == 0) {
                 continue;
             }
+            const bool known_cpu_src =
+                (reg.reserved == gx_direct_vk::kCopyFlagKnownCpuSource) &&
+                !VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.src_va, reg.byte_size) &&
+                !direct_buffers.OverlapsLiveEntry(reg.src_va, reg.byte_size);
             if (!VideoCore::DirectBuffers::IsTransientCueHeap(reg.src_va, reg.byte_size) ||
-                buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
+                (!known_cpu_src && buffer_cache.IsRegionGpuModified(reg.src_va, reg.byte_size)) ||
                 buffer_cache.HasCueStreamMemo(reg.src_va, reg.byte_size)) {
                 continue;
             }

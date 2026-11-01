@@ -707,6 +707,7 @@ void FlushBufferUpdates_A(PendingUpdateQueueA* queue_a, GnmxContextCore* ctx) {
                         records[batch_count].dst_va = *reinterpret_cast<uint64_t*>(buf_core + 0x08);
                         records[batch_count].src_va = entry[1];
                         records[batch_count].byte_size = *reinterpret_cast<uint32_t*>(buf_core + 0x14);
+                        records[batch_count].reserved = gx_direct_vk::kCopyFlagKnownCpuSource;
                         ++batch_count;
 
                         const uint32_t mask32 = *reinterpret_cast<uint32_t*>(buf_core + 0x2c);
@@ -767,13 +768,21 @@ void FlushBufferUpdates_A(PendingUpdateQueueA* queue_a, GnmxContextCore* ctx) {
                             buf_core = reinterpret_cast<uint8_t*>(entry[0]);
                             synced = true;
                         }
-                        GpuUtil_SingleCopy_Impl(
-                            reinterpret_cast<GnmxContextCore*>(gfxc),
-                            *reinterpret_cast<uint64_t*>(buf_core + 0x08),
-                            0x6e0000u,
-                            entry[1],
-                            0x6e0000u,
-                            *reinterpret_cast<uint32_t*>(buf_core + 0x14));
+                        const uint64_t single_dst_va = *reinterpret_cast<uint64_t*>(buf_core + 0x08);
+                        const uint64_t single_src_va = entry[1];
+                        const uint32_t single_bytes = *reinterpret_cast<uint32_t*>(buf_core + 0x14);
+                        if (!(gx_direct_vk::EnabledV1Sub(gx_direct_vk::kV1Sub_SingleCopy) &&
+                              (single_bytes == 0u ||
+                               gx_direct_vk::EmitCopyBufferFromCpu(
+                                   gfxc, single_dst_va, single_src_va, single_bytes)))) {
+                            GpuUtil_SingleCopy_Impl(
+                                reinterpret_cast<GnmxContextCore*>(gfxc),
+                                single_dst_va,
+                                0x6e0000u,
+                                single_src_va,
+                                0x6e0000u,
+                                single_bytes);
+                        }
 
                         buf_core = reinterpret_cast<uint8_t*>(entry[0]);
                         const uint32_t mask32 = *reinterpret_cast<uint32_t*>(buf_core + 0x2c);
@@ -1312,6 +1321,7 @@ void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx) {
                     records[batch_count].dst_va = *reinterpret_cast<uint64_t*>(e + 0x08) & 0xFFFFFFFFFFull;
                     records[batch_count].src_va = src_va;
                     records[batch_count].byte_size = *reinterpret_cast<uint32_t*>(e + 0x00);
+                    records[batch_count].reserved = gx_direct_vk::kCopyFlagKnownCpuSource;
                     ++batch_count;
                 }
                 c = next_c;
@@ -1359,13 +1369,20 @@ void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx) {
                         reinterpret_cast<SyncTrackerFlushFn>(GX_VMA(0x026b9850ULL))(sync_tracker, gfxc);
                         synced = true;
                     }
-                    GpuUtil_SingleCopy_Impl(
-                        ctx,
-                        *reinterpret_cast<uint64_t*>(e + 0x08) & 0xFFFFFFFFFFull,
-                        0x6e0001u,
-                        src_va,
-                        0x6e0001u,
-                        *reinterpret_cast<uint32_t*>(e + 0x00));
+                    const uint64_t single_dst_va = *reinterpret_cast<uint64_t*>(e + 0x08) & 0xFFFFFFFFFFull;
+                    const uint32_t single_bytes = *reinterpret_cast<uint32_t*>(e + 0x00);
+                    if (!(gx_direct_vk::EnabledV1Sub(gx_direct_vk::kV1Sub_SingleCopy) &&
+                          (single_bytes == 0u ||
+                           gx_direct_vk::EmitCopyBufferFromCpu(
+                               ctx, single_dst_va, src_va, single_bytes)))) {
+                        GpuUtil_SingleCopy_Impl(
+                            ctx,
+                            single_dst_va,
+                            0x6e0001u,
+                            src_va,
+                            0x6e0001u,
+                            single_bytes);
+                    }
                 }
                 auto** heap_vtbl = *reinterpret_cast<void***>(dyn_heap);
                 prev_ret = reinterpret_cast<RetireNodeVtblFn>(heap_vtbl[6])(dyn_heap, &fence_ptr, node, prev_ret);

@@ -2126,7 +2126,7 @@ void CGGpuCopyGnm_UploadCpuToGpuViaComputeShader(
             }
             const uint64_t copyBytes = (sizeInBytes < reqAlloc) ? sizeInBytes : reqAlloc;
             std::memcpy(scratch, srcCpuAddr, copyBytes);
-            gx_direct_vk::EmitCopyBuffer(
+            gx_direct_vk::EmitCopyBufferFromCpu(
                 ctx,
                 reinterpret_cast<uint64_t>(dstGpuAddr),
                 reinterpret_cast<uint64_t>(scratch),

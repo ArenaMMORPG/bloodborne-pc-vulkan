@@ -547,6 +547,8 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
                                !no_stream_constram_flag && !VideoCore::BufferCache::LayerActive() &&
                                !any_cb_traced;
     const bool is_copy_shader = (stage.pgm_hash == Game::BufferCopyShader());
+    static const bool n1_native_buf =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
         if (desc.IsSpecial()) {
@@ -557,25 +559,36 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
             continue;
         }
-        static const bool n1_native_buf =
-            gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
         const Gcn::Buffer vsharp = prepared_stage ? prepared_stage->buffer_sharps[index]
                                                   : desc.GetSharp(stage);
         const VAddr address = vsharp.base_address;
-        const u64 raw_size =
-            (!desc.is_written && n1_native_buf)
-                ? VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, vsharp.GetSize())
-                : vsharp.GetSize();
-        if (address == 0 || raw_size == 0) {
+        if (address == 0) {
             continue;
         }
-        // N1.2 / N1.2c: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in dedicated
-        // VMA DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest RAM at
-        // `address` is never CPU-updated after CreateAndInitialize. Skip Stage A ConstRing memcpy
-        // entirely via the lossless 4-byte NativeOwnedBitmap (covers interior byteOffset > 0 too).
+        // N1.2 / N1.2c / N3.1: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in
+        // dedicated VMA DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest
+        // RAM at `address` is never CPU-updated after CreateAndInitialize. Short-circuit via the
+        // lossless 4-byte NativeOwnedBitmap BEFORE vsharp.GetSize() and BEFORE probing the 4 MiB
+        // Murmur3 ExactBufferTable (`ClampNativeGpuReadSize`), eliminating ~50,000 L2/L3 cache
+        // misses per frame (~1.25 ms Stage A ConstRing spin for 0 copied bytes).
         if (!desc.is_written && n1_native_buf &&
-            (VideoCore::DirectBuffers::IsNativeOwnedAddress(address) ||
-             VideoCore::DirectBuffers::OverlapsNativeOwnedRange(address, raw_size))) {
+            VideoCore::DirectBuffers::IsNativeOwnedAddress(address)) {
+            continue;
+        }
+        const u64 unclamped_size = vsharp.GetSize();
+        if (unclamped_size == 0) {
+            continue;
+        }
+        const u64 raw_size =
+            (!desc.is_written && n1_native_buf &&
+             unclamped_size > VideoCore::BufferCache::STREAM_THRESHOLD)
+                ? VideoCore::DirectBuffers::ClampNativeGpuReadSize(address, unclamped_size)
+                : unclamped_size;
+        if (raw_size == 0) {
+            continue;
+        }
+        if (!desc.is_written && n1_native_buf &&
+            VideoCore::DirectBuffers::OverlapsNativeOwnedRange(address, raw_size)) {
             continue;
         }
         if (!desc.is_written && stage_a_bypass) {
@@ -967,6 +980,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     // replaced them by then: depth of field drew its passes with another draw's vertices (a
     // flipped copy of the scene, streaks and blocks in the sky; issue #44). The streams' data and
     // the index buffer are still read there: a DumpConstRam over them waits for this packet.
+    static const bool n1_native_post =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const bool fast_native_post_skip =
+        n1_native_post && FastNonCeRamSkip() && !BbCeStats::Enabled();
     thread_local boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS> vsharps;
     vsharps.clear();
     if (pipeline && !pipeline->IsCompute()) {
@@ -984,6 +1001,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             if (ready) {
                 for (u32 i = 0; i < ready->num_ranges; ++i) {
                     const auto& r = ready->ranges[i];
+                    if (fast_native_post_skip &&
+                        VideoCore::DirectBuffers::IsNativeOwnedAddress(r.base)) {
+                        continue;
+                    }
                     note_stage_b_read(r.base, r.end - r.base);
                 }
             } else {
@@ -992,6 +1013,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                     const auto buffer = attrib.GetSharp(vs);
                     vsharps.push_back(buffer);
                     if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                        if (fast_native_post_skip &&
+                            VideoCore::DirectBuffers::IsNativeOwnedAddress(buffer.base_address)) {
+                            continue;
+                        }
                         const u64 vb_bytes = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
                             buffer.base_address, buffer.GetSize());
                         if (BbCeStats::Enabled()) {
@@ -1012,7 +1037,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             if (BbCeStats::Enabled()) {
                 BbCeStats::Check(BbCeStats::Index, index_address, index_bytes);
             }
-            note_stage_b_read(index_address, index_bytes);
+            if (!(fast_native_post_skip &&
+                  VideoCore::DirectBuffers::IsNativeOwnedAddress(index_address))) {
+                note_stage_b_read(index_address, index_bytes);
+            }
         }
     }
     size += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));

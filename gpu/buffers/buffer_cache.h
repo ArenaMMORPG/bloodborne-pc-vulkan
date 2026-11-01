@@ -188,6 +188,9 @@ public:
     [[nodiscard]] bool StageInPassCueCopies(std::span<const InPassCopySlice> slices,
                                             u64 total_bytes);
     void FlushInPassShadows();
+    [[nodiscard]] bool HasPendingInPassShadows() const noexcept {
+        return !inpass_shadows.empty();
+    }
     [[nodiscard]] bool OverlapsInPassShadow(VAddr addr, u64 size) const noexcept;
 
     void SetDirectBuffersManager(DirectBuffers::Manager* mgr) noexcept {
@@ -196,6 +199,11 @@ public:
     void NoteExternalGpuModified(VAddr addr, u64 size) noexcept {
         if (size != 0) {
             gpu_modified_ranges.Add(addr, size);
+        }
+    }
+    void ClearExternalGpuModified(VAddr addr, u64 size) noexcept {
+        if (size != 0) {
+            gpu_modified_ranges.Subtract(addr, size);
         }
     }
     void NoteTransientSubmitBoundary() noexcept {

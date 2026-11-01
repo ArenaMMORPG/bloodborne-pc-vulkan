@@ -84,6 +84,9 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // bbport: this thread joins the texture binding helper before it changes image state.
     runtime.SetImageAccessHook(&JoinBindHelper, this);
     scheduler.SetSubmitCallback([this](Vulkan::SubmitInfo& info) {
+        if (buffer_cache.HasPendingInPassShadows()) {
+            buffer_cache.FlushInPassShadows();
+        }
         direct_buffers.FlushPendingWritebacks();
         runtime.FlushBarriers();
         buffer_cache.SubmitPendingArenaBinds(info);
@@ -1369,6 +1372,9 @@ u64 Rasterizer::Flush() {
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);
     }
+    if (buffer_cache.HasPendingInPassShadows()) {
+        buffer_cache.FlushInPassShadows();
+    }
     direct_buffers.FlushPendingWritebacks();
     if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
         direct_buffers.ProcessEvents(memory);
@@ -1385,13 +1391,16 @@ u64 Rasterizer::Flush() {
 
 bool Rasterizer::HasPendingWork() {
     return scheduler.HasPendingWork() || HasPendingHleCopies() || HasUnsubmittedSignals() ||
-           direct_buffers.HasPendingWritebacks();
+           direct_buffers.HasPendingWritebacks() || buffer_cache.HasPendingInPassShadows();
 }
 
 void Rasterizer::Finish() {
     DrainDrawPipe();
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);
+    }
+    if (buffer_cache.HasPendingInPassShadows()) {
+        buffer_cache.FlushInPassShadows();
     }
     direct_buffers.FlushPendingWritebacks();
     PublishSignals();
@@ -1406,6 +1415,9 @@ void Rasterizer::ProcessDirectTextureEvents() {
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
     buffer_cache.NoteTransientSubmitBoundary();
+    if (buffer_cache.HasPendingInPassShadows()) {
+        buffer_cache.FlushInPassShadows();
+    }
     direct_buffers.FlushPendingWritebacks();
     ProcessDirectTextureEvents();
     if (fault_process_pending) {

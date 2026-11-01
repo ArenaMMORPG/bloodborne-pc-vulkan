@@ -67,6 +67,7 @@ struct NativeCopyRegion {
     VAddr dst_va{0};
     VAddr src_va{0};
     u32 byte_size{0};
+    u32 flags{0};
 };
 
 void SetActiveCaches(BufferCache* buf_cache, TextureCache* tex_cache) noexcept;
