@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,6 +41,123 @@ namespace BbVideoOut {
 bool FrameStatsEnabled() {
     static const bool enabled = EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);
     return enabled;
+}
+
+static void PrintThreadCpu(u64 frames, double window_sec) {
+    if (frames == 0 || window_sec <= 0.0) {
+        return;
+    }
+    struct PrevEntry {
+        int tid;
+        u64 runtime_ns;
+    };
+    struct Row {
+        int tid;
+        u64 delta_ns;
+        char name[24];
+    };
+    static std::vector<PrevEntry> prev;
+    static bool seeded = false;
+
+    std::vector<PrevEntry> next;
+    std::vector<Row> rows;
+    next.reserve(64);
+    rows.reserve(64);
+    const int main_tid = static_cast<int>(getpid());
+
+    if (DIR* dir = opendir("/proc/self/task")) {
+        while (const dirent* ent = readdir(dir)) {
+            if (ent->d_name[0] < '1' || ent->d_name[0] > '9') {
+                continue;
+            }
+            const int tid = std::atoi(ent->d_name);
+            if (tid <= 0) {
+                continue;
+            }
+            char path[64];
+            std::snprintf(path, sizeof(path), "/proc/self/task/%d/schedstat", tid);
+            const int fd = open(path, O_RDONLY);
+            if (fd < 0) {
+                continue;
+            }
+            char buf[64]{};
+            const ssize_t n = read(fd, buf, sizeof(buf) - 1);
+            close(fd);
+            if (n <= 0) {
+                continue;
+            }
+            const u64 runtime_ns = std::strtoull(buf, nullptr, 10);
+            next.push_back({tid, runtime_ns});
+
+            u64 old_ns = 0;
+            bool found = false;
+            for (const auto& p : prev) {
+                if (p.tid == tid) {
+                    old_ns = p.runtime_ns;
+                    found = true;
+                    break;
+                }
+            }
+            const u64 delta = found ? (runtime_ns >= old_ns ? runtime_ns - old_ns : 0)
+                                    : (seeded ? runtime_ns : 0);
+            if (!seeded || delta == 0) {
+                continue;
+            }
+            Row row{tid, delta, {}};
+            if (tid == main_tid) {
+                std::snprintf(row.name, sizeof(row.name), "Main");
+            } else {
+                std::snprintf(path, sizeof(path), "/proc/self/task/%d/comm", tid);
+                const int cfd = open(path, O_RDONLY);
+                if (cfd >= 0) {
+                    const ssize_t cn = read(cfd, row.name, sizeof(row.name) - 1);
+                    close(cfd);
+                    if (cn > 0) {
+                        for (ssize_t i = 0; i < cn; ++i) {
+                            if (row.name[i] == '\n' || row.name[i] == '\r') {
+                                row.name[i] = '\0';
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (row.name[0] == '\0') {
+                    std::snprintf(row.name, sizeof(row.name), "tid:%d", tid);
+                }
+            }
+            rows.push_back(row);
+        }
+        closedir(dir);
+    }
+
+    const bool was_seeded = seeded;
+    prev = std::move(next);
+    seeded = true;
+    if (!was_seeded || rows.empty()) {
+        return;
+    }
+
+    u64 total_ns = 0;
+    for (const auto& r : rows) {
+        total_ns += r.delta_ns;
+    }
+    std::sort(rows.begin(), rows.end(),
+              [](const Row& a, const Row& b) { return a.delta_ns > b.delta_ns; });
+
+    static const long hw_threads = std::max<long>(1, sysconf(_SC_NPROCESSORS_ONLN));
+    const double total_ms_per_frame = double(total_ns) / (double(frames) * 1e6);
+    const double pct_all_cpus = (double(total_ns) / (window_sec * 1e9 * double(hw_threads))) * 100.0;
+    std::printf("Thread CPU (ms/frame, total %.2f ms = %.1f%% of %ldT):",
+                total_ms_per_frame, pct_all_cpus, hw_threads);
+    const std::size_t show = std::min<std::size_t>(rows.size(), 14);
+    for (std::size_t i = 0; i < show; ++i) {
+        const double ms = double(rows[i].delta_ns) / (double(frames) * 1e6);
+        if (ms < 0.02 && i >= 6) {
+            break;
+        }
+        std::printf("%s %s %.2f", i ? "," : "", rows[i].name, ms);
+    }
+    std::printf("\n");
 }
 
 /// bbport: memory per statistics window: the kernel's count for the game (VRAM and GTT of its
@@ -341,6 +459,7 @@ void OnFlipStats() {
                     frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                     frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
         BbMem::FaultSites::Report();
+        PrintThreadCpu(frames, window);
         if (const u64 notes = BbStats::cpu_write_notes.exchange(0)) {
             std::printf("Write notices: %.0f/s, %.2f MB/s (libc copies over pages the GPU side "
                         "watches)\n",

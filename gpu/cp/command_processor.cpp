@@ -869,16 +869,19 @@ void CommandProcessor::SubmitGfx(std::span<const u32> dcb, std::span<const u32> 
     // BB_COPY_GPU_BUFFERS: one copy per submission, alive until it is decoded (the guest reused
     // the memory before this thread got to it: "PM4 type 0" while an area loads).
     if (force_copy || EmulatorSettings.IsCopyGpuBuffers()) {
-        auto copy = std::make_shared<SubmittedCopy>();
-        copy->data.resize(dcb.size() + ccb.size());
+        auto copy = Diagnostics::AcquireSubmittedCopy(dcb.size() + ccb.size());
         std::memcpy(copy->data.data(), dcb.data(), dcb.size_bytes());
-        std::memcpy(copy->data.data() + dcb.size(), ccb.data(), ccb.size_bytes());
+        if (!ccb.empty()) {
+            std::memcpy(copy->data.data() + dcb.size(), ccb.data(), ccb.size_bytes());
+        }
         copy->guest_dcb = force_copy ? copy->data.data() : dcb.data();
         copy->dcb_dwords = dcb.size();
         copy->guest_ccb = force_copy ? copy->data.data() + dcb.size() : ccb.data();
         copy->ccb_dwords = ccb.size();
         copy->submitted = std::chrono::steady_clock::now();
-        Diagnostics::InspectSubmittedCopy(*copy);
+        if (Diagnostics::PreflightInspectEnabled()) {
+            Diagnostics::InspectSubmittedCopy(*copy);
+        }
         Diagnostics::RememberSubmittedCopy(copy);
         dcb = {copy->data.data(), copy->dcb_dwords};
         ccb = {copy->data.data() + copy->dcb_dwords, copy->ccb_dwords};
@@ -886,9 +889,10 @@ void CommandProcessor::SubmitGfx(std::span<const u32> dcb, std::span<const u32> 
     }
     work->dcb = dcb;
     work->ccb = ccb;
-    // The draw preparation workers' copy is made before the queue lock, which this thread needs.
+    // N3.4a: Zero-copy intake sharing `work->copy`; flattening, draw counting and PreparedDraw[]
+    // allocation run asynchronously on bb:DrawScan (CCD1) off the guest GXRenderThread.
     auto* draw_prep = rasterizer ? &rasterizer->GetDrawPreparation() : nullptr;
-    auto prepared = draw_prep ? draw_prep->Build(dcb) : nullptr;
+    auto prepared = draw_prep ? draw_prep->CreateRaw(dcb, work->copy) : nullptr;
     {
         // Numbering, enqueueing and queueing under one lock keep the three orders the same.
         std::scoped_lock lock{queue.mutex};

@@ -263,7 +263,76 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
     st = DcbStats{};
 }
 
+namespace {
+struct SubmittedCopyPool {
+    static constexpr std::size_t MaxEntries = 128;
+    static constexpr std::size_t MaxReusableCapacityDwords = 512 * 1024; // 2 MiB
+    std::mutex mutex;
+    std::vector<SubmittedCopy*> free_list;
+
+    ~SubmittedCopyPool() {
+        for (SubmittedCopy* c : free_list) {
+            delete c;
+        }
+    }
+};
+
+SubmittedCopyPool& GetSubmittedCopyPool() {
+    // Intentionally leaked at process exit so surviving background/shared_ptr deleters never race
+    // static destruction order.
+    static auto* pool = new SubmittedCopyPool();
+    return *pool;
+}
+} // namespace
+
+std::shared_ptr<SubmittedCopy> AcquireSubmittedCopy(std::size_t dwords) {
+    SubmittedCopy* raw = nullptr;
+    {
+        auto& pool = GetSubmittedCopyPool();
+        std::scoped_lock lk{pool.mutex};
+        if (!pool.free_list.empty()) {
+            raw = pool.free_list.back();
+            pool.free_list.pop_back();
+        }
+    }
+    if (!raw) {
+        raw = new SubmittedCopy();
+    }
+    raw->data.resize_uninit(dwords);
+    raw->guest_dcb = nullptr;
+    raw->dcb_dwords = 0;
+    raw->guest_ccb = nullptr;
+    raw->ccb_dwords = 0;
+    raw->bad_dcb_at_submit = ~std::size_t(0);
+    raw->inspected = false;
+    return std::shared_ptr<SubmittedCopy>(raw, [](SubmittedCopy* c) {
+        if (c->data.capacity() <= SubmittedCopyPool::MaxReusableCapacityDwords) {
+            auto& pool = GetSubmittedCopyPool();
+            std::scoped_lock lk{pool.mutex};
+            if (pool.free_list.size() < SubmittedCopyPool::MaxEntries) {
+                pool.free_list.push_back(c);
+                return;
+            }
+        }
+        delete c;
+    });
+}
+
+bool PreflightInspectEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* trace = std::getenv("BB_GNM_WRITES_TRACE");
+        const char* preflight = std::getenv("BB_PM4_PREFLIGHT");
+        return (trace && trace[0] == '1') || (preflight && preflight[0] == '1');
+    }();
+    return enabled;
+}
+
 void InspectSubmittedCopy(SubmittedCopy& copy) {
+    if (copy.inspected) {
+        return;
+    }
+    copy.inspected = true;
+    copy.bad_dcb_at_submit = ~std::size_t(0);
     for (size_t at = 0; at < copy.dcb_dwords;) {
         const u32 header = copy.data[at];
         if ((header >> 30) == 2) {
@@ -285,6 +354,7 @@ void RememberSubmittedCopy(std::shared_ptr<const SubmittedCopy> copy) {
         return env && env[0] == '1';
     }();
     if (!enabled) return;
+    InspectSubmittedCopy(const_cast<SubmittedCopy&>(*copy));
     struct Kept { u64 number; std::shared_ptr<const SubmittedCopy> copy; };
     static std::mutex mutex;
     static std::deque<Kept> history;
@@ -368,6 +438,7 @@ void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq,
     }
     if (copy && depth == 0 &&
         base == reinterpret_cast<uintptr_t>(copy->data.data())) {
+        InspectSubmittedCopy(const_cast<SubmittedCopy&>(*copy));
         const size_t bad = size_t(at - copy->data.data());
         const double ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - copy->submitted).count();

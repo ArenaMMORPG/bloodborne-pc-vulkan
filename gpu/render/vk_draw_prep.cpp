@@ -66,7 +66,9 @@ void ForEachPacket(std::span<const u32> commands, Func&& func) {
 /// called, as the command processor walks them: the scanner and the workers must see every
 /// register write and draw of the stream, or their checksums never meet the GPU thread's.
 void AppendFlattened(std::vector<u32>& out, std::span<const u32> commands, u32 depth) {
-    for (size_t at = 0; at < commands.size();) {
+    size_t run_start = 0;
+    size_t at = 0;
+    while (at < commands.size()) {
         const u32* packet = commands.data() + at;
         const BbCp::Header header{*packet};
         if (header.Type() == 2) {
@@ -75,18 +77,59 @@ void AppendFlattened(std::vector<u32>& out, std::span<const u32> commands, u32 d
         }
         const size_t words = header.Type() == 3 ? header.BodyWords() + 1 : 0;
         if (!words || at + words > commands.size()) {
-            return;
+            break;
         }
         if (header.Opcode() == BbCp::Op::IndirectBuffer && depth < 4) {
+            if (at > run_start) {
+                out.insert(out.end(), commands.data() + run_start, commands.data() + at);
+            }
             const auto ib = BbCp::IndirectBuffer::From(packet + 1);
             if (ib.Address() && ib.Dwords()) {
                 AppendFlattened(out, {ib.Address(), ib.Dwords()}, depth + 1);
             }
+            at += words;
+            run_start = at;
         } else {
-            out.insert(out.end(), packet, packet + words);
+            at += words;
         }
-        at += words;
     }
+    if (at > run_start) {
+        out.insert(out.end(), commands.data() + run_start, commands.data() + at);
+    }
+}
+
+void PrepareSubmissionCommands(DrawPreparation::Submission& submission, u32 worker_count) {
+    if (submission.cmds_built) {
+        return;
+    }
+    u32 draws = 0;
+    bool has_ib = false;
+    ForEachPacket(submission.raw_commands, [&](const u32* packet) {
+        const BbCp::Header header{*packet};
+        if (header.Opcode() == BbCp::Op::IndirectBuffer) {
+            has_ib = true;
+        } else {
+            draws += IsDirectDrawPacket(packet);
+        }
+    });
+    if (!has_ib) {
+        submission.cmds_span = submission.raw_commands;
+    } else {
+        submission.commands.reserve(submission.raw_commands.size());
+        AppendFlattened(submission.commands, submission.raw_commands, 0);
+        draws = 0;
+        ForEachPacket(submission.commands, [&](const u32* packet) {
+            draws += IsDirectDrawPacket(packet);
+        });
+        submission.cmds_span = submission.commands;
+    }
+    submission.num_draws = draws;
+    submission.max_workers =
+        (draws >= 128 && worker_count >= 2) ? DrawPreparation::Submission::MaxSubmissionWorkers : 1u;
+    if (draws) {
+        submission.draws = std::make_unique<PreparedDraw[]>(draws);
+    }
+    submission.cmds_built = true;
 }
 
 u32 DefaultWorkerCount() {
@@ -333,7 +376,34 @@ std::shared_ptr<DrawPreparation::Submission> DrawPreparation::Build(
     });
     submission->max_workers =
         (submission->num_draws >= 128 && worker_count >= 2) ? Submission::MaxSubmissionWorkers : 1u;
-    submission->draws = std::make_unique<PreparedDraw[]>(submission->num_draws);
+    if (submission->num_draws) {
+        submission->draws = std::make_unique<PreparedDraw[]>(submission->num_draws);
+    }
+    submission->cmds_span = submission->commands;
+    submission->cmds_built = true;
+    return submission;
+}
+
+std::shared_ptr<DrawPreparation::Submission> DrawPreparation::CreateRaw(
+    std::span<const u32> commands, std::shared_ptr<const void> owner) {
+    if (!Enabled()) {
+        return {};
+    }
+    static const bool async_build = [] {
+        const char* env = std::getenv("BB_DRAW_PREP_ASYNC_BUILD");
+        return !env || env[0] != '0';
+    }();
+    if (!async_build) {
+        return Build(commands);
+    }
+    auto submission = std::make_shared<Submission>();
+    if (owner) {
+        submission->raw_owner = std::move(owner);
+        submission->raw_commands = commands;
+    } else {
+        submission->commands.assign(commands.begin(), commands.end());
+        submission->raw_commands = submission->commands;
+    }
     return submission;
 }
 
@@ -431,16 +501,16 @@ void DrawPreparation::EndSubmission() {
 }
 
 const PreparedDraw* DrawPreparation::NextDraw() {
-    if (!current || current_draw >= current->num_draws) {
+    if (!current) {
         return nullptr;
     }
     const u32 ord = current_draw++;
     current->gpu_ordinal.store(ord + 1, std::memory_order_relaxed);
-    const PreparedDraw* draw = &current->draws[ord];
-    if (BbToggle::Disabled(BbToggle::DrawPreparation)) {
+    if (!current->start_ready.load(std::memory_order_acquire) || ord >= current->num_draws ||
+        BbToggle::Disabled(BbToggle::DrawPreparation)) {
         return nullptr;
     }
-    return draw;
+    return &current->draws[ord];
 }
 
 void DrawPreparation::Collect() {
@@ -487,6 +557,7 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
     Gcn::RegDirty dirty;
     while (!stop.stop_requested()) {
         std::shared_ptr<Submission> submission;
+        u64 start_cs = 0;
         {
             std::unique_lock lk{mutex};
             // Woken by Enqueue (which tries `mutex` before notify), with a 500 us fallback when
@@ -512,19 +583,23 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
             }
             // Unscanned buffers are only collected by a rebase, so `next_seq` is still queued.
             submission = submissions[next_seq - submissions.front()->seq];
-            // Publish `start_checksum` immediately BEFORE scanning `commands` (~180 us on large
-            // submissions!): all earlier submissions (`< next_seq`) already have `delta` ready, so
-            // workers can start preparing `submission` at t = 0 us in parallel with the scan.
-            submission->start_checksum = checksum;
-            submission->start_ready.store(true, std::memory_order_release);
+            start_cs = checksum;
         }
+        // N3.4a: Flatten IndirectBuffers (only if present), count draws, and allocate PreparedDraw[]
+        // on bb:DrawScan (CCD1) outside `mutex` rather than on the guest GXRenderThread.
+        PrepareSubmissionCommands(*submission, worker_count);
+        // Publish `start_checksum` immediately BEFORE scanning `cmds_span` (~180 us on large
+        // submissions!): all earlier submissions (`< next_seq`) already have `delta` ready, so
+        // workers can start preparing `submission` at t = 0 us in parallel with the scan.
+        submission->start_checksum = start_cs;
+        submission->start_ready.store(true, std::memory_order_release);
         if (submission->max_workers > 1) {
             worker_cv.notify_all();
         } else {
             worker_cv.notify_one();
         }
         dirty.Clear();
-        ForEachPacket(submission->commands, [&](const u32* packet) {
+        ForEachPacket(submission->cmds_span, [&](const u32* packet) {
             BbCp::CommandProcessor::ApplyGraphicsRegisterPacket(*regs, packet, checksum, &dirty);
         });
         submission->delta.Capture(*regs, dirty);
@@ -606,7 +681,7 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
         u32 ordinal = 0;
         FlatArena arena{target->worker_flat_chunks[stripe_id]};
         bool aborted = false;
-        const auto& cmds = target->commands;
+        const auto cmds = target->cmds_span;
         for (size_t at = 0; at < cmds.size();) {
             const u32* packet = cmds.data() + at;
             const BbCp::Header header{*packet};

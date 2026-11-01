@@ -105,6 +105,10 @@ public:
     /// Game submit thread, outside the queue lock: copies and scans a top-level graphics
     /// command buffer. Null when disabled.
     std::shared_ptr<Submission> Build(std::span<const u32> commands);
+    /// N3.4a: Zero-copy intake on the game submit thread; flattening, draw-counting and
+    /// PreparedDraw[] allocation run asynchronously on bb:DrawScan (CCD1).
+    std::shared_ptr<Submission> CreateRaw(std::span<const u32> commands,
+                                          std::shared_ptr<const void> owner = {});
     /// Game submit thread, under the queue lock: hands it to the workers in submission order.
     void Enqueue(u64 seq, std::shared_ptr<Submission> submission);
 
@@ -125,10 +129,14 @@ public:
         static constexpr u32 MaxSubmissionWorkers = 2;
         static constexpr u32 StripeDraws = 32;
         u64 seq{};
+        std::shared_ptr<const void> raw_owner;
+        std::span<const u32> raw_commands;
+        std::span<const u32> cmds_span;
         std::vector<u32> commands;
         std::unique_ptr<PreparedDraw[]> draws;
         u32 num_draws{};
         u32 max_workers{1};
+        bool cmds_built{false};
         std::array<std::vector<std::unique_ptr<u32[]>>, MaxSubmissionWorkers> worker_flat_chunks;
         u64 start_checksum{}, end_checksum{}; ///< set by the scanner
         Gcn::RegDelta delta;                ///< registers written, values at the end

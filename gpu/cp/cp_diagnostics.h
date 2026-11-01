@@ -4,6 +4,7 @@
 // with their surroundings; BB_FREE_CHECK: submissions the guest changed before they were decoded.
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <span>
@@ -46,16 +47,43 @@ std::string RecentLabels(size_t count);
 /// Guest memory read through the backing view (no fault, any protection); false when unmapped.
 bool ReadGuest(const void* address, void* out, u32 bytes);
 
+/// Uninitialized word buffer for SubmittedCopy (avoids 1.2 MB/frame memset(0) before memcpy).
+struct UninitWords {
+    std::unique_ptr<u32[]> ptr;
+    std::size_t len = 0;
+    std::size_t cap = 0;
+
+    void resize_uninit(std::size_t n) {
+        if (n > cap) {
+            const std::size_t new_cap = std::max(n, cap + (cap >> 1));
+            ptr = std::make_unique_for_overwrite<u32[]>(new_cap);
+            cap = new_cap;
+        }
+        len = n;
+    }
+    [[nodiscard]] u32* data() noexcept { return ptr.get(); }
+    [[nodiscard]] const u32* data() const noexcept { return ptr.get(); }
+    [[nodiscard]] std::size_t size() const noexcept { return len; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return cap; }
+    u32& operator[](std::size_t i) noexcept { return ptr[i]; }
+    const u32& operator[](std::size_t i) const noexcept { return ptr[i]; }
+};
+
 /// A submission's command buffers as copied when submitted (BB_COPY_GPU_BUFFERS).
 struct SubmittedCopy {
-    std::vector<u32> data; ///< dcb, then ccb
+    UninitWords data; ///< dcb, then ccb
     const u32* guest_dcb{};
     std::size_t dcb_dwords{};
     const u32* guest_ccb{};
     std::size_t ccb_dwords{};
     std::chrono::steady_clock::time_point submitted;
     std::size_t bad_dcb_at_submit = ~std::size_t(0);
+    bool inspected = false;
 };
+/// Acquires a pooled SubmittedCopy sized for `dwords` without zero-filling.
+std::shared_ptr<SubmittedCopy> AcquireSubmittedCopy(std::size_t dwords);
+/// Whether eager submit-time PM4 preflight inspection is enabled.
+bool PreflightInspectEnabled() noexcept;
 /// Record whether the submitted snapshot already contains a malformed top-level packet.
 void InspectSubmittedCopy(SubmittedCopy& copy);
 /// After it was decoded: whether the guest changed its command buffers since.
