@@ -3,13 +3,16 @@
 // NoContraction: the host compiler must not fuse what GCN computed separately.
 #include "shader/backend/spirv/emit_spirv_instructions.h"
 #include "shader/backend/spirv/spirv_emit_context.h"
+#include "shader/backend/spirv/spirv_opt.h"
 
 namespace Shader::Backend::SPIRV {
 
 namespace {
 
 Id Exact(EmitContext& ctx, Id op) {
-    ctx.Decorate(op, spv::Decoration::NoContraction);
+    if (!FastFpEnabled()) {
+        ctx.Decorate(op, spv::Decoration::NoContraction);
+    }
     return op;
 }
 

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "bbport_frame_rate.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
@@ -364,16 +365,22 @@ void Display::VblankThread(std::stop_token stop) {
     Common::AccurateTimer timer{vblank_period};
 
     // A frame limit (EmulatorSettings::GetFrameLimit): a flip waits for its slot; slots advance
-    // by one period (no drift) and never lag more than one behind.
-    const u32 frame_limit = EmulatorSettings.GetFrameLimit();
+    // by one period (no drift) and never lag more than one behind. When BbFrameRate::Unlocked()
+    // already paces Main to BB_FPS_LIMIT / SetLimit(), skip redundant VideoOut throttling so two
+    // asynchronous clocks do not beat against each other.
+    const u32 configured_limit = EmulatorSettings.GetFrameLimit();
+    const bool guest_paced = BbFrameRate::CleanPacerEnabled() && BbFrameRate::Unlocked();
+    const u32 frame_limit = guest_paced ? 0u : configured_limit;
     const auto frame_period = frame_limit ? std::chrono::nanoseconds(1'000'000'000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
-    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS\n",
-                EmulatorSettings.GetVblankFrequency(), frame_limit);
+    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS%s\n",
+                EmulatorSettings.GetVblankFrequency(), configured_limit,
+                (guest_paced && configured_limit) ? " (paced on Main)" : "");
     // With a frame limit or the uncapped presets a flip is shown as soon as it arrives (and its
     // slot allows), between vblanks, instead of at the next vblank.
-    const bool immediate_flips = frame_limit != 0 || EmulatorSettings.IsUncappedVblank();
+    const bool immediate_flips =
+        configured_limit != 0 || EmulatorSettings.IsUncappedVblank() || guest_paced;
     const auto flip = [&](const Request& request, std::chrono::steady_clock::time_point now) {
         if (frame_limit) {
             next_flip = std::max(next_flip + frame_period, now - frame_period);

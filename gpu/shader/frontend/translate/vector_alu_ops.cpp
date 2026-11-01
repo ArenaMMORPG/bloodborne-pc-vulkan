@@ -2,6 +2,10 @@
 // Vector ALU instructions with their own semantics: carries through VCC or an SGPR pair, legacy
 // float rules, 24-bit multiplies, F16 conversions with and without host F16, cube map
 // coordinates, relative VGPR addressing (M0), packing and mixed precision.
+#include <bit>
+#include <cmath>
+
+#include "shader/backend/spirv/spirv_opt.h"
 #include "shader/frontend/translate/translate.h"
 #include "shader/profile.h"
 
@@ -55,6 +59,21 @@ void Translator::V_MUL_LEGACY_F32(const GcnInst& inst) {
     const IR::F32 src0{GetSrc<IR::F32>(inst.src[0])};
     const IR::F32 src1{GetSrc<IR::F32>(inst.src[1])};
     const IR::F32 zero{ir.Imm32(0.0f)};
+    if (Shader::Backend::SPIRV::FastFpEnabled()) {
+        const bool src0_zero_imm =
+            src0.IsImmediate() && (std::bit_cast<u32>(src0.F32()) & 0x7fffffffu) == 0u;
+        const bool src1_zero_imm =
+            src1.IsImmediate() && (std::bit_cast<u32>(src1.F32()) & 0x7fffffffu) == 0u;
+        if (src0_zero_imm || src1_zero_imm) {
+            SetDst(inst.dst[0], zero);
+            return;
+        }
+        if (src0 == src1 || (src0.IsImmediate() && std::isfinite(src0.F32())) ||
+            (src1.IsImmediate() && std::isfinite(src1.F32()))) {
+            SetDst(inst.dst[0], ir.FPMul(src0, src1));
+            return;
+        }
+    }
     const IR::U1 src0_zero{ir.FPEqual(src0, zero)};
     const IR::U1 src1_zero{ir.FPEqual(src1, zero)};
     const IR::U1 either_zero{ir.LogicalOr(src0_zero, src1_zero)};

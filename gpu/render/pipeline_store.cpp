@@ -39,11 +39,15 @@ std::string BinaryName(u64 pgm_hash, size_t perm_idx) {
 }
 
 std::string OptBinaryName(u64 pgm_hash, size_t perm_idx) {
-    return fmt::format("opt1_{:#018x}_{}", pgm_hash, perm_idx);
+    const char* prefix = Shader::Backend::SPIRV::FastFpEnabled() ? "opt2" : "opt1";
+    return fmt::format("{}_{:#018x}_{}", prefix, pgm_hash, perm_idx);
 }
 
 const char* DriverCacheBlobName() noexcept {
-    return Shader::Backend::SPIRV::SpirvOptEnabled() ? "vk_driver_cache_opt1" : "vk_driver_cache";
+    if (!Shader::Backend::SPIRV::SpirvOptEnabled()) {
+        return "vk_driver_cache";
+    }
+    return Shader::Backend::SPIRV::FastFpEnabled() ? "vk_driver_cache_opt2" : "vk_driver_cache_opt1";
 }
 
 /// Pipeline entries: the version, graphics (0) or compute (1), the key, the support data.
@@ -642,12 +646,16 @@ void PipelineCache::WarmUp() {
                 ? 100.0 * (double(opt_stats.words_before) - double(opt_stats.words_after)) /
                       double(opt_stats.words_before)
                 : 0.0;
-        std::printf("[bb_vulkan] Step 5.1 SPIR-V Optimizer: upgraded %u cached modules (%llu -> "
-                    "%llu words, -%.2f%%, failed=%u) in %.1f ms\n",
-                    opt_stats.modules_optimized,
+        std::printf("[bb_vulkan] Step 5.2 SPIR-V Optimizer (FAST_FP=%d): upgraded %u cached "
+                    "modules (%llu -> %llu words, -%.2f%%, NoContract=-%llu, LegacyMulFold=%llu, "
+                    "InfNanStrip=%u, failed=%u) in %.1f ms\n",
+                    Shader::Backend::SPIRV::FastFpEnabled() ? 1 : 0, opt_stats.modules_optimized,
                     static_cast<unsigned long long>(opt_stats.words_before),
                     static_cast<unsigned long long>(opt_stats.words_after), pct,
-                    opt_stats.modules_failed, double(opt_stats.total_ns) / 1e6);
+                    static_cast<unsigned long long>(opt_stats.nocontract_stripped),
+                    static_cast<unsigned long long>(opt_stats.legacy_mul_folded),
+                    opt_stats.inf_nan_preserve_stripped, opt_stats.modules_failed,
+                    double(opt_stats.total_ns) / 1e6);
     }
 
     const u32 num_pipelines =
@@ -655,11 +663,12 @@ void PipelineCache::WarmUp() {
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("[bb_vulkan] V4.2 Prewarmed %zu graphics + %zu compute PSOs (%zu programs) across "
-                "%u threads in %.1f ms (VkPipelineCache=%s, %.2f MiB, SPIRV_OPT=%d)\n",
+                "%u threads in %.1f ms (VkPipelineCache=%s, %.2f MiB, SPIRV_OPT=%d, FAST_FP=%d)\n",
                 graphics_pipelines.size(), compute_pipelines.size(), program_cache.size(),
                 num_workers, elapsed_ms, had_driver_cache ? "HIT" : "SEEDED",
                 double(loaded_driver_bytes) / (1024.0 * 1024.0),
-                Shader::Backend::SPIRV::SpirvOptEnabled() ? 1 : 0);
+                Shader::Backend::SPIRV::SpirvOptEnabled() ? 1 : 0,
+                Shader::Backend::SPIRV::FastFpEnabled() ? 1 : 0);
     LOG_INFO(Render, "Preloaded {} pipelines ({} graphics, {} compute) in {:.1f} ms",
              num_pipelines, graphics_pipelines.size(), compute_pipelines.size(), elapsed_ms);
     if (num_total > num_pipelines) {

@@ -20,6 +20,9 @@
 #include "bbport_guest_code.h"
 
 #include <sys/mman.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <unistd.h>
 #include <algorithm>
 #include <atomic>
@@ -51,7 +54,8 @@ constexpr float ShortestFrame = 1.0f / MaxRate;
 struct alignas(64) Live {
     float dt = Frame30;               ///< the frame's time: the game steps by it
     float shortest = ShortestFrame;   ///< the pacer's frame time target
-    float pad[2] = {};
+    float spin_margin = 0.00020f;     ///< pacer usleep spin margin (200 us vs PS4's 5.0 ms)
+    float neg_spin_margin = -0.00020f;
     float decay95[4] = {0.95f, 0.95f, 0.95f, 0.95f}; ///< 0.95 per 30 FPS frame (read as four)
     float approach30 = Frame30;       ///< a 1/30 approach per 30 FPS frame
     float approach10 = 0.1f;          ///< a 0.1 approach per 30 FPS frame
@@ -66,6 +70,15 @@ std::atomic<int> live_limit{0};
 
 /// The pacer at the main loop's step (rdi: it): this frame's values.
 void PS4_SYSV_ABI FrameStep(u64 pacer) {
+#ifdef __linux__
+    if (CleanPacerEnabled()) {
+        static bool timerslack_set = false;
+        if (!timerslack_set) {
+            timerslack_set = true;
+            prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL);
+        }
+    }
+#endif
     const float measured = *reinterpret_cast<const float*>(pacer + 0x264);
     float dt = std::clamp(std::isfinite(measured) ? measured : Frame30, live->shortest, Frame30);
     // BB_FRAME_DT_SMOOTH=a (diagnostics, 0 < a < 1): the step follows the measured frame time by
@@ -237,6 +250,11 @@ bool HookPacerMode() {
     e.Bytes({0x8b, 0x00});                                             // mov eax, [rax]
     e.Bytes({0x41, 0x89, 0x44, 0x24, 0x18, 0x58});                     // mov [r12 + 0x18], eax; pop rax
     e.Bytes({0x49, 0xc7, 0x84, 0x24, 0x68, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); // mov qword [r12 + 0x268], 0
+    if (CleanPacerEnabled()) {
+        // Clear PS4's 30-FPS pure-busy-spin flag (r13b -> r8b at 0x20349cb) so 0x2034ada takes
+        // the sceKernelUsleep + 200 us precision-spin loop instead of burning Main CPU.
+        e.Bytes({0x45, 0x31, 0xed});                                   // xor r13d, r13d
+    }
     for (const u8 b : code) e.Bytes({b});
     e.JmpAbs(image_base + 0x203493d + sizeof(code));
     return Detour(0x203493d, code, sizeof(code), e);
@@ -359,13 +377,34 @@ void PatchImage(unsigned char* image, std::uint64_t) {
             std::printf("Frame rate: %#llx is not the expected code, left as it is\n", (unsigned long long)r.site);
         }
     }
+    int spin_redirected = 0;
+    if (CleanPacerEnabled()) {
+        constexpr Redirect PacerSpinRedirects[] = {
+            {0x2034b9e, 0x4929390, offsetof(Live, spin_margin)},     // 1.0 ms threshold -> 200 us
+            {0x2034ba8, 0x4929394, offsetof(Live, spin_margin)},     // 5.0 ms threshold -> 200 us
+            {0x2034bb2, 0x4929398, offsetof(Live, neg_spin_margin)}, // -5.0 ms subtract -> -200 us
+        };
+        for (const Redirect& r : PacerSpinRedirects) {
+            if (RedirectOperand(r)) {
+                ++spin_redirected;
+            }
+        }
+    }
     mprotect(stub_page, StubPageSize, PROT_READ | PROT_EXEC);
     std::printf("Frame rate: free (hooks, no patches): the game steps by each frame's time "
                 "(1/%.0f..1/30 s); %d fixed steps, %d of %zu per-frame values follow the frame's "
-                "time, the run's wall check %s\n",
-                1.0f / live->shortest, steps, redirected, std::size(Redirects),
+                "time, pacer usleep spin=%d/3, the run's wall check %s\n",
+                1.0f / live->shortest, steps, redirected, std::size(Redirects), spin_redirected,
                 run == 1 ? "by speed" : run == 2 ? "by speed (a Sprint Fix patch did it already)"
                                                  : "unchanged (not found)");
+}
+
+bool CleanPacerEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_CLEAN_PACER");
+        return !env || !*env || !(env[0] == '0' && env[1] == '\0');
+    }();
+    return enabled;
 }
 
 bool Unlocked() {

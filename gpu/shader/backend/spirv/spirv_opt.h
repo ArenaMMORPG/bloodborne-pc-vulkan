@@ -14,10 +14,18 @@ struct SpirvOptStats {
     u64 words_before = 0;
     u64 words_after = 0;
     u64 total_ns = 0;
+    u64 nocontract_stripped = 0;
+    u64 legacy_mul_folded = 0;
+    u32 inf_nan_preserve_stripped = 0;
 };
 
 /// Controlled by BB_SPIRV_OPT (default 1 = enabled, 0 = raw EmitSPIRV output).
 [[nodiscard]] bool SpirvOptEnabled() noexcept;
+
+/// Block 5, Step 5.2: Controlled by BB_SHADER_FAST_FP (default 1 = unlock hardware FFMA
+/// contraction, fold exact V_MUL_LEGACY_F32 squares/constants, and strip SignedZeroInfNanPreserve
+/// on NaN-safe modules; 0 = strict GCN float controls).
+[[nodiscard]] bool FastFpEnabled() noexcept;
 
 /// Runs SPIRV-Tools RegisterPerformancePasses() (-O) targeting Vulkan 1.3.
 /// On failure, logs a warning and leaves `spv` unmodified.

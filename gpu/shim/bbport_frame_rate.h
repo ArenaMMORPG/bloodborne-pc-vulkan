@@ -13,6 +13,9 @@ void PatchImage(unsigned char* image, std::uint64_t size);
 /// Whether the hooks run the game's frame rate: the video out then shows a frame as soon as the
 /// game submits it (the game's own flip rate asks for 30 FPS).
 bool Unlocked();
+/// Controlled by BB_CLEAN_PACER (default 1): disables PS4's 5 ms Main busy-spin and avoids
+/// redundant VideoOut double-limiting when the unlocked guest pacer already enforces BB_FPS_LIMIT.
+bool CleanPacerEnabled() noexcept;
 /// A frame rate limit while the game runs (30..480; 0: the launched mode and limit). The game's
 /// frame pacer waits for it itself. Lowers a running game to 30 FPS for what the unlocked rate
 /// breaks (the cinematic of Laurence, the optional boss: a hang above 30 FPS, as with the
