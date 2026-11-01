@@ -131,6 +131,8 @@ inline std::atomic<std::uint64_t> legacy_eop_decoded{0};
 inline std::atomic<std::uint64_t> native_buf_hits{0}, native_buf_misses{0};
 /// N2.1 Native VkImageView/VkSampler direct handle hits vs legacy T#/S# fallback resolutions.
 inline std::atomic<std::uint64_t> native_tex_hits{0}, native_tex_misses{0};
+/// N2.2 Incremental Push Descriptor slots deduplicated vs total graphics descriptor slots bound.
+inline std::atomic<std::uint64_t> desc_push_saved{0}, desc_push_total{0};
 /// sceGnmAreSubmitsAllowed calls, and those that answered no (submission lock held).
 inline std::atomic<std::uint64_t> submits_allowed_queries{0}, submits_refused{0}, submit_done_calls{0};
 /// Guest time blocked in Gnm submissions on the previous frame (submission lock or BB_SUBMIT_LOCK=frame).

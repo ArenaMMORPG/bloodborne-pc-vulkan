@@ -182,6 +182,7 @@ void Scheduler::BeginRendering(const RenderState& state) {
     EndRendering();
     CarrySuspend(false);
     is_rendering = true;
+    ++descriptor_state_epoch;
     render_state = state;
 
     // Owned by the recorded closure (it may run later, on a recording thread).
@@ -256,6 +257,7 @@ void Scheduler::EndRendering() {
     }
     CarrySuspend(true);
     is_rendering = false;
+    ++descriptor_state_epoch;
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
     CarryResume(false);
     if (has_end_rendering_work) {
@@ -548,6 +550,7 @@ void Scheduler::MaybeSplit() {
     // Everything else (pipeline, vertex and index buffers, descriptors, push constants) every
     // draw and dispatch records itself.
     dynamic_state.Invalidate();
+    ++descriptor_state_epoch;
     CarryResume(false);
 }
 
@@ -708,11 +711,13 @@ void Scheduler::EnterDirectMode() {
         direct_mode = true;
         direct_segment = true;
         dynamic_state.Invalidate();
+        ++descriptor_state_epoch;
         CarryResume(false);
         return;
     }
     SyncRecording();
     direct_mode = true;
+    ++descriptor_state_epoch;
     // The recording threads are idle: this thread may use the segment's command pool.
     auto& cmdbuf = batch->segments[current_segment];
     if (!cmdbuf) {
@@ -739,6 +744,7 @@ void Scheduler::LeaveDirectSegment() {
     segment_bytes = 0;
     active_worker.store(current_segment % workers.size(), std::memory_order_relaxed);
     dynamic_state.Invalidate();
+    ++descriptor_state_epoch;
     CarryResume(false);
 }
 
@@ -926,6 +932,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
+    ++descriptor_state_epoch;
 
 }
 

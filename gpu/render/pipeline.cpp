@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstring>
 #include <utility>
 
 #include <boost/container/small_vector.hpp>
@@ -16,6 +18,7 @@
 #include "shader/info.h"
 #include "shader/resource.h"
 #include "render/pipeline_cache.h"
+#include "shim/bbport_toggles.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
 #include "../../our_cpp_100000_source/include/gx_direct_vulkan.h"
@@ -53,6 +56,44 @@ vk::UniquePipeline CheckPipeline(Result result, bool preloading, const char* kin
                vk::to_string(result.result));
     return std::move(result.value);
 }
+
+constexpr u32 kMaxTrackedBindings = 64;
+
+struct TrackedDescSlot {
+    bool valid{false};
+    bool is_image{false};
+    vk::DescriptorType type{};
+    VkSampler sampler{VK_NULL_HANDLE};
+    VkImageView image_view{VK_NULL_HANDLE};
+    vk::ImageLayout image_layout{vk::ImageLayout::eUndefined};
+    VkBuffer buffer{VK_NULL_HANDLE};
+    vk::DeviceSize offset{0};
+    vk::DeviceSize range{0};
+};
+
+struct GfxPushStateTracker {
+    const Scheduler* scheduler{nullptr};
+    u64 epoch{0};
+    vk::PipelineLayout layout{};
+    bool has_push_data{false};
+    Shader::PushData push_data{};
+    std::array<TrackedDescSlot, kMaxTrackedBindings> slots{};
+
+    [[nodiscard]] bool Matches(const Scheduler* sched, u64 ep,
+                               vk::PipelineLayout lay) const noexcept {
+        return scheduler == sched && epoch == ep && layout == lay;
+    }
+
+    void Reset(const Scheduler* sched, u64 ep, vk::PipelineLayout lay) noexcept {
+        scheduler = sched;
+        epoch = ep;
+        layout = lay;
+        has_push_data = false;
+        for (auto& slot : slots) {
+            slot.valid = false;
+        }
+    }
+};
 
 } // namespace
 
@@ -135,6 +176,186 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
     const vk::PipelineLayout layout = *pipeline_layout;
     static const bool fast_bind =
         gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
+    static const bool n2_delta_desc =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);
+    const auto within = [](const auto* p, u32 count, const auto& array) {
+        return p >= array.data() && p + count <= array.data() + array.size();
+    };
+
+    const bool can_delta_track = n2_delta_desc && fast_bind && !IsCompute() &&
+                                 uses_push_descriptors && scheduler.IsRendering() &&
+                                 scheduler.IsRecordingDeferred();
+    if (can_delta_track) {
+        static thread_local GfxPushStateTracker tracker{};
+        const u64 epoch = scheduler.DescriptorStateEpoch();
+        if (!tracker.Matches(&scheduler, epoch, layout)) {
+            tracker.Reset(&scheduler, epoch, layout);
+        }
+        const bool need_push_constants =
+            !tracker.has_push_data ||
+            (std::memcmp(&tracker.push_data, &push_data, sizeof(push_data)) != 0);
+        if (need_push_constants) {
+            tracker.push_data = push_data;
+            tracker.has_push_data = true;
+        }
+        if (set_writes.empty()) {
+            if (need_push_constants) {
+                scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+                });
+            }
+            return;
+        }
+        const bool bulk =
+            (bulk_known && (!image_infos.empty() || !buffer_infos.empty())) ||
+            ((!image_infos.empty() || !buffer_infos.empty()) &&
+             std::ranges::all_of(set_writes, [&](const vk::WriteDescriptorSet& write) {
+                 return !write.pTexelBufferView &&
+                        (!write.pImageInfo ||
+                         within(write.pImageInfo, write.descriptorCount, image_infos)) &&
+                        (!write.pBufferInfo ||
+                         within(write.pBufferInfo, write.descriptorCount, buffer_infos));
+             }));
+        if (bulk) {
+            static thread_local boost::container::small_vector<vk::WriteDescriptorSet, 64>
+                delta_writes;
+            static thread_local boost::container::small_vector<vk::DescriptorImageInfo, 48>
+                delta_images;
+            static thread_local boost::container::small_vector<vk::DescriptorBufferInfo, 32>
+                delta_buffers;
+            static thread_local boost::container::small_vector<u32, 64> info_indices;
+            delta_writes.clear();
+            delta_images.clear();
+            delta_buffers.clear();
+            info_indices.clear();
+
+            u64 total_slots = 0;
+            u64 saved_slots = 0;
+            for (const auto& write : set_writes) {
+                total_slots += write.descriptorCount;
+                const bool single_img = (write.pImageInfo != nullptr && !write.pBufferInfo);
+                const bool single_buf = (write.pBufferInfo != nullptr && !write.pImageInfo);
+                if (write.descriptorCount == 1 && write.dstArrayElement == 0 &&
+                    !write.pTexelBufferView && write.dstBinding < kMaxTrackedBindings &&
+                    (single_img || single_buf)) {
+                    auto& slot = tracker.slots[write.dstBinding];
+                    if (single_img) {
+                        const auto& img = *write.pImageInfo;
+                        const VkSampler s_h = static_cast<VkSampler>(img.sampler);
+                        const VkImageView v_h = static_cast<VkImageView>(img.imageView);
+                        if (slot.valid && slot.is_image && slot.type == write.descriptorType &&
+                            slot.sampler == s_h && slot.image_view == v_h &&
+                            slot.image_layout == img.imageLayout) {
+                            ++saved_slots;
+                            continue;
+                        }
+                        slot.valid = true;
+                        slot.is_image = true;
+                        slot.type = write.descriptorType;
+                        slot.sampler = s_h;
+                        slot.image_view = v_h;
+                        slot.image_layout = img.imageLayout;
+                        const u32 idx = static_cast<u32>(delta_images.size());
+                        delta_images.push_back(img);
+                        delta_writes.push_back(write);
+                        info_indices.push_back(idx);
+                    } else {
+                        const auto& buf = *write.pBufferInfo;
+                        const VkBuffer b_h = static_cast<VkBuffer>(buf.buffer);
+                        if (slot.valid && !slot.is_image && slot.type == write.descriptorType &&
+                            slot.buffer == b_h && slot.offset == buf.offset &&
+                            slot.range == buf.range) {
+                            ++saved_slots;
+                            continue;
+                        }
+                        slot.valid = true;
+                        slot.is_image = false;
+                        slot.type = write.descriptorType;
+                        slot.buffer = b_h;
+                        slot.offset = buf.offset;
+                        slot.range = buf.range;
+                        const u32 idx = static_cast<u32>(delta_buffers.size());
+                        delta_buffers.push_back(buf);
+                        delta_writes.push_back(write);
+                        info_indices.push_back(idx);
+                    }
+                } else {
+                    for (u32 b = 0; b < write.descriptorCount; ++b) {
+                        const u32 bind_idx = write.dstBinding + b;
+                        if (bind_idx < kMaxTrackedBindings) {
+                            tracker.slots[bind_idx].valid = false;
+                        }
+                    }
+                    if (write.pImageInfo) {
+                        const u32 idx = static_cast<u32>(delta_images.size());
+                        delta_images.insert(delta_images.end(), write.pImageInfo,
+                                            write.pImageInfo + write.descriptorCount);
+                        delta_writes.push_back(write);
+                        info_indices.push_back(idx);
+                    } else if (write.pBufferInfo) {
+                        const u32 idx = static_cast<u32>(delta_buffers.size());
+                        delta_buffers.insert(delta_buffers.end(), write.pBufferInfo,
+                                             write.pBufferInfo + write.descriptorCount);
+                        delta_writes.push_back(write);
+                        info_indices.push_back(idx);
+                    }
+                }
+            }
+            if (total_slots != 0) {
+                BbStats::desc_push_total.fetch_add(total_slots, std::memory_order_relaxed);
+            }
+            if (saved_slots != 0) {
+                BbStats::desc_push_saved.fetch_add(saved_slots, std::memory_order_relaxed);
+            }
+            if (delta_writes.empty()) {
+                if (need_push_constants) {
+                    scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
+                        cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data),
+                                             &push_data);
+                    });
+                }
+                return;
+            }
+
+            const std::span<const vk::DescriptorImageInfo> d_img_span{delta_images.data(),
+                                                                      delta_images.size()};
+            const std::span<const vk::DescriptorBufferInfo> d_buf_span{delta_buffers.data(),
+                                                                       delta_buffers.size()};
+            scheduler.ReserveRecordData(delta_writes.size() * sizeof(vk::WriteDescriptorSet) +
+                                        d_img_span.size_bytes() + d_buf_span.size_bytes() +
+                                        sizeof(Shader::PushData) + 256);
+            const auto writes = scheduler.RecordData(
+                std::span<const vk::WriteDescriptorSet>{delta_writes.data(), delta_writes.size()});
+            const auto images = scheduler.RecordData(d_img_span);
+            const auto buffers = scheduler.RecordData(d_buf_span);
+            auto mut_writes =
+                std::span{const_cast<vk::WriteDescriptorSet*>(writes.data()), writes.size()};
+            for (size_t i = 0; i < mut_writes.size(); ++i) {
+                auto& w = mut_writes[i];
+                if (w.pImageInfo) {
+                    w.pImageInfo = images.data() + info_indices[i];
+                }
+                if (w.pBufferInfo) {
+                    w.pBufferInfo = buffers.data() + info_indices[i];
+                }
+            }
+            if (need_push_constants) {
+                scheduler.Record([bind_point, layout, stage_flags, push_data,
+                                  writes](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
+                    cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
+                });
+            } else {
+                scheduler.Record([bind_point, layout, writes](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
+                });
+            }
+            return;
+        }
+        tracker.Reset(nullptr, 0, vk::PipelineLayout{});
+    }
+
+    scheduler.BumpDescriptorStateEpoch();
     if (set_writes.empty()) {
         scheduler.Record([layout, stage_flags, push_data](vk::CommandBuffer cmdbuf) {
             cmdbuf.pushConstants(layout, stage_flags, 0u, sizeof(push_data), &push_data);
@@ -175,9 +396,6 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
     // chunk with the pointers aimed at the copies. When every write points into the caller's
     // info arrays (draws and dispatches), each array is copied once and the pointers rebased
     // (a copy per descriptor cost the recording thread ~3% of its time).
-    const auto within = [](const auto* p, u32 count, const auto& array) {
-        return p >= array.data() && p + count <= array.data() + array.size();
-    };
     const bool bulk =
         (fast_bind && bulk_known && (!image_infos.empty() || !buffer_infos.empty())) ||
         ((!image_infos.empty() || !buffer_infos.empty()) &&

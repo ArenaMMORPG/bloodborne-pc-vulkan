@@ -735,6 +735,8 @@ private:
         u64 generation = ~0ULL;
         VideoCore::ImageId image_id{};
         VideoCore::TextureCache::ImageDesc desc;
+        VideoCore::TextureCache::ViewMemo color_view_memo{};
+        std::array<VideoCore::TextureCache::ViewMemo, 2> depth_view_memo{};
     };
     std::array<TargetMemo, 64> target_memo{};
     // bbport: consecutive draws mostly keep their targets; the slot's description (cb_descs,
@@ -742,6 +744,8 @@ private:
     struct LastTarget {
         std::array<u8, 256> key{};
         u32 key_size = 0;
+        u32 memo_slot = ~0u;
+        bool changed = true;
         u64 generation = ~0ULL;
         VideoCore::ImageId image_id{};
     };

@@ -96,12 +96,15 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
     const bool memo_enabled = !BbToggle::Disabled(BbToggle::TextureBindingMemo);
     if (memo_enabled && last.generation == generation && last.key_size == key_size &&
         std::memcmp(last.key.data(), key.data(), key_size) == 0) {
+        last.changed = false;
         texture_cache.MarkFound(last.image_id);
         return last.image_id;
     }
-    const auto remember = [&](VideoCore::ImageId image_id) {
+    last.changed = true;
+    const auto remember = [&](VideoCore::ImageId image_id, u32 slot_idx) {
         last.key = key;
         last.key_size = key_size;
+        last.memo_slot = slot_idx;
         last.generation = generation;
         last.image_id = image_id;
     };
@@ -112,12 +115,13 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
         hash = (hash ^ word) * 0x100000001B3ull;
         hash ^= hash >> 29;
     }
-    auto& memo = target_memo[hash % target_memo.size()];
+    const u32 slot_idx = static_cast<u32>(hash % target_memo.size());
+    auto& memo = target_memo[slot_idx];
     if (memo.generation == generation && memo.key_size == key_size &&
         std::memcmp(memo.key.data(), key.data(), key_size) == 0 && memo_enabled) {
         desc = memo.desc;
         texture_cache.MarkFound(memo.image_id);
-        remember(memo.image_id);
+        remember(memo.image_id, slot_idx);
         return memo.image_id;
     }
     make_desc();
@@ -128,8 +132,11 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
         memo.generation = generation;
         memo.image_id = image_id;
         memo.desc = desc;
-        remember(image_id);
+        memo.color_view_memo = {};
+        memo.depth_view_memo = {};
+        remember(image_id, slot_idx);
     } else {
+        last.memo_slot = ~0u;
         last.generation = ~0ULL;
     }
     return image_id;
@@ -342,6 +349,9 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
                 resolved = FindTargetMemoized(
                     desc, last_targets[cb], [&] { std::construct_at(&desc, col_buf, hint); }, tag,
                     col_buf, hint);
+                if (last_targets[cb].changed) {
+                    fallback_cb_view_memo[cb] = {};
+                }
             }
             image_id = bound_images.emplace_back(resolved);
             auto& image = texture_cache.GetImage(image_id);
@@ -370,6 +380,9 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
                     },
                     tag, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address,
                     hint);
+                if (last_targets[Gcn::NUM_COLOR_BUFFERS].changed) {
+                    fallback_db_view_memo = {};
+                }
             }
             image_id = bound_images.emplace_back(resolved);
             auto& image = texture_cache.GetImage(image_id);
@@ -634,6 +647,8 @@ void Rasterizer::BindColorAttachments(RenderState& state, const GraphicsPipeline
         auto* image = &texture_cache.GetImage(image_id);
         if (image->binding.needs_rebind) {
             last_targets[cb].generation = ~0ULL; // FindImage may rewrite the description
+            last_targets[cb].memo_slot = ~0u;
+            fallback_cb_view_memo[cb] = {};
             prepared_pass.valid = false;
             if (active_cb_uid[cb] != 0 && active_cb_uid[cb] < direct_target_cache.size()) {
                 direct_target_cache[active_cb_uid[cb]].registry_generation = ~0ULL;
@@ -643,9 +658,22 @@ void Rasterizer::BindColorAttachments(RenderState& state, const GraphicsPipeline
         }
         texture_cache.UpdateImage(image_id);
         runtime.SetBackingSamples(image, key.color_samples[cb]);
-        auto* view_memo = (active_cb_uid[cb] != 0 && active_cb_uid[cb] < direct_target_cache.size())
-                              ? &direct_target_cache[active_cb_uid[cb]].color_view_memo
-                              : nullptr;
+        VideoCore::TextureCache::ViewMemo* view_memo = nullptr;
+        if (active_cb_uid[cb] != 0 && active_cb_uid[cb] < direct_target_cache.size()) {
+            view_memo = &direct_target_cache[active_cb_uid[cb]].color_view_memo;
+        } else {
+            const auto& last = last_targets[cb];
+            if (last.memo_slot < target_memo.size()) {
+                auto& tm = target_memo[last.memo_slot];
+                if (tm.generation == last.generation && tm.key_size == last.key_size &&
+                    std::memcmp(tm.key.data(), last.key.data(), last.key_size) == 0) {
+                    view_memo = &tm.color_view_memo;
+                }
+            }
+            if (!view_memo) {
+                view_memo = &fallback_cb_view_memo[cb];
+            }
+        }
         const auto& view = texture_cache.FindRenderTarget(image_id, desc, view_memo);
         const u32 slice = view.info.range.base.layer;
         const u32 mip = view.info.range.base.level;
@@ -715,10 +743,23 @@ void Rasterizer::BindDepthAttachment(RenderState& state, bool reduced, TargetRed
     const auto& regs = Regs();
     const auto& desc = db_desc.second;
     const auto htile_address = regs.depth_htile_data_base.GetAddress();
-    auto* view_memo =
-        (active_db_uid != 0 && active_db_uid < direct_target_cache.size())
-            ? &direct_target_cache[active_db_uid].depth_view_memo[desc.view_info.is_storage ? 1 : 0]
-            : nullptr;
+    const u32 depth_memo_idx = desc.view_info.is_storage ? 1u : 0u;
+    VideoCore::TextureCache::ViewMemo* view_memo = nullptr;
+    if (active_db_uid != 0 && active_db_uid < direct_target_cache.size()) {
+        view_memo = &direct_target_cache[active_db_uid].depth_view_memo[depth_memo_idx];
+    } else {
+        const auto& last = last_targets[Gcn::NUM_COLOR_BUFFERS];
+        if (last.memo_slot < target_memo.size()) {
+            auto& tm = target_memo[last.memo_slot];
+            if (tm.generation == last.generation && tm.key_size == last.key_size &&
+                std::memcmp(tm.key.data(), last.key.data(), last.key_size) == 0) {
+                view_memo = &tm.depth_view_memo[depth_memo_idx];
+            }
+        }
+        if (!view_memo) {
+            view_memo = &fallback_db_view_memo[depth_memo_idx];
+        }
+    }
     const auto& view = texture_cache.FindDepthTarget(image_id, desc, view_memo);
     auto& image = texture_cache.GetImage(image_id);
     const u32 slice = view.info.range.base.layer;

@@ -1114,6 +1114,10 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, boo
                 }
             }
             const Buffer* dst_buf = it->second.buffer.get();
+            it->second.gpu_written_without_shadow = true;
+            it->second.has_cpu_shadow = false;
+            it->second.zero_known = false;
+            it->second.cpu_shadow.reset();
             if (it->second.needs_zero_init) {
                 it->second.needs_zero_init = false;
                 if (!full_overwrite || addr > base || size < dst_buf->SizeBytes()) {
@@ -1154,9 +1158,14 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         return;
     }
 
+    static constexpr u64 kMaxCpuShadowBytes = 256ULL << 10; // 256 KiB CPU shadow cap
+
     struct StagedSlice {
         u32 region_idx{0};
         bool fast_memcpy{false};
+        bool full_overwrite{false};
+        bool use_shadow{false};
+        bool emit_to_stream{true};
         VAddr base_va{0};
         VAddr src_va{0};
         u32 dst_in_buf_off{0};
@@ -1172,21 +1181,25 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
     std::array<StagedSlice, 32> staged{};
     u32 staged_count = 0;
     u64 total_bytes = 0;
+    bool any_shadow_slice = false;
 
     const auto commit_chunk = [&]() -> bool {
         if (staged_count == 0 || total_bytes == 0) {
             staged_count = 0;
             total_bytes = 0;
+            any_shadow_slice = false;
             return true;
         }
         u64 base_off = 0;
-        if (!sbuf.mapped_data.empty() && scheduler.IsRecordingDeferred() &&
+        if (!any_shadow_slice && total_bytes > (64ULL << 10) && !sbuf.mapped_data.empty() &&
+            scheduler.IsRecordingDeferred() &&
             !BbToggle::Disabled(BbToggle::DeferredStreamCopies) &&
             !BbToggle::Disabled(BbToggle::PoolSmallCopies)) {
             const auto reserved = sbuf.Reserve(total_bytes, align, /*allow_wait=*/false);
             if (!reserved) {
                 staged_count = 0;
                 total_bytes = 0;
+                any_shadow_slice = false;
                 return false;
             }
             base_off = *reserved;
@@ -1228,10 +1241,53 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             if (!data) {
                 staged_count = 0;
                 total_bytes = 0;
+                any_shadow_slice = false;
                 return false;
             }
             for (u32 k = 0; k < staged_count; ++k) {
                 const auto& s = staged[k];
+                if (s.use_shadow) {
+                    auto it = entries_by_base.find(s.base_va);
+                    if (it == entries_by_base.end()) {
+                        continue;
+                    }
+                    auto& e = it->second;
+                    if (s.full_overwrite) {
+                        if (!e.cpu_shadow) {
+                            e.cpu_shadow = std::make_unique_for_overwrite<u8[]>(s.slice_span);
+                        }
+                        if (s.fast_memcpy) {
+                            std::memcpy(e.cpu_shadow.get(),
+                                        reinterpret_cast<const void*>(s.src_va), s.copy_bytes);
+                        } else {
+                            memory->CopySparseMemory(s.src_va, e.cpu_shadow.get(), s.copy_bytes);
+                        }
+                        if (s.slice_span > s.copy_bytes) {
+                            std::memset(e.cpu_shadow.get() + s.copy_bytes, 0,
+                                        s.slice_span - s.copy_bytes);
+                        }
+                        e.has_cpu_shadow = true;
+                        e.zero_known = false;
+                        e.gpu_written_without_shadow = false;
+                    } else {
+                        if (!e.has_cpu_shadow || !e.cpu_shadow) {
+                            e.cpu_shadow = std::make_unique<u8[]>(s.slice_span);
+                            e.has_cpu_shadow = true;
+                            e.zero_known = false;
+                        }
+                        u8* shadow_dst = e.cpu_shadow.get() + s.dst_in_buf_off;
+                        if (s.fast_memcpy) {
+                            std::memcpy(shadow_dst, reinterpret_cast<const void*>(s.src_va),
+                                        s.copy_bytes);
+                        } else {
+                            memory->CopySparseMemory(s.src_va, shadow_dst, s.copy_bytes);
+                        }
+                    }
+                    if (s.emit_to_stream) {
+                        std::memcpy(data + s.rel_offset, e.cpu_shadow.get(), s.slice_span);
+                    }
+                    continue;
+                }
                 u8* dst = data + s.rel_offset;
                 if (s.dst_in_buf_off != 0) {
                     std::memset(dst, 0, s.dst_in_buf_off);
@@ -1254,6 +1310,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         BbStats::buffer_upload_bytes.fetch_add(total_bytes, std::memory_order_relaxed);
         for (u32 k = 0; k < staged_count; ++k) {
             const auto& s = staged[k];
+            out_handled[s.region_idx] = 1u;
+            if (!s.emit_to_stream) {
+                continue;
+            }
             auto it = entries_by_base.find(s.base_va);
             if (it == entries_by_base.end()) {
                 continue;
@@ -1270,10 +1330,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             UpdateMruEntry(s.base_va, e.alloc_size, &sbuf, stream_off);
             buf_cache.NoteExternalGpuModified(s.base_va, e.alloc_size);
             Vulkan::DirectShaders::InvalidateRange(s.base_va, e.alloc_size);
-            out_handled[s.region_idx] = 1u;
         }
         staged_count = 0;
         total_bytes = 0;
+        any_shadow_slice = false;
         return true;
     };
 
@@ -1301,8 +1361,13 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
         const u64 dst_in_buf_off = reg.dst_va - base_va;
+        const u64 slice_span = Common::AlignUp<u64>(e.alloc_size, 16ULL);
         const bool full_overwrite = (dst_in_buf_off == 0 && reg.byte_size >= e.raw_size);
-        if (!full_overwrite && !e.needs_zero_init) {
+        const bool can_use_shadow = (e.usage_type != 1u && slice_span <= kMaxCpuShadowBytes);
+        const bool shadow_partial_ok =
+            can_use_shadow && !e.gpu_written_without_shadow &&
+            (e.has_cpu_shadow || e.zero_known || e.needs_zero_init);
+        if (!full_overwrite && !e.needs_zero_init && !shadow_partial_ok) {
             continue;
         }
 
@@ -1317,7 +1382,13 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
                 out_handled[prev] != 0u ||
                 std::any_of(staged.begin(), staged.begin() + staged_count,
                             [prev](const StagedSlice& s) { return s.region_idx == prev; });
-            if ((!prev_will_handle || !full_overwrite) &&
+            if (!prev_will_handle &&
+                RangesOverlap(base_va, e.alloc_size, regions[prev].dst_va,
+                              regions[prev].byte_size)) {
+                ordering_hazard = true;
+                break;
+            }
+            if (prev_will_handle && !full_overwrite && !can_use_shadow &&
                 RangesOverlap(base_va, e.alloc_size, regions[prev].dst_va,
                               regions[prev].byte_size)) {
                 ordering_hazard = true;
@@ -1355,18 +1426,39 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             }
         }
 
-        const u64 slice_span = Common::AlignUp<u64>(e.alloc_size, 16ULL);
-        u64 rel_off = Common::AlignUp<u64>(total_bytes, align);
-        if (staged_count == 32 || rel_off + slice_span > (4ULL << 20)) {
-            if (!commit_chunk()) {
-                return;
+        const bool use_shadow = can_use_shadow && (full_overwrite || shadow_partial_ok);
+        StagedSlice* coalesced_prev = nullptr;
+        if (use_shadow && staged_count < 32) {
+            for (u32 m = staged_count; m > 0; --m) {
+                if (staged[m - 1].base_va == base_va && staged[m - 1].use_shadow &&
+                    staged[m - 1].emit_to_stream) {
+                    coalesced_prev = &staged[m - 1];
+                    break;
+                }
             }
-            rel_off = 0;
         }
-        total_bytes = rel_off + slice_span;
+
+        u64 rel_off = 0;
+        if (coalesced_prev) {
+            coalesced_prev->emit_to_stream = false;
+            rel_off = coalesced_prev->rel_offset;
+        } else {
+            rel_off = Common::AlignUp<u64>(total_bytes, align);
+            if (staged_count == 32 || rel_off + slice_span > (4ULL << 20)) {
+                if (!commit_chunk()) {
+                    return;
+                }
+                rel_off = 0;
+            }
+            total_bytes = rel_off + slice_span;
+        }
+        any_shadow_slice |= use_shadow;
         staged[staged_count++] = StagedSlice{
             .region_idx = idx,
             .fast_memcpy = fast_mapped,
+            .full_overwrite = full_overwrite,
+            .use_shadow = use_shadow,
+            .emit_to_stream = true,
             .base_va = base_va,
             .src_va = reg.src_va,
             .dst_in_buf_off = static_cast<u32>(dst_in_buf_off),
@@ -1608,6 +1700,9 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                                  : (ev.usage_type == 2) ? "DirectDynamicBuf"
                                                         : "DirectDefaultBuf";
 
+        const bool want_init_shadow =
+            (ev.has_initial_data != 0 && ev.usage_type != 1u && vk_alloc_size <= (256ULL << 10));
+
         // N1.2b/N1.2c: Inside an open RenderPass, NEVER call runtime.CopyBuffer / runtime.FillBuffer
         // (which would call scheduler.EndRendering() and break the 2560x1440 6-MRT pass!).
         // Guest-timeline tables (`g_native_owned_4b` / `g_exact_buf_table`) are updated strictly on
@@ -1632,6 +1727,15 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entry.usage_type = ev.usage_type;
                 entry.dirty_writeback = true;
                 entry.needs_zero_init = false;
+                if (want_init_shadow) {
+                    entry.cpu_shadow = std::make_unique_for_overwrite<u8[]>(vk_alloc_size);
+                    std::memcpy(entry.cpu_shadow.get(), reinterpret_cast<const void*>(ev.addr),
+                                raw_size);
+                    if (vk_alloc_size > raw_size) {
+                        std::memset(entry.cpu_shadow.get() + raw_size, 0, vk_alloc_size - raw_size);
+                    }
+                    entry.has_cpu_shadow = true;
+                }
                 entry.raw_size = raw_size;
                 entry.alloc_size = guest_span;
                 entry.stream_override_buf = sbuf_ptr;
@@ -1657,6 +1761,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
                 entry.bind_flags = ev.bind_flags;
                 entry.usage_type = ev.usage_type;
                 entry.needs_zero_init = true;
+                entry.zero_known = true;
                 entry.raw_size = raw_size;
                 entry.alloc_size = guest_span;
                 entry.buffer = std::move(buf);
@@ -1687,6 +1792,7 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
             entry.usage_type = ev.usage_type;
             entry.dirty_writeback = true;
             entry.needs_zero_init = false;
+            entry.zero_known = true;
             entry.raw_size = raw_size;
             entry.alloc_size = guest_span;
             entry.stream_override_buf = sbuf_ptr;
@@ -1710,7 +1816,15 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         auto buf = std::make_unique<Buffer>(instance, ev.addr, vk_alloc_size,
                                             MemoryType::DeviceLocal, debug_name);
         bool lazy_zero = false;
+        std::unique_ptr<u8[]> init_shadow{};
         if (ev.has_initial_data != 0) {
+            if (want_init_shadow) {
+                init_shadow = std::make_unique_for_overwrite<u8[]>(vk_alloc_size);
+                std::memcpy(init_shadow.get(), reinterpret_cast<const void*>(ev.addr), raw_size);
+                if (vk_alloc_size > raw_size) {
+                    std::memset(init_shadow.get() + raw_size, 0, vk_alloc_size - raw_size);
+                }
+            }
             u64 copied = 0;
             while (copied < raw_size) {
                 const u64 raw_chunk = std::min<u64>(raw_size - copied, kChunkBytes);
@@ -1755,8 +1869,11 @@ void Manager::ProcessEvents(Core::MemoryManager* memory) {
         entry.bind_flags = ev.bind_flags;
         entry.usage_type = ev.usage_type;
         entry.needs_zero_init = lazy_zero;
+        entry.has_cpu_shadow = (init_shadow != nullptr);
+        entry.zero_known = (ev.has_initial_data == 0);
         entry.raw_size = raw_size;
         entry.alloc_size = guest_span;
+        entry.cpu_shadow = std::move(init_shadow);
         entry.buffer = std::move(buf);
         entries_by_base[ev.addr] = std::move(entry);
         SetBitmapRange(ev.addr, ev.addr + guest_span);

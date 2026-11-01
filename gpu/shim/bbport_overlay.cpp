@@ -897,6 +897,7 @@ struct HudBreakdown {
     float eop_pf = 0.0f;
     float native_buf_pct = 0.0f;
     float native_tex_pct = 0.0f;
+    float desc_saved_pct = 0.0f;
     // Stage 0: Game CPU / Gnm
     float idle_a_ms = 0.0f, avg_idle_a_ms = 0.0f;
     float gnm_wait_ms = 0.0f, avg_gnm_wait_ms = 0.0f;
@@ -946,6 +947,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     static std::uint64_t last_faults = 0, last_eop = 0;
     static std::uint64_t last_native_hits = 0, last_native_misses = 0;
     static std::uint64_t last_native_tex_hits = 0, last_native_tex_misses = 0;
+    static std::uint64_t last_desc_saved = 0, last_desc_total = 0;
     static std::uint64_t last_hw_busy_ns = 0, last_hw_gap_ns = 0, last_hw_frames = 0;
     static std::array<std::uint64_t, BbSections::Count> last_ca{}, last_cb{};
 
@@ -977,6 +979,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         last_native_misses = BbStats::native_buf_misses.load(std::memory_order_relaxed);
         last_native_tex_hits = BbStats::native_tex_hits.load(std::memory_order_relaxed);
         last_native_tex_misses = BbStats::native_tex_misses.load(std::memory_order_relaxed);
+        last_desc_saved = BbStats::desc_push_saved.load(std::memory_order_relaxed);
+        last_desc_total = BbStats::desc_push_total.load(std::memory_order_relaxed);
         last_hw_busy_ns = BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
         last_hw_gap_ns = BbStats::hw_gpu_gap_ns.load(std::memory_order_relaxed);
         last_hw_frames = BbStats::hw_gpu_frames.load(std::memory_order_relaxed);
@@ -1030,6 +1034,10 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         BbStats::native_tex_hits.load(std::memory_order_relaxed);
     const std::uint64_t cur_native_tex_misses =
         BbStats::native_tex_misses.load(std::memory_order_relaxed);
+    const std::uint64_t cur_desc_saved =
+        BbStats::desc_push_saved.load(std::memory_order_relaxed);
+    const std::uint64_t cur_desc_total =
+        BbStats::desc_push_total.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_busy_ns =
         BbStats::hw_gpu_busy_ns.load(std::memory_order_relaxed);
     const std::uint64_t cur_hw_gap_ns =
@@ -1068,6 +1076,9 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         const std::uint64_t dtm = safe_delta(cur_native_tex_misses, last_native_tex_misses);
         h.native_tex_pct =
             (dth + dtm) > 0 ? float(100.0 * double(dth) / double(dth + dtm)) : 0.0f;
+        const std::uint64_t dds = safe_delta(cur_desc_saved, last_desc_saved);
+        const std::uint64_t ddt = safe_delta(cur_desc_total, last_desc_total);
+        h.desc_saved_pct = ddt > 0 ? float(100.0 * double(dds) / double(ddt)) : 0.0f;
     }
 
     const std::uint64_t d_hw_frames = safe_delta(cur_hw_frames, last_hw_frames);
@@ -1287,6 +1298,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     last_native_misses = cur_native_misses;
     last_native_tex_hits = cur_native_tex_hits;
     last_native_tex_misses = cur_native_tex_misses;
+    last_desc_saved = cur_desc_saved;
+    last_desc_total = cur_desc_total;
     if (d_hw_frames > 0) {
         last_hw_busy_ns = cur_hw_busy_ns;
         last_hw_gap_ns = cur_hw_gap_ns;
@@ -1301,7 +1314,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             const auto shd = Vulkan::DirectShaders::ReadTelemetry();
             std::fprintf(f,
                          "FPS: %.1f (%.2f ms/f) | Avg: %.1f FPS (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
-                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%% | NativeVkTex %.1f%%\n"
+                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%% | NativeVkTex %.1f%% | DescSaved %.1f%%\n"
                          "DirectShaders: reg %llu | manifest %llu/%u | stageA_hits %llu | worker_hits %llu\n"
                          "1. Game CPU / Gnm: IdleA %.2f ms | GnmWait %.2f ms\n"
                          "2. Stage A (GpuComm): PM4+Pipe %.2f ms | ConstRing %.2f ms | WaitDrainB %.2f ms (FlushA %.2f ms)\n"
@@ -1316,6 +1329,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                          BbSettings::ResolutionNeedsRestart() ? " [NEEDS RESTART]" : "",
                          h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf,
                          h.faults_ps, h.eop_pf, h.native_buf_pct, h.native_tex_pct,
+                         h.desc_saved_pct,
                          static_cast<unsigned long long>(shd.registered_binaries),
                          static_cast<unsigned long long>(shd.manifest_binaries_bound),
                          shd.manifest_total,
@@ -1390,9 +1404,9 @@ void FpsCounter() {
                                   : ImVec4(1.0f, 0.72f, 0.38f, 1.0f);
     ImGui::TextColored(
         health_col,
-        BbSettings::MenuText("Faults: %.0f/s | EoP: %.1f/f | NatBuf: %.0f%% | NatTex: %.0f%%",
-                             "Фолты: %.0f/с | EoP: %.1f/к | NatBuf: %.0f%% | NatTex: %.0f%%"),
-        h.faults_ps, h.eop_pf, h.native_buf_pct, h.native_tex_pct);
+        BbSettings::MenuText("Faults: %.0f/s | NatBuf: %.0f%% | NatTex: %.0f%% | DscSav: %.0f%%",
+                             "Фолты: %.0f/с | NatBuf: %.0f%% | NatTex: %.0f%% | DscSav: %.0f%%"),
+        h.faults_ps, h.native_buf_pct, h.native_tex_pct, h.desc_saved_pct);
 
     ImGui::Separator();
     if (ImGui::BeginTable("##hud_breakdown", 3,

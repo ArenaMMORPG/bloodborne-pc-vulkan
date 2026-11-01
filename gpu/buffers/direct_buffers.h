@@ -183,10 +183,14 @@ private:
         u8 usage_type{1};
         bool dirty_writeback{false};
         bool needs_zero_init{false};
+        bool has_cpu_shadow{false};
+        bool zero_known{false};
+        bool gpu_written_without_shadow{false};
         u64 raw_size{0};
         u64 alloc_size{0};
         const Buffer* stream_override_buf{nullptr};
         u64 stream_override_off{0};
+        std::unique_ptr<u8[]> cpu_shadow{};
         std::unique_ptr<Buffer> buffer;
     };
 

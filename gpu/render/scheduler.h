@@ -386,6 +386,15 @@ public:
         return is_rendering;
     }
 
+    /// N2.2: Monotonic epoch incremented on every command buffer / segment / RenderPass / compute
+    /// boundary so Pipeline::BindResources can safely delta-push descriptors and push constants.
+    [[nodiscard]] u64 DescriptorStateEpoch() const noexcept {
+        return descriptor_state_epoch;
+    }
+    void BumpDescriptorStateEpoch() noexcept {
+        ++descriptor_state_epoch;
+    }
+
     [[nodiscard]] bool HasPendingWork() const noexcept {
         return current_segment != 0 || direct_segment ||
                (batch && batch->handed[0] != 0) || !full_chunks.empty() ||
@@ -591,6 +600,7 @@ private:
     std::jthread priority_ops_thread;
     RenderState render_state;
     bool is_rendering = false;
+    u64 descriptor_state_epoch = 1;
     // Threaded recording. Commands go into chunks of the current segment; segments are
     // recorded in parallel, each into its own command buffer, and a submission runs their
     // command buffers in order. Guest memory copies and fence signals go into ordered chunks,
