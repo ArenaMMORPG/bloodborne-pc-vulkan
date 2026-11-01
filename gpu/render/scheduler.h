@@ -130,7 +130,9 @@ public:
     void PopPendingOperations();
 
     /// Opens a render pass with `state`, unless one with exactly it is open.
-    void BeginRendering(const RenderState& state);
+    /// `color_dont_care_mask`: non-cleared, non-resumed color attachments guaranteed to be 100%
+    /// overwritten by the opening draw (`loadOp = vk::AttachmentLoadOp::eDontCare`).
+    void BeginRendering(const RenderState& state, u8 color_dont_care_mask = 0);
 
     /// Closes the open render pass, if any.
     [[gnu::noinline]] void EndRendering();

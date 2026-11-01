@@ -682,7 +682,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         traced_inputs_frame = BbStats::gpu_frames.load(std::memory_order_relaxed);
     }
     BeginDraw(pipeline, state, is_indexed,
-              regs.num_indices > 6 || regs.num_instances.NumInstances() > 1);
+              regs.num_indices > 6 || regs.num_instances.NumInstances() > 1, draw_prepared,
+              index_offset, true);
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -804,8 +805,669 @@ void Rasterizer::ScaleToTarget(const GraphicsPipeline* pipeline) {
     push_data.yoffset *= target_scale[1];
 }
 
+namespace {
+
+constexpr u32 RequiredFormatWriteMask(vk::Format fmt) noexcept {
+    switch (fmt) {
+    case vk::Format::eR8Unorm:
+    case vk::Format::eR8Snorm:
+    case vk::Format::eR8Uint:
+    case vk::Format::eR8Sint:
+    case vk::Format::eR8Srgb:
+    case vk::Format::eR16Unorm:
+    case vk::Format::eR16Snorm:
+    case vk::Format::eR16Uint:
+    case vk::Format::eR16Sint:
+    case vk::Format::eR16Sfloat:
+    case vk::Format::eR32Uint:
+    case vk::Format::eR32Sint:
+    case vk::Format::eR32Sfloat:
+        return 0x1u;
+    case vk::Format::eR8G8Unorm:
+    case vk::Format::eR8G8Snorm:
+    case vk::Format::eR8G8Uint:
+    case vk::Format::eR8G8Sint:
+    case vk::Format::eR8G8Srgb:
+    case vk::Format::eR16G16Unorm:
+    case vk::Format::eR16G16Snorm:
+    case vk::Format::eR16G16Uint:
+    case vk::Format::eR16G16Sint:
+    case vk::Format::eR16G16Sfloat:
+    case vk::Format::eR32G32Uint:
+    case vk::Format::eR32G32Sint:
+    case vk::Format::eR32G32Sfloat:
+        return 0x3u;
+    case vk::Format::eB10G11R11UfloatPack32:
+    case vk::Format::eR5G6B5UnormPack16:
+    case vk::Format::eB5G6R5UnormPack16:
+        return 0x7u;
+    default:
+        return 0xFu;
+    }
+}
+
+float HalfToFloat(u16 h) noexcept {
+    const u32 sign = u32(h & 0x8000u) << 16;
+    const u32 exp = (h >> 10) & 0x1Fu;
+    const u32 mant = h & 0x03FFu;
+    if (exp == 0) {
+        if (mant == 0) {
+            return std::bit_cast<float>(sign);
+        }
+        const float mag = float(mant) * (1.0f / float(1u << 24));
+        return (sign != 0) ? -mag : mag;
+    }
+    if (exp == 31) {
+        return std::bit_cast<float>(sign | 0x7F800000u | (mant << 13));
+    }
+    return std::bit_cast<float>(sign | ((exp + 112u) << 23) | (mant << 13));
+}
+
+bool DecodeFloatVertexAttr(const Gcn::Buffer& vb, const u8* ptr, u64 avail_bytes,
+                           std::array<float, 4>& out_xyzw) noexcept {
+    const auto dfmt = vb.GetDataFmt();
+    const auto nfmt = vb.GetNumberFmt();
+    std::array<float, 4> raw{0.0f, 0.0f, 0.0f, 1.0f};
+    if (nfmt == Gcn::NumberFormat::Float) {
+        switch (dfmt) {
+        case Gcn::DataFormat::Format32_32_32_32:
+            if (avail_bytes < 16) return false;
+            std::memcpy(raw.data(), ptr, 16);
+            break;
+        case Gcn::DataFormat::Format32_32_32:
+            if (avail_bytes < 12) return false;
+            std::memcpy(raw.data(), ptr, 12);
+            break;
+        case Gcn::DataFormat::Format32_32:
+            if (avail_bytes < 8) return false;
+            std::memcpy(raw.data(), ptr, 8);
+            break;
+        case Gcn::DataFormat::Format32:
+            if (avail_bytes < 4) return false;
+            std::memcpy(raw.data(), ptr, 4);
+            break;
+        case Gcn::DataFormat::Format16_16_16_16: {
+            if (avail_bytes < 8) return false;
+            u16 h[4];
+            std::memcpy(h, ptr, 8);
+            for (u32 i = 0; i < 4; ++i) raw[i] = HalfToFloat(h[i]);
+            break;
+        }
+        case Gcn::DataFormat::Format16_16: {
+            if (avail_bytes < 4) return false;
+            u16 h[2];
+            std::memcpy(h, ptr, 4);
+            raw[0] = HalfToFloat(h[0]);
+            raw[1] = HalfToFloat(h[1]);
+            break;
+        }
+        default:
+            return false;
+        }
+    } else if (nfmt == Gcn::NumberFormat::Snorm && dfmt == Gcn::DataFormat::Format16_16_16_16) {
+        if (avail_bytes < 8) return false;
+        s16 s[4];
+        std::memcpy(s, ptr, 8);
+        for (u32 i = 0; i < 4; ++i) {
+            raw[i] = std::max(-1.0f, float(s[i]) * (1.0f / 32767.0f));
+        }
+    } else if (nfmt == Gcn::NumberFormat::Snorm && dfmt == Gcn::DataFormat::Format16_16) {
+        if (avail_bytes < 4) return false;
+        s16 s[2];
+        std::memcpy(s, ptr, 4);
+        raw[0] = std::max(-1.0f, float(s[0]) * (1.0f / 32767.0f));
+        raw[1] = std::max(-1.0f, float(s[1]) * (1.0f / 32767.0f));
+    } else {
+        return false;
+    }
+    out_xyzw = vb.DstSelect().Apply(raw);
+    return true;
+}
+
+struct WinPt {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+float Cross2D(WinPt a, WinPt b, WinPt p) noexcept {
+    return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+bool SameWinPt(WinPt a, WinPt b) noexcept {
+    return std::abs(a.x - b.x) <= 2e-2f && std::abs(a.y - b.y) <= 2e-2f;
+}
+
+bool ConvexPolyContainsRect(std::span<const WinPt> poly, float orient_sign, float w,
+                            float h) noexcept {
+    const std::array<WinPt, 4> corners{{{0.0f, 0.0f}, {w, 0.0f}, {0.0f, h}, {w, h}}};
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+        const WinPt a = poly[i];
+        const WinPt b = poly[(i + 1) % n];
+        const float edge_l1 = std::abs(b.x - a.x) + std::abs(b.y - a.y);
+        if (edge_l1 <= 1e-3f) {
+            return false;
+        }
+        const float tol = 2e-2f * edge_l1;
+        for (const WinPt c : corners) {
+            if (orient_sign * Cross2D(a, b, c) < -tol) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+struct WinTri {
+    std::array<WinPt, 3> v{};
+    float det = 0.0f;
+};
+
+bool TriangleCoversRect(const WinTri& t, float w, float h) noexcept {
+    return ConvexPolyContainsRect(t.v, t.det > 0.0f ? 1.0f : -1.0f, w, h);
+}
+
+bool TwoTrianglesCoverRect(const WinTri& t0, const WinTri& t1, float w, float h) noexcept {
+    if (TriangleCoversRect(t0, w, h) || TriangleCoversRect(t1, w, h)) {
+        return true;
+    }
+    int m0_a = -1, m0_b = -1, m1_a = -1, m1_b = -1;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if (SameWinPt(t0.v[i], t1.v[j])) {
+                if (m0_a == -1) {
+                    m0_a = i;
+                    m1_a = j;
+                } else if (i != m0_a && j != m1_a) {
+                    m0_b = i;
+                    m1_b = j;
+                }
+            }
+        }
+    }
+    if (m0_a == -1 || m0_b == -1) {
+        return false;
+    }
+    const int p_idx = 3 - m0_a - m0_b;
+    const int q_idx = 3 - m1_a - m1_b;
+    const WinPt u = t0.v[m0_a];
+    const WinPt v = t0.v[m0_b];
+    const WinPt p = t0.v[p_idx];
+    const WinPt q = t1.v[q_idx];
+    const float cp_u_v_p = Cross2D(u, v, p);
+    const float cp_u_v_q = Cross2D(u, v, q);
+    // P and Q must lie strictly on opposite sides of shared diagonal UV.
+    if (!((cp_u_v_p > 1e-2f && cp_u_v_q < -1e-2f) || (cp_u_v_p < -1e-2f && cp_u_v_q > 1e-2f))) {
+        return false;
+    }
+    const float cp_p_q_u = Cross2D(p, q, u);
+    const float cp_p_q_v = Cross2D(p, q, v);
+    // U and V must lie strictly on opposite sides of PQ so U -> P -> V -> Q is strictly convex.
+    if (!((cp_p_q_u > 1e-2f && cp_p_q_v < -1e-2f) || (cp_p_q_u < -1e-2f && cp_p_q_v > 1e-2f))) {
+        return false;
+    }
+    const std::array<WinPt, 4> quad{u, p, v, q};
+    // Along U -> P -> V, point V lies on the side sign(Cross2D(u, p, v)) = sign(-cp_u_v_p).
+    const float orient_sign = (-cp_u_v_p > 0.0f) ? 1.0f : -1.0f;
+    return ConvexPolyContainsRect(quad, orient_sign, w, h);
+}
+
+} // namespace
+
+u8 Rasterizer::ComputeFullscreenOverwriteMask(const GraphicsPipeline* pipeline,
+                                              const RenderState& state,
+                                              const PreparedDraw* draw_prepared, bool is_indexed,
+                                              u32 index_offset) {
+    static const bool dont_care_off = [] {
+        const char* env = std::getenv("BB_DONT_CARE_OFF");
+        return env && env[0] == '1';
+    }();
+    if (dont_care_off || !pipeline) {
+        return 0;
+    }
+    if (state.num_color_attachments == 0 || state.num_color_attachments > Gcn::NUM_COLOR_BUFFERS ||
+        state.width == 0 || state.height == 0 || state.num_layers != 1) {
+        return 0;
+    }
+    const auto& regs = Regs();
+    const auto& key = pipeline->GetGraphicsKey();
+    if (key.num_samples != 1 || attachment_feedback_loop ||
+        ui_placement.edge_x != 0.0f || ui_placement.edge_y != 0.0f) {
+        return 0;
+    }
+    if (regs.color_control.mode != Gcn::ColorControl::OperationMode::Normal ||
+        key.logic_op != Gcn::ColorControl::LogicOp::Copy ||
+        regs.clipper_control.dx_rasterization_kill ||
+        regs.clipper_control.user_clip_plane_enable != 0 ||
+        regs.vs_output_control.clip_distance_enable != 0 ||
+        regs.vs_output_control.cull_distance_enable != 0 ||
+        regs.vs_output_control.use_vtx_kill_flag ||
+        regs.stage_enable.raw != Gcn::ShaderStageEnable::VgtStages::Vs ||
+        key.polygon_mode != Gcn::PolygonMode::Fill) {
+        return 0;
+    }
+    if (regs.depth_control.depth_enable || regs.depth_control.stencil_enable ||
+        regs.depth_control.depth_bounds_enable) {
+        return 0;
+    }
+    const u32 count = regs.num_indices;
+    if (regs.num_instances.NumInstances() == 0 || count < 3 || count > 6) {
+        return 0;
+    }
+    const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    if (!ps || ps->has_discard) {
+        return 0;
+    }
+
+    const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+    enum class VsKind : u8 {
+        None,
+        Procedural89cda9e4,
+        PassThroughXYZW,
+        PassThroughXYZ1,
+        PassThroughXYCb0Z_W,
+        YebisCb20_21ScaleXY,
+    };
+    VsKind vs_kind = VsKind::None;
+    switch (vs.pgm_hash) {
+    case 0x89cda9e4ull:
+        vs_kind = VsKind::Procedural89cda9e4;
+        break;
+    case 0x0b0acf50ull:
+    case 0x061fbbf6ull:
+        vs_kind = VsKind::PassThroughXYZW;
+        break;
+    case 0x637500e0ull:
+        vs_kind = VsKind::PassThroughXYZ1;
+        break;
+    case 0x8747a367ull:
+        vs_kind = VsKind::PassThroughXYCb0Z_W;
+        break;
+    case 0x7d668276ull:
+    case 0x1ea5a07eull:
+    case 0xd3ca03f3ull:
+        vs_kind = VsKind::YebisCb20_21ScaleXY;
+        break;
+    default:
+        return 0;
+    }
+
+    u8 candidate_mask = 0;
+    for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
+        const auto& att = state.color_attachments[cb];
+        if (att.is_clear || !att.image_view || (key.mrt_mask & (1u << cb)) == 0 ||
+            !cb_descs[cb].first) {
+            continue;
+        }
+        if (key.blend_controls[cb].enable) {
+            continue;
+        }
+        const auto& img = texture_cache.GetImage(cb_descs[cb].first);
+        const u32 req_mask = RequiredFormatWriteMask(img.info.pixel_format);
+        if ((u32(key.write_masks[cb]) & req_mask) != req_mask) {
+            continue;
+        }
+        candidate_mask |= u8(1u << cb);
+    }
+    if (candidate_mask == 0) {
+        return 0;
+    }
+
+    const auto& ds = scheduler.GetDynamicState();
+    const auto& scs = ds.CurrentScissors();
+    const auto& vps = ds.CurrentViewports();
+    if (scs.empty() || vps.empty()) {
+        return 0;
+    }
+    if (scs[0].offset.x > 0 || scs[0].offset.y > 0 ||
+        s64(scs[0].offset.x) + s64(scs[0].extent.width) < s64(state.width) ||
+        s64(scs[0].offset.y) + s64(scs[0].extent.height) < s64(state.height)) {
+        return 0;
+    }
+    const float w_f = float(state.width);
+    const float h_f = float(state.height);
+    const bool clip_disabled = regs.IsClipDisabled();
+    const vk::Viewport& vp = vps[0];
+    if (!clip_disabled) {
+        const float vp_x0 = std::min(vp.x, vp.x + vp.width);
+        const float vp_x1 = std::max(vp.x, vp.x + vp.width);
+        const float vp_y0 = std::min(vp.y, vp.y + vp.height);
+        const float vp_y1 = std::max(vp.y, vp.y + vp.height);
+        if (vp_x0 > 1e-2f || vp_x1 < w_f - 1e-2f || vp_y0 > 1e-2f || vp_y1 < h_f - 1e-2f) {
+            return 0;
+        }
+    } else if (vp.x > 1e-2f || vp.y > 1e-2f || vp.width < w_f - 1e-2f || vp.height < h_f - 1e-2f) {
+        return 0;
+    }
+
+    const auto resolve_cpu_ptr = [&](VAddr addr, u64 bytes) -> const u8* {
+        if (addr == 0 || bytes == 0) {
+            return nullptr;
+        }
+        if (HasPendingHleCopies() && PendingHleCopiesConflict(addr, bytes, false)) {
+            return nullptr;
+        }
+        if (const u8* mirror = direct_buffers.TryGetCpuMirrorPtr(addr, bytes)) {
+            return mirror;
+        }
+        if (VideoCore::DirectBuffers::OverlapsNativeOwnedRange(addr, bytes)) {
+            return nullptr;
+        }
+        const bool gpu_clean =
+            VideoCore::DirectBuffers::IsTransientCueHeap(addr, bytes)
+                ? (!VideoCore::DirectBuffers::IsCueHeapEverGpuModified() ||
+                   !buffer_cache.IsRegionGpuModified(addr, bytes))
+                : !buffer_cache.IsRegionGpuModified(addr, bytes);
+        if (!gpu_clean || memory->ClampRangeSize(addr, bytes) != bytes) {
+            return nullptr;
+        }
+        return reinterpret_cast<const u8*>(addr);
+    };
+
+    const auto& fetch = pipeline->GetFetchShader();
+    const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs, fetch);
+    (void)instance_offset;
+
+    std::array<u32, 6> vtx_indices{};
+    if (!is_indexed) {
+        for (u32 i = 0; i < count; ++i) {
+            vtx_indices[i] = vertex_offset + i;
+        }
+    } else {
+        const bool index16 = regs.index_buffer_type.index_type == Gcn::IndexType::Index16;
+        const u32 idx_size = index16 ? sizeof(u16) : sizeof(u32);
+        const VAddr ib_addr =
+            regs.index_base_address.Address<VAddr>() + u64(index_offset) * idx_size;
+        const u64 ib_bytes = u64(count) * idx_size;
+        const u8* ib_ptr = resolve_cpu_ptr(ib_addr, ib_bytes);
+        if (!ib_ptr) {
+            return 0;
+        }
+        const bool prim_restart = (regs.enable_primitive_restart & 1) != 0;
+        const s64 v_off = static_cast<s64>(static_cast<s32>(vertex_offset));
+        for (u32 i = 0; i < count; ++i) {
+            u32 raw_idx = 0;
+            if (index16) {
+                u16 v16 = 0;
+                std::memcpy(&v16, ib_ptr + i * sizeof(u16), sizeof(u16));
+                if (prim_restart && v16 == u16(regs.primitive_restart_index & 0xFFFFu)) {
+                    return 0;
+                }
+                raw_idx = v16;
+            } else {
+                std::memcpy(&raw_idx, ib_ptr + i * sizeof(u32), sizeof(u32));
+                if (prim_restart && raw_idx == regs.primitive_restart_index) {
+                    return 0;
+                }
+            }
+            const s64 eff = v_off + static_cast<s64>(raw_idx);
+            if (eff < 0 || eff > 0x7FFFFFFFLL) {
+                return 0;
+            }
+            vtx_indices[i] = static_cast<u32>(eff);
+        }
+    }
+
+    float cb_scale_x = 1.0f;
+    float cb_scale_y = 1.0f;
+    float cb0_z = 0.0f;
+    if (vs_kind == VsKind::PassThroughXYCb0Z_W || vs_kind == VsKind::YebisCb20_21ScaleXY) {
+        u32 cb_idx = ~0u;
+        for (u32 i = 0; i < vs.buffers.size(); ++i) {
+            if (!vs.buffers[i].IsSpecial()) {
+                if (cb_idx != ~0u) {
+                    return 0;
+                }
+                cb_idx = i;
+            }
+        }
+        if (cb_idx == ~0u) {
+            return 0;
+        }
+        const u64 needed_cb_bytes = (vs_kind == VsKind::YebisCb20_21ScaleXY) ? 88ULL : 4ULL;
+        const u8* cb_ptr = nullptr;
+        if (const auto* ring = FindRingBinding(vs, cb_idx)) {
+            if (ring->size >= needed_cb_bytes) {
+                cb_ptr = (ring->ring == 0) ? constant_ring->Data(ring->offset)
+                                           : worker_rings[ring->ring - 1]->Data(ring->offset);
+            }
+        } else {
+            const PreparedStage* prep_vs = nullptr;
+            if (draw_prepared && !BbToggle::Disabled(BbToggle::PreparedResources)) {
+                for (u32 i = 0; i < draw_prepared->num_stages; ++i) {
+                    const auto& cand = draw_prepared->stages[i];
+                    if (&cand.program->info == &vs && cand.num_buffers == vs.buffers.size()) {
+                        prep_vs = &cand;
+                        break;
+                    }
+                }
+            }
+            const Gcn::Buffer cb_sharp =
+                prep_vs ? prep_vs->buffer_sharps[cb_idx] : vs.buffers[cb_idx].GetSharp(vs);
+            if (!cb_sharp.Valid() || cb_sharp.GetSize() < needed_cb_bytes) {
+                return 0;
+            }
+            cb_ptr = resolve_cpu_ptr(cb_sharp.base_address, needed_cb_bytes);
+        }
+        if (!cb_ptr) {
+            return 0;
+        }
+        if (vs_kind == VsKind::YebisCb20_21ScaleXY) {
+            std::memcpy(&cb_scale_x, cb_ptr + 20 * sizeof(u32), sizeof(float));
+            std::memcpy(&cb_scale_y, cb_ptr + 21 * sizeof(u32), sizeof(float));
+        } else {
+            std::memcpy(&cb0_z, cb_ptr, sizeof(float));
+        }
+    }
+
+    Gcn::Buffer vb_attr0{};
+    if (vs_kind != VsKind::Procedural89cda9e4) {
+        if (!fetch) {
+            return 0;
+        }
+        bool found_attr0 = false;
+        for (u32 i = 0; i < fetch->attributes.size(); ++i) {
+            const auto& attrib = fetch->attributes[i];
+            if (attrib.semantic != 0) {
+                continue;
+            }
+            if (attrib.GetStepRate() != Shader::Gcn::VertexAttribute::InstanceIdType::None) {
+                return 0;
+            }
+            if (draw_prepared && draw_prepared->vertex.valid && i < draw_prepared->vertex.count &&
+                !BbToggle::Disabled(BbToggle::PreparedResources)) {
+                vb_attr0 = draw_prepared->vertex.buffers[i];
+            } else if (packet_vsharps.size() == fetch->attributes.size()) {
+                vb_attr0 = packet_vsharps[i];
+            } else {
+                vb_attr0 = attrib.GetSharp(vs);
+            }
+            found_attr0 = true;
+            break;
+        }
+        if (!found_attr0 || !vb_attr0.Valid() || vb_attr0.base_address == 0) {
+            return 0;
+        }
+    }
+
+    std::array<WinPt, 6> win_pts{};
+    const u64 vb_size = (vs_kind != VsKind::Procedural89cda9e4) ? vb_attr0.GetSize() : 0ULL;
+    const u64 vb_stride = (vs_kind != VsKind::Procedural89cda9e4) ? vb_attr0.GetStride() : 0ULL;
+    for (u32 i = 0; i < count; ++i) {
+        float px = 0.0f, py = 0.0f, pz = 0.0f, pw = 1.0f;
+        const u32 vid = vtx_indices[i];
+        if (vs_kind == VsKind::Procedural89cda9e4) {
+            px = float(static_cast<s32>(((vid & 1u) << 1) - 1u));
+            py = float(static_cast<s32>((vid & ~1u) - 1u));
+            pz = 0.0f;
+            pw = 1.0f;
+        } else {
+            if (vb_attr0.num_records != 0 && vb_stride > 0 && vid >= vb_attr0.num_records) {
+                return 0;
+            }
+            const u64 elem_off = u64(vid) * vb_stride;
+            if (elem_off >= vb_size) {
+                return 0;
+            }
+            const u64 avail = std::min<u64>(vb_size - elem_off, 16ULL);
+            const u8* elem_ptr = resolve_cpu_ptr(vb_attr0.base_address + elem_off, avail);
+            if (!elem_ptr) {
+                return 0;
+            }
+            std::array<float, 4> attr0{};
+            if (!DecodeFloatVertexAttr(vb_attr0, elem_ptr, avail, attr0)) {
+                return 0;
+            }
+            switch (vs_kind) {
+            case VsKind::PassThroughXYZW:
+                px = attr0[0];
+                py = attr0[1];
+                pz = attr0[2];
+                pw = attr0[3];
+                break;
+            case VsKind::PassThroughXYZ1:
+                px = attr0[0];
+                py = attr0[1];
+                pz = attr0[2];
+                pw = 1.0f;
+                break;
+            case VsKind::PassThroughXYCb0Z_W:
+                px = attr0[0];
+                py = attr0[1];
+                pz = cb0_z;
+                pw = attr0[3];
+                break;
+            case VsKind::YebisCb20_21ScaleXY:
+                px = cb_scale_x * attr0[0];
+                py = cb_scale_y * attr0[1];
+                pz = 0.1f;
+                pw = 1.0f;
+                break;
+            default:
+                return 0;
+            }
+        }
+        if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz) || !std::isfinite(pw) ||
+            pw <= 0.0f) {
+            return 0;
+        }
+        if (!clip_disabled) {
+            if (key.depth_clip_enable) {
+                const float z_min =
+                    (key.clip_space == Gcn::ClipSpace::MinusWToW) ? -pw - 1e-4f : -1e-4f;
+                if (pz < z_min || pz > pw + 1e-4f) {
+                    return 0;
+                }
+            }
+            const float nx = px / pw;
+            const float ny = py / pw;
+            win_pts[i].x = (vp.x + 0.5f * vp.width) + (0.5f * vp.width) * nx;
+            win_pts[i].y = (vp.y + 0.5f * vp.height) + (0.5f * vp.height) * ny;
+        } else {
+            if (std::abs(pw - 1.0f) > 1e-4f) {
+                return 0;
+            }
+            win_pts[i].x = px * push_data.xscale + push_data.xoffset;
+            win_pts[i].y = py * push_data.yscale + push_data.yoffset;
+        }
+    }
+
+    const auto prim = regs.primitive_type;
+    if (prim == Gcn::PrimitiveType::RectList) {
+        // GCN RectList: 3 corners of an axis-aligned screen rectangle (never face-culled).
+        const WinPt p0 = win_pts[0], p1 = win_pts[1], p2 = win_pts[2];
+        const bool ortho0 = (std::abs(p1.x - p0.x) <= 2e-2f && std::abs(p2.y - p0.y) <= 2e-2f) ||
+                            (std::abs(p1.y - p0.y) <= 2e-2f && std::abs(p2.x - p0.x) <= 2e-2f);
+        const bool ortho1 = (std::abs(p0.x - p1.x) <= 2e-2f && std::abs(p2.y - p1.y) <= 2e-2f) ||
+                            (std::abs(p0.y - p1.y) <= 2e-2f && std::abs(p2.x - p1.x) <= 2e-2f);
+        const bool ortho2 = (std::abs(p0.x - p2.x) <= 2e-2f && std::abs(p1.y - p2.y) <= 2e-2f) ||
+                            (std::abs(p0.y - p2.y) <= 2e-2f && std::abs(p1.x - p2.x) <= 2e-2f);
+        if (!ortho0 && !ortho1 && !ortho2) {
+            return 0;
+        }
+        const float rx0 = std::min({p0.x, p1.x, p2.x});
+        const float rx1 = std::max({p0.x, p1.x, p2.x});
+        const float ry0 = std::min({p0.y, p1.y, p2.y});
+        const float ry1 = std::max({p0.y, p1.y, p2.y});
+        return (rx0 <= 2e-2f && rx1 >= w_f - 2e-2f && ry0 <= 2e-2f && ry1 >= h_f - 2e-2f)
+                   ? candidate_mask
+                   : 0;
+    }
+
+    std::array<WinTri, 2> tris{};
+    u32 num_tris = 0;
+    const vk::CullModeFlags cull_mode =
+        GcnToVk::IsPrimitiveCulled(prim) ? GcnToVk::CullMode(regs.polygon_control.CullingMode())
+                                         : vk::CullModeFlagBits::eNone;
+    const vk::FrontFace front_face = GcnToVk::FrontFace(regs.polygon_control.front_face);
+    if (cull_mode == vk::CullModeFlagBits::eFrontAndBack) {
+        return 0;
+    }
+    const auto push_tri = [&](WinPt a, WinPt b, WinPt c) {
+        const float det = Cross2D(a, b, c);
+        if (std::abs(det) <= 1e-2f) {
+            return;
+        }
+        if (cull_mode != vk::CullModeFlagBits::eNone) {
+            const bool is_front =
+                (front_face == vk::FrontFace::eCounterClockwise) ? (det < 0.0f) : (det > 0.0f);
+            if ((cull_mode == vk::CullModeFlagBits::eFront && is_front) ||
+                (cull_mode == vk::CullModeFlagBits::eBack && !is_front)) {
+                return;
+            }
+        }
+        if (num_tris < tris.size()) {
+            tris[num_tris++] = WinTri{{a, b, c}, det};
+        }
+    };
+
+    switch (prim) {
+    case Gcn::PrimitiveType::TriangleList:
+        if (count == 3) {
+            push_tri(win_pts[0], win_pts[1], win_pts[2]);
+        } else if (count == 6) {
+            push_tri(win_pts[0], win_pts[1], win_pts[2]);
+            push_tri(win_pts[3], win_pts[4], win_pts[5]);
+        } else {
+            return 0;
+        }
+        break;
+    case Gcn::PrimitiveType::TriangleStrip:
+        if (count == 3) {
+            push_tri(win_pts[0], win_pts[1], win_pts[2]);
+        } else if (count == 4) {
+            push_tri(win_pts[0], win_pts[1], win_pts[2]);
+            push_tri(win_pts[2], win_pts[1], win_pts[3]);
+        } else {
+            return 0;
+        }
+        break;
+    case Gcn::PrimitiveType::TriangleFan:
+    case Gcn::PrimitiveType::QuadList:
+        if (count == 4) {
+            push_tri(win_pts[0], win_pts[1], win_pts[2]);
+            push_tri(win_pts[0], win_pts[2], win_pts[3]);
+        } else {
+            return 0;
+        }
+        break;
+    default:
+        return 0;
+    }
+
+    bool covered = false;
+    if (num_tris == 1) {
+        covered = TriangleCoversRect(tris[0], w_f, h_f);
+    } else if (num_tris == 2) {
+        covered = TwoTrianglesCoverRect(tris[0], tris[1], w_f, h_f);
+    }
+    return covered ? candidate_mask : 0;
+}
+
 void Rasterizer::BeginDraw(const GraphicsPipeline* pipeline, const RenderState& state,
-                           bool is_indexed, bool jitter_eligible) {
+                           bool is_indexed, bool jitter_eligible,
+                           const PreparedDraw* draw_prepared, u32 index_offset,
+                           bool allow_dont_care) {
     // The upscaler's sub-pixel jitter, for geometry drawn with the scene depth.
     draw_jitter = {};
     if (jitter_eligible && upscaler->Enabled() && db_desc.first &&
@@ -862,7 +1524,12 @@ void Rasterizer::BeginDraw(const GraphicsPipeline* pipeline, const RenderState& 
     if (occlusion) {
         occlusion->SetPassScale(target_scale[0] * target_scale[1]); // samples at the game's size
     }
-    scheduler.BeginRendering(state);
+    const u8 color_dont_care_mask =
+        (allow_dont_care && scheduler.WillBeginRendering(state))
+            ? ComputeFullscreenOverwriteMask(pipeline, state, draw_prepared, is_indexed,
+                                             index_offset)
+            : 0;
+    scheduler.BeginRendering(state, color_dont_care_mask);
     // Push constants after the pass begins: beginning it may record the occlusion results' compute
     // dispatch (OcclusionQueries::Suspend), and the driver keeps one set of push constants for
     // compute and graphics. Its 8 bytes over xoffset/yoffset drew single frames shifted by half the

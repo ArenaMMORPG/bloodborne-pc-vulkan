@@ -829,33 +829,64 @@ void Rasterizer::DirectCopyTextureRegion(const DirectCopyTextureRegionArgs& args
         }
     }
 
-    Gcn::Image srv_gcn{};
-    Gcn::Image uav_gcn{};
-    std::memcpy(&srv_gcn, args.srv_tsharp, sizeof(srv_gcn));
-    std::memcpy(&uav_gcn, args.uav_tsharp, sizeof(uav_gcn));
-    if (!srv_gcn.Valid() || !uav_gcn.Valid()) {
+    const auto resolve_copy_image = [&](const u64 raw_words[4], bool is_written,
+                                        VideoCore::ImageId& out_id,
+                                        VideoCore::SubresourceRange& out_view_range) -> bool {
+        Gcn::Image sharp{};
+        std::memcpy(&sharp, raw_words, sizeof(sharp));
+        u8 srv_gen8 = 0u;
+        const u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(sharp, srv_gen8);
+        if (!sharp.Valid()) {
+            return false;
+        }
+        Shader::ImageResource res{};
+        res.is_written = is_written;
+        res.needs_native = true;
+        auto& entry = ResolveImageDescEntry(sharp, srv_uid, srv_gen8, res, nullptr);
+        const u64 current_gen = texture_cache.RegistryGeneration();
+        if ((entry.found_generation == current_gen ||
+             (entry.found_direct_immutable &&
+              texture_cache.IsRegisteredImmutable(entry.found_id, entry.found_uid))) &&
+            entry.found_id && !BbToggle::Disabled(BbToggle::TextureBindingMemo)) {
+            entry.found_generation = current_gen;
+            out_id = entry.found_id;
+            out_view_range = entry.found_desc.view_info.range;
+            texture_cache.MarkFound(out_id);
+            texture_cache.UpdateImage(out_id);
+            return true;
+        }
+        const u64 gen_before = texture_cache.RegistryGeneration();
+        out_id = texture_cache.FindImage(entry.desc);
+        if (!out_id) {
+            return false;
+        }
+        out_view_range = entry.desc.view_info.range;
+        if (gen_before == texture_cache.RegistryGeneration()) {
+            auto& img = texture_cache.GetImageUntouched(out_id);
+            entry.found_generation = gen_before;
+            entry.found_id = out_id;
+            entry.found_uid = img.image_uid;
+            entry.found_direct_immutable =
+                True(img.flags & VideoCore::ImageFlagBits::DirectImmutable) &&
+                !texture_cache.GetAssociatedDepth(img);
+            entry.found_desc = entry.desc;
+            entry.view_memo = {};
+        }
+        texture_cache.UpdateImage(out_id);
+        return true;
+    };
+
+    VideoCore::ImageId src_id{};
+    VideoCore::SubresourceRange src_view_range{};
+    if (!resolve_copy_image(args.srv_tsharp, false, src_id, src_view_range)) {
         return;
     }
 
-    Shader::ImageResource src_res{};
-    src_res.is_written = false;
-    src_res.needs_native = true;
-    VideoCore::TextureCache::ImageDesc src_desc{srv_gcn, src_res};
-    const auto src_id = texture_cache.FindImage(src_desc);
-    if (!src_id) {
+    VideoCore::ImageId dst_id{};
+    VideoCore::SubresourceRange dst_view_range{};
+    if (!resolve_copy_image(args.uav_tsharp, true, dst_id, dst_view_range)) {
         return;
     }
-    texture_cache.UpdateImage(src_id);
-
-    Shader::ImageResource dst_res{};
-    dst_res.is_written = true;
-    dst_res.needs_native = true;
-    VideoCore::TextureCache::ImageDesc dst_desc{uav_gcn, dst_res};
-    const auto dst_id = texture_cache.FindImage(dst_desc);
-    if (!dst_id) {
-        return;
-    }
-    texture_cache.UpdateImage(dst_id);
 
     auto& src_img = texture_cache.GetImage(src_id);
     auto& dst_img = texture_cache.GetImage(dst_id);
@@ -867,15 +898,15 @@ void Rasterizer::DirectCopyTextureRegion(const DirectCopyTextureRegionArgs& args
     }
 
     const u32 src_mip =
-        std::min(src_desc.view_info.range.base.level, src_img.info.resources.levels - 1);
+        std::min(src_view_range.base.level, src_img.info.resources.levels - 1);
     const u32 dst_mip =
-        std::min(dst_desc.view_info.range.base.level, dst_img.info.resources.levels - 1);
+        std::min(dst_view_range.base.level, dst_img.info.resources.levels - 1);
     const bool src_3d = src_img.info.type == Gcn::ImageType::Color3D;
     const bool dst_3d = dst_img.info.type == Gcn::ImageType::Color3D;
     const u32 src_layer =
-        src_3d ? 0u : std::min(src_desc.view_info.range.base.layer, src_img.info.resources.layers - 1);
+        src_3d ? 0u : std::min(src_view_range.base.layer, src_img.info.resources.layers - 1);
     const u32 dst_layer =
-        dst_3d ? 0u : std::min(dst_desc.view_info.range.base.layer, dst_img.info.resources.layers - 1);
+        dst_3d ? 0u : std::min(dst_view_range.base.layer, dst_img.info.resources.layers - 1);
 
     const u32 src_mip_w = std::max(src_img.info.size.width >> src_mip, 1u);
     const u32 src_mip_h = std::max(src_img.info.size.height >> src_mip, 1u);

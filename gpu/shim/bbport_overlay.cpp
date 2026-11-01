@@ -1314,7 +1314,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             const auto shd = Vulkan::DirectShaders::ReadTelemetry();
             std::fprintf(f,
                          "FPS: %.1f (%.2f ms/f) | Avg: %.1f FPS (%.2f ms/f) | Scene: %dx%d -> %dx%d | Upscaler: %s (%s)%s\n"
-                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%% | NativeVkTex %.1f%% | DescSaved %.1f%%\n"
+                         "Counts/f: Draws %.0f | Disp %.0f | Subm %.1f | PipeDrains %.1f | Faults/s %.1f | LegacyEoP/f %.1f | NativeVkBuf %.1f%% | NativeVkTex %.1f%% | DescSaved %.1f%% | DontCare %llu/%llu\n"
                          "DirectShaders: reg %llu | manifest %llu/%u | stageA_hits %llu | worker_hits %llu\n"
                          "1. Game CPU / Gnm: IdleA %.2f ms | GnmWait %.2f ms\n"
                          "2. Stage A (GpuComm): PM4+Pipe %.2f ms | ConstRing %.2f ms | WaitDrainB %.2f ms (FlushA %.2f ms)\n"
@@ -1330,6 +1330,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                          h.draws_pf, h.dispatches_pf, h.submits_pf, h.drains_pf,
                          h.faults_ps, h.eop_pf, h.native_buf_pct, h.native_tex_pct,
                          h.desc_saved_pct,
+                         static_cast<unsigned long long>(BbStats::dont_care_passes.load(std::memory_order_relaxed)),
+                         static_cast<unsigned long long>(BbStats::total_render_passes.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(shd.registered_binaries),
                          static_cast<unsigned long long>(shd.manifest_binaries_bound),
                          shd.manifest_total,

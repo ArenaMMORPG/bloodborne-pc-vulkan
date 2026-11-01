@@ -168,7 +168,7 @@ Scheduler::~Scheduler() {
     }
 }
 
-void Scheduler::BeginRendering(const RenderState& state) {
+void Scheduler::BeginRendering(const RenderState& state, u8 color_dont_care_mask) {
     if (is_rendering && render_state == state) {
         return;
     }
@@ -201,15 +201,27 @@ void Scheduler::BeginRendering(const RenderState& state) {
     const auto load = [resume](bool clear) {
         return clear && !resume ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
     };
+    bool any_dont_care = false;
     for (u32 i = 0; i < state.num_color_attachments; ++i) {
         const auto& color = state.color_attachments[i];
+        vk::AttachmentLoadOp color_load = load(color.is_clear);
+        if (!resume && !color.is_clear && (color_dont_care_mask & (1u << i)) != 0) {
+            color_load = vk::AttachmentLoadOp::eDontCare;
+            any_dont_care = true;
+        }
         pass.colors[i] = {
             .imageView = color.image_view,
             .imageLayout = color.image_layout,
-            .loadOp = load(color.is_clear),
+            .loadOp = color_load,
             .storeOp = vk::AttachmentStoreOp::eStore,
             .clearValue = {.color = {.uint32 = color.clear_value}},
         };
+    }
+    if (!resume && state.num_color_attachments > 0) {
+        BbStats::total_render_passes.fetch_add(1, std::memory_order_relaxed);
+        if (any_dont_care) {
+            BbStats::dont_care_passes.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     const auto& ds = state.depth_stencil_attachment;
     const bool depth_readonly =

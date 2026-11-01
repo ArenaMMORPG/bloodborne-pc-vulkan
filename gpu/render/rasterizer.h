@@ -509,8 +509,12 @@ private:
     /// pass (`jitter_eligible`: not a full-screen pass).
     void NoteUpscalerDraw(const GraphicsPipeline* pipeline);
     void ScaleToTarget(const GraphicsPipeline* pipeline);
+    u8 ComputeFullscreenOverwriteMask(const GraphicsPipeline* pipeline, const RenderState& state,
+                                      const PreparedDraw* draw_prepared, bool is_indexed,
+                                      u32 index_offset);
     void BeginDraw(const GraphicsPipeline* pipeline, const RenderState& state, bool is_indexed,
-                   bool jitter_eligible);
+                   bool jitter_eligible, const PreparedDraw* draw_prepared = nullptr,
+                   u32 index_offset = 0, bool allow_dont_care = false);
     /// Everything of a direct draw after the pipeline selection (GPU thread or stage B).
     void DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                     bool is_indexed, u32 index_offset);
