@@ -122,15 +122,20 @@ public:
     void Count(bool used, Miss why = NotReady);
 
     struct Submission {
+        static constexpr u32 MaxSubmissionWorkers = 2;
+        static constexpr u32 StripeDraws = 32;
         u64 seq{};
         std::vector<u32> commands;
         std::unique_ptr<PreparedDraw[]> draws;
         u32 num_draws{};
-        std::vector<std::unique_ptr<u32[]>> flat_chunks; ///< from the claiming worker
+        u32 max_workers{1};
+        std::array<std::vector<std::unique_ptr<u32[]>>, MaxSubmissionWorkers> worker_flat_chunks;
         u64 start_checksum{}, end_checksum{}; ///< set by the scanner
         Gcn::RegDelta delta;                ///< registers written, values at the end
+        std::atomic<u32> claimed_workers{0};
+        std::atomic<u32> gpu_ordinal{0};
+        std::atomic<bool> start_ready{false};
         std::atomic<bool> scanned{false};
-        std::atomic<bool> claimed{false};
         std::atomic<bool> gpu_done{false};
     };
 

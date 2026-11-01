@@ -43,22 +43,36 @@ inline void MakeBackground() {
 #endif
 }
 
+/// Low-priority SCHED_OTHER helper on >=16-thread CPUs (never starved like SCHED_IDLE, while
+/// yielding gracefully to nice-0 game and GPU threads); falls back to MakeBackground() on smaller CPUs.
+inline void MakeLowPriority() {
+#ifdef _WIN32
+    bb_win32_background_thread();
+#else
+    if (Available() >= 16) {
+        setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 10);
+    } else {
+        MakeBackground();
+    }
+#endif
+}
+
 /// Helper threads of the GPU side that the GPU command thread's progress depends on (Vulkan
 /// recording threads, guest memory copy threads): a fault there must never wait for that thread
 /// (a read trap's copy back goes through it for the game's threads). Set once per thread.
 inline thread_local bool gpu_side_helper = false;
 
 #ifndef _WIN32
-/// bbport: the hot GPU-side chain (GPU command thread -> draw recording thread -> Vulkan recording
-/// threads) hands every draw from one thread to the next through shared memory. On CPUs with
-/// several L3 domains (Ryzen 7950X: two CCDs) the scheduler spread them over both (seen: command
-/// thread on CCD1, recording thread on CCD0): every packet and handshake crossed the Infinity
-/// Fabric. They are kept on one L3 domain: the one with the highest preferred-core ranking
-/// (the faster CCD). BB_GPU_CCD=n picks domain n, BB_GPU_CCD=off leaves them to the scheduler.
-inline void PinToGpuDomain() {
-    static const cpu_set_t domain = [] {
-        cpu_set_t none;
-        CPU_ZERO(&none);
+struct L3DomainPair {
+    cpu_set_t gpu;
+    cpu_set_t helper;
+};
+
+inline const L3DomainPair& GetL3Domains() {
+    static const L3DomainPair pair = [] {
+        L3DomainPair none{};
+        CPU_ZERO(&none.gpu);
+        CPU_ZERO(&none.helper);
         const char* env = std::getenv("BB_GPU_CCD");
         if (env && (env[0] == 'o' || env[0] == '-')) {
             return none;
@@ -140,17 +154,41 @@ inline void PinToGpuDomain() {
                 }
             }
         }
+        const int helper_pick = (pick + 1) % count;
         std::printf("GPU: command, draw recording and Vulkan recording threads kept on L3 domain "
-                    "%d of %d (%d CPUs; BB_GPU_CCD=off: anywhere)\n",
-                    pick, count, CPU_COUNT(&domains[pick].cpus));
-        return domains[pick].cpus;
+                    "%d of %d (%d CPUs; helpers on domain %d, %d CPUs; BB_GPU_CCD=off: anywhere)\n",
+                    pick, count, CPU_COUNT(&domains[pick].cpus), helper_pick,
+                    CPU_COUNT(&domains[helper_pick].cpus));
+        return L3DomainPair{domains[pick].cpus, domains[helper_pick].cpus};
     }();
+    return pair;
+}
+
+/// bbport: the hot GPU-side chain (GPU command thread -> draw recording thread -> Vulkan recording
+/// threads) hands every draw from one thread to the next through shared memory. On CPUs with
+/// several L3 domains (Ryzen 7950X: two CCDs) the scheduler spread them over both (seen: command
+/// thread on CCD1, recording thread on CCD0): every packet and handshake crossed the Infinity
+/// Fabric. They are kept on one L3 domain: the one with the highest preferred-core ranking
+/// (the faster CCD). BB_GPU_CCD=n picks domain n, BB_GPU_CCD=off leaves them to the scheduler.
+inline void PinToGpuDomain() {
+    const auto& domain = GetL3Domains().gpu;
+    if (CPU_COUNT(&domain) != 0) {
+        sched_setaffinity(0, sizeof(domain), &domain);
+    }
+}
+
+/// Offloads auxiliary streaming/speculative helpers (ConstantRing resolve, DrawScan, DrawPrep)
+/// onto the sibling L3 domain (CCD1 on 2-CCD Ryzen) so they share an L3 cache among themselves
+/// without stealing physical cores or SMT siblings from Stage A / Stage B on CCD0.
+inline void PinToHelperDomain() {
+    const auto& domain = GetL3Domains().helper;
     if (CPU_COUNT(&domain) != 0) {
         sched_setaffinity(0, sizeof(domain), &domain);
     }
 }
 #else
 inline void PinToGpuDomain() {}
+inline void PinToHelperDomain() {}
 #endif
 
 } // namespace BbThreads

@@ -106,12 +106,15 @@ u32 DefaultWorkerCount() {
     return available >= 12 ? std::min<u32>(available / 4, 8) : 1;
 }
 
-/// Flattened user data of one submission: chunks never move, so the GPU thread can read a
-/// prepared draw's data while the worker keeps appending.
+/// Flattened user data of one submission stripe: chunks are appended directly into the
+/// submission's per-stripe vector and never relocate, so Stage A / Stage B can safely read a
+/// prepared draw's pointers while the worker keeps appending or aborts early.
 struct FlatArena {
     static constexpr size_t ChunkWords = 16 * 1024;
-    std::vector<std::unique_ptr<u32[]>> chunks;
+    std::vector<std::unique_ptr<u32[]>>* chunks = nullptr;
     size_t used = ChunkWords;
+
+    explicit FlatArena(std::vector<std::unique_ptr<u32[]>>& out_chunks) : chunks{&out_chunks} {}
 
     const u32* Append(const std::vector<u32>& data) {
         return AppendArray(data.data(), data.size());
@@ -123,11 +126,11 @@ struct FlatArena {
         static_assert(std::is_trivially_copyable_v<T> && alignof(T) <= 8);
         const size_t words = (count * sizeof(T) + sizeof(u32) - 1) / sizeof(u32);
         used = (used + 1) & ~size_t(1);
-        if (chunks.empty() || words > ChunkWords - std::min(used, ChunkWords)) {
-            chunks.push_back(std::make_unique<u32[]>(std::max(ChunkWords, words)));
+        if (chunks->empty() || words > ChunkWords - std::min(used, ChunkWords)) {
+            chunks->push_back(std::make_unique<u32[]>(std::max(ChunkWords, words)));
             used = 0;
         }
-        u32* dst = chunks.back().get() + used;
+        u32* dst = chunks->back().get() + used;
         if (count) {
             std::memcpy(dst, data, count * sizeof(T));
         }
@@ -290,6 +293,9 @@ void PrepareVertexInputs(const Shader::Info& vs, const Shader::Gcn::FetchShaderD
 
 DrawPreparation::DrawPreparation(PipelineCache& pipeline_cache_)
     : pipeline_cache{pipeline_cache_} {
+#ifndef _WIN32
+    (void)BbThreads::GetL3Domains(); // Prime full affinity mask before any thread pins itself
+#endif
     worker_count = DefaultWorkerCount();
     if (worker_count) {
         scanner = std::jthread([this](std::stop_token stop) { ScannerLoop(stop); });
@@ -325,6 +331,8 @@ std::shared_ptr<DrawPreparation::Submission> DrawPreparation::Build(
     ForEachPacket(submission->commands, [&](const u32* packet) {
         submission->num_draws += IsDirectDrawPacket(packet);
     });
+    submission->max_workers =
+        (submission->num_draws >= 128 && worker_count >= 2) ? Submission::MaxSubmissionWorkers : 1u;
     submission->draws = std::make_unique<PreparedDraw[]>(submission->num_draws);
     return submission;
 }
@@ -426,7 +434,9 @@ const PreparedDraw* DrawPreparation::NextDraw() {
     if (!current || current_draw >= current->num_draws) {
         return nullptr;
     }
-    const PreparedDraw* draw = &current->draws[current_draw++];
+    const u32 ord = current_draw++;
+    current->gpu_ordinal.store(ord + 1, std::memory_order_relaxed);
+    const PreparedDraw* draw = &current->draws[ord];
     if (BbToggle::Disabled(BbToggle::DrawPreparation)) {
         return nullptr;
     }
@@ -458,9 +468,8 @@ void DrawPreparation::Collect() {
 
 void DrawPreparation::ScannerLoop(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:DrawScan");
-    if (BbThreads::Available() < 16) {
-        BbThreads::MakeBackground();
-    }
+    BbThreads::PinToHelperDomain();
+    BbThreads::MakeLowPriority();
     std::unique_ptr<Gcn::Regs> regs;
     u64 checksum = 0;
     u64 next_seq = 0;
@@ -502,8 +511,17 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
             }
             // Unscanned buffers are only collected by a rebase, so `next_seq` is still queued.
             submission = submissions[next_seq - submissions.front()->seq];
+            // Publish `start_checksum` immediately BEFORE scanning `commands` (~180 us on large
+            // submissions!): all earlier submissions (`< next_seq`) already have `delta` ready, so
+            // workers can start preparing `submission` at t = 0 us in parallel with the scan.
+            submission->start_checksum = checksum;
+            submission->start_ready.store(true, std::memory_order_release);
         }
-        submission->start_checksum = checksum;
+        if (submission->max_workers > 1) {
+            worker_cv.notify_all();
+        } else {
+            worker_cv.notify_one();
+        }
         dirty.Clear();
         ForEachPacket(submission->commands, [&](const u32* packet) {
             BbCp::CommandProcessor::ApplyGraphicsRegisterPacket(*regs, packet, checksum, &dirty);
@@ -515,16 +533,13 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
             submission->scanned.store(true, std::memory_order_release);
         }
         ++next_seq;
-        // V7.2: Exactly 1 submission became scanned -> wake 1 worker instead of a thundering herd.
-        worker_cv.notify_one();
     }
 }
 
 void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
     Common::SetCurrentThreadName(("bb:DrawPrep" + std::to_string(index)).c_str());
-    if (BbThreads::Available() < 16) {
-        BbThreads::MakeBackground();
-    }
+    BbThreads::PinToHelperDomain();
+    BbThreads::MakeLowPriority();
     auto regs = std::make_unique<Gcn::Regs>();
     constexpr u64 NoPosition = ~0ull;
     u64 position = NoPosition; ///< `regs` holds the state at the start of this buffer
@@ -532,16 +547,16 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
     sel.regs = regs.get();
     PrepWorker prep_worker{};
     sel.worker = &prep_worker;
-    FlatArena arena;
     std::vector<std::shared_ptr<Submission>> path;
 
-    // The nearest scanned buffer the GPU thread has not reached and no worker has claimed.
+    // The nearest ready buffer the GPU thread has not finished that still has open stripe slots.
     const auto claimable = [&]() -> std::shared_ptr<Submission> {
         const u64 gpu = gpu_seq.load(std::memory_order_acquire);
         for (const auto& submission : submissions) {
             if (submission->seq >= gpu && submission->seq >= tail_seq &&
-                submission->scanned.load(std::memory_order_acquire) &&
-                !submission->claimed.load(std::memory_order_relaxed)) {
+                submission->start_ready.load(std::memory_order_acquire) &&
+                submission->claimed_workers.load(std::memory_order_relaxed) <
+                    submission->max_workers) {
                 return submission;
             }
         }
@@ -550,6 +565,8 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
 
     while (!stop.stop_requested()) {
         std::shared_ptr<Submission> target;
+        u32 stripe_id = 0;
+        u32 num_stripes = 1;
         bool more_claimable = false;
         {
             std::unique_lock lk{mutex};
@@ -562,7 +579,8 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
             if (stop.stop_requested() || !target) {
                 return;
             }
-            target->claimed.store(true, std::memory_order_relaxed);
+            stripe_id = target->claimed_workers.fetch_add(1, std::memory_order_relaxed);
+            num_stripes = target->max_workers;
             more_claimable = (claimable() != nullptr);
             // Buffers between this worker's state and the target: their deltas. A position
             // already collected (or past the target) restarts from the queue's tail state.
@@ -585,52 +603,81 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
         path.clear();
         u64 checksum = target->start_checksum;
         u32 ordinal = 0;
-        arena = FlatArena{};
-        ForEachPacket(target->commands, [&](const u32* packet) {
+        FlatArena arena{target->worker_flat_chunks[stripe_id]};
+        bool aborted = false;
+        const auto& cmds = target->commands;
+        for (size_t at = 0; at < cmds.size();) {
+            const u32* packet = cmds.data() + at;
+            const BbCp::Header header{*packet};
+            if (header.Type() == 2) {
+                ++at;
+                continue;
+            }
+            if (header.Type() != 3) {
+                break;
+            }
+            const size_t words = header.BodyWords() + 1;
+            if (at + words > cmds.size()) {
+                break;
+            }
+            at += words;
+
             BbCp::CommandProcessor::ApplyGraphicsRegisterPacket(*regs, packet, checksum);
             if (!IsDirectDrawPacket(packet)) {
-                return;
+                continue;
             }
-            // Past the GPU thread the draws are no longer worth preparing.
-            if (ordinal < target->num_draws &&
-                target->seq >= gpu_seq.load(std::memory_order_acquire)) {
-                auto& draw = target->draws[ordinal];
-                prep_worker.stages.clear();
-                prep_worker.failed = false;
-                sel.draw_indirect_params = {};
-                if (pipeline_cache.PrepareGraphicsPipeline(sel)) {
-                    draw.reg_checksum = checksum;
-                    draw.key = sel.graphics_key;
-                    draw.key_hash = std::hash<GraphicsPipelineKey>{}(draw.key);
-                    draw.num_stages = static_cast<u32>(prep_worker.stages.size());
-                    for (u32 i = 0; i < draw.num_stages; ++i) {
-                        const auto& stage = prep_worker.stages[i];
-                        draw.stages[i] = {
-                            .program = stage.program,
-                            .hash = stage.hash,
-                            .hw_stage = stage.hw_stage,
-                            .pgm_base = stage.pgm_base,
-                            .flat = arena.Append(*stage.flat),
-                            .flat_size = static_cast<u32>(stage.flat->size()),
-                        };
-                        PrepareResources(prep_worker.infos.at(stage.program), draw.stages[i],
-                                         arena);
+            const u64 cur_gpu = gpu_seq.load(std::memory_order_acquire);
+            if (target->seq < cur_gpu) {
+                // Stage A already retired this entire submission; abort immediately.
+                aborted = true;
+                break;
+            }
+            const bool my_stripe =
+                (num_stripes == 1) ||
+                (((ordinal / Submission::StripeDraws) % num_stripes) == stripe_id);
+            if (my_stripe && ordinal < target->num_draws) {
+                // If Stage A is currently executing this submission, never burn CPU behind it:
+                // skip straight ahead by 12 draws (register replay above costs ~0.03 us/draw).
+                const bool overtaken =
+                    (target->seq == cur_gpu) &&
+                    (ordinal < target->gpu_ordinal.load(std::memory_order_relaxed) + 12u);
+                if (!overtaken) {
+                    auto& draw = target->draws[ordinal];
+                    prep_worker.stages.clear();
+                    prep_worker.failed = false;
+                    sel.draw_indirect_params = {};
+                    if (pipeline_cache.PrepareGraphicsPipeline(sel)) {
+                        draw.reg_checksum = checksum;
+                        draw.key = sel.graphics_key;
+                        draw.key_hash = std::hash<GraphicsPipelineKey>{}(draw.key);
+                        draw.num_stages = static_cast<u32>(prep_worker.stages.size());
+                        for (u32 i = 0; i < draw.num_stages; ++i) {
+                            const auto& stage = prep_worker.stages[i];
+                            draw.stages[i] = {
+                                .program = stage.program,
+                                .hash = stage.hash,
+                                .hw_stage = stage.hw_stage,
+                                .pgm_base = stage.pgm_base,
+                                .flat = arena.Append(*stage.flat),
+                                .flat_size = static_cast<u32>(stage.flat->size()),
+                            };
+                            PrepareResources(prep_worker.infos.at(stage.program), draw.stages[i],
+                                             arena);
+                        }
+                        draw.vertex.valid = false;
+                        const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
+                        if (vs && sel.fetch_shader) {
+                            PrepareVertexInputs(*vs, *sel.fetch_shader, *regs, draw.vertex, arena);
+                        }
+                        draw.state.store(PreparedDraw::Ready, std::memory_order_release);
+                    } else {
+                        draw.state.store(PreparedDraw::Unavailable, std::memory_order_release);
                     }
-                    draw.vertex.valid = false;
-                    const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
-                    if (vs && sel.fetch_shader) {
-                        PrepareVertexInputs(*vs, *sel.fetch_shader, *regs, draw.vertex, arena);
-                    }
-                    draw.state.store(PreparedDraw::Ready, std::memory_order_release);
-                } else {
-                    draw.state.store(PreparedDraw::Unavailable, std::memory_order_release);
                 }
             }
             ++ordinal;
-        });
-        // The arena's chunks live as long as the submission.
-        target->flat_chunks = std::move(arena.chunks);
-        position = target->seq + 1;
+        }
+        position = aborted ? NoPosition : (target->seq + 1);
     }
 }
 

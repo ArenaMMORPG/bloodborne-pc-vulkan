@@ -339,12 +339,12 @@ private:
         char name[16];
         std::snprintf(name, sizeof(name), "bb:Resolve%u", worker);
         Common::SetCurrentThreadName(name);
-        BbThreads::PinToGpuDomain();
+        BbThreads::PinToHelperDomain();
         static const auto spin_time = std::chrono::microseconds([] {
             if (const char* env = std::getenv("BB_PIPE_SPIN_US")) {
                 return std::max(0, std::atoi(env));
             }
-            return BbThreads::Available() >= 12 ? 200 : 50;
+            return 50;
         }());
         const bool single_worker = (num_resolvers == 1);
         u64 single_next = 1;
