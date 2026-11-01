@@ -487,6 +487,7 @@ Rasterizer::BeginSignature Rasterizer::MakeBeginSignature(const GraphicsPipeline
     std::memcpy(&sig.depth_control, &regs.depth_control, sizeof(u32));
     sig.depth_valid = regs.depth_buffer.DepthValid();
     sig.stencil_valid = regs.depth_buffer.StencilValid();
+    sig.stencil_write = regs.WritesStencil();
     sig.native_viewport = UiComposition::NativeViewport(regs.viewports[0].xscale * 2,
                                                         regs.viewports[0].yscale * 2) ||
                           (regs.IsClipDisabled() && !regs.viewport_control.xscale_enable &&
@@ -529,7 +530,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
                 const auto& image = texture_cache.GetImage(id);
                 const bool is_readonly_depth =
                     (i == Gcn::NUM_COLOR_BUFFERS) && !db_desc.second.view_info.is_storage &&
-                    !(image.info.props.has_stencil && regs.depth_control.stencil_enable);
+                    !(image.info.props.has_stencil && regs.WritesStencil());
                 usable = (!image.binding.is_bound || is_readonly_depth) &&
                          !image.binding.needs_rebind;
             }
@@ -772,10 +773,13 @@ void Rasterizer::BindDepthAttachment(RenderState& state, bool reduced, TargetRed
     ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
     // Read-only depth layouts unless it is also written as storage; stencil writes can be on
-    // while depth writes are off.
+    // while depth writes are off. Pure read-only stencil tests (ops == Keep or write_mask == 0)
+    // stay in eDepthStencilReadOnlyOptimal so deferred lighting draws sampling depth while
+    // testing stencil never ping-pong layouts or split the render pass.
     const bool has_stencil = image.info.props.has_stencil;
-    const bool storage = desc.view_info.is_storage;
-    const bool stencil_write = has_stencil && regs.depth_control.stencil_enable && !storage;
+    const bool storage = desc.view_info.is_storage || is_depth_clear;
+    const bool stencil_write =
+        has_stencil && !storage && (regs.WritesStencil() || is_stencil_clear);
     const bool readonly_depth = !storage && !stencil_write;
     const auto layout = storage ? (has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                                                : vk::ImageLayout::eDepthAttachmentOptimal)

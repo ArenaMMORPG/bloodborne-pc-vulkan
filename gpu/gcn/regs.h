@@ -188,6 +188,33 @@ union Regs {
         return clipper_control.clip_disable || primitive_type == PrimitiveType::RectList;
     }
 
+    bool WritesStencil() const noexcept {
+        if (!depth_buffer.StencilValid()) {
+            return false;
+        }
+        if (depth_render_control.stencil_clear_enable) {
+            return true;
+        }
+        if (!depth_control.stencil_enable || depth_view.stencil_read_only) {
+            return false;
+        }
+        const bool front_writes =
+            stencil_ref_front.stencil_write_mask != 0 &&
+            (stencil_control.stencil_fail_front != StencilFunc::Keep ||
+             stencil_control.stencil_zpass_front != StencilFunc::Keep ||
+             stencil_control.stencil_zfail_front != StencilFunc::Keep);
+        if (front_writes) {
+            return true;
+        }
+        if (depth_control.backface_enable) {
+            return stencil_ref_back.stencil_write_mask != 0 &&
+                   (stencil_control.stencil_fail_back != StencilFunc::Keep ||
+                    stencil_control.stencil_zpass_back != StencilFunc::Keep ||
+                    stencil_control.stencil_zfail_back != StencilFunc::Keep);
+        }
+        return false;
+    }
+
     /// The state after CLEAR_STATE.
     void SetDefaults();
 };

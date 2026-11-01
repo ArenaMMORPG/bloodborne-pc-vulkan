@@ -472,6 +472,7 @@ private:
         u32 depth_control = 0;
         bool depth_valid = false;
         bool stencil_valid = false;
+        bool stencil_write = false;
         bool native_viewport = false; ///< the UI composition's placement depends on it
         bool operator==(const BeginSignature&) const = default;
     };

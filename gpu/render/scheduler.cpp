@@ -212,15 +212,26 @@ void Scheduler::BeginRendering(const RenderState& state) {
         };
     }
     const auto& ds = state.depth_stencil_attachment;
+    const bool depth_readonly =
+        ds.image_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal ||
+        ds.image_layout == vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal ||
+        ds.image_layout == vk::ImageLayout::eDepthReadOnlyOptimal;
+    const bool stencil_readonly =
+        ds.image_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal ||
+        ds.image_layout == vk::ImageLayout::eDepthAttachmentStencilReadOnlyOptimal ||
+        ds.image_layout == vk::ImageLayout::eStencilReadOnlyOptimal;
     pass.depth = {
         .imageView = ds.image_view,
         .imageLayout = ds.image_layout,
         .loadOp = load(ds.depth_clear),
-        .storeOp = vk::AttachmentStoreOp::eStore,
+        .storeOp = (depth_readonly && !ds.depth_clear) ? vk::AttachmentStoreOp::eNone
+                                                       : vk::AttachmentStoreOp::eStore,
         .clearValue = {.depthStencil = {.depth = std::bit_cast<float>(ds.clear_value[0])}},
     };
     pass.stencil = pass.depth;
     pass.stencil.loadOp = load(ds.stencil_clear);
+    pass.stencil.storeOp = (stencil_readonly && !ds.stencil_clear) ? vk::AttachmentStoreOp::eNone
+                                                                   : vk::AttachmentStoreOp::eStore;
     pass.stencil.clearValue = vk::ClearValue{.depthStencil = {.stencil = ds.clear_value[1]}};
     pass.info = {
         .renderArea = {{0, 0}, {state.width, state.height}},

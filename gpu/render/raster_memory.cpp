@@ -54,7 +54,6 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
             if (nat_buf) {
                 buffer_cache.NoteExternalGpuModified(address, num_bytes);
                 runtime.FillBuffer(nat_buf, nat_off, num_bytes, value);
-                runtime.FlushBarriers();
                 return;
             }
         }
@@ -118,7 +117,6 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             const vk::BufferCopy copy{
                 .srcOffset = src_offset, .dstOffset = nat_dst_off, .size = num_bytes};
             runtime.CopyBuffer(src_buffer, nat_dst, std::span{&copy, 1});
-            runtime.FlushBarriers();
             return;
         }
     }
@@ -582,9 +580,7 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
             ResolvedBufCopy{src_buf, dst_buf, src_off, dst_off, reg.byte_size});
     }
     flush_resolved();
-    if (wrote_native_buf) {
-        runtime.FlushBarriers();
-    }
+    (void)wrote_native_buf;
 }
 
 void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
@@ -692,7 +688,6 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
         if (nat_dst) {
             buffer_cache.NoteExternalGpuModified(dst, num_bytes);
             runtime.FillBuffer(nat_dst, nat_off, num_bytes, value);
-            runtime.FlushBarriers();
             return;
         }
     }

@@ -243,10 +243,19 @@ void Rasterizer::UpdateDepthStencilState() const {
     }
     dynamic_state.SetStencilReferences(front_op ? front.stencil_op_val : front.stencil_test_val,
                                        back_op ? back.stencil_op_val : back.stencil_test_val);
-    // A stencil clear pass writes the clear value only.
+    // A stencil clear pass writes the clear value only; faces whose ops are all Keep also zero
+    // their dynamic writeMask so read-only stencil layouts never carry a non-zero writeMask.
+    const bool front_keeps = sc.stencil_fail_front == Gcn::StencilFunc::Keep &&
+                             sc.stencil_zpass_front == Gcn::StencilFunc::Keep &&
+                             sc.stencil_zfail_front == Gcn::StencilFunc::Keep;
+    const bool back_keeps = two_sided ? (sc.stencil_fail_back == Gcn::StencilFunc::Keep &&
+                                         sc.stencil_zpass_back == Gcn::StencilFunc::Keep &&
+                                         sc.stencil_zfail_back == Gcn::StencilFunc::Keep)
+                                      : front_keeps;
     const bool stencil_clear = regs.depth_render_control.stencil_clear_enable;
-    dynamic_state.SetStencilWriteMasks(stencil_clear ? 0U : front.stencil_write_mask,
-                                       stencil_clear ? 0U : back.stencil_write_mask);
+    dynamic_state.SetStencilWriteMasks(
+        (stencil_clear || front_keeps) ? 0U : front.stencil_write_mask,
+        (stencil_clear || back_keeps) ? 0U : back.stencil_write_mask);
     dynamic_state.SetStencilCompareMasks(front.stencil_mask, back.stencil_mask);
 }
 

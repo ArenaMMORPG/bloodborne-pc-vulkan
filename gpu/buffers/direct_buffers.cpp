@@ -1307,7 +1307,7 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, boo
             }
         }
         const u64 dst_off = addr - base;
-        if (track_access) {
+        if (track_access && !dst_buf->uav_written) {
             runtime.AccessBuffer(dst_buf, dst_off, size,
                                  vk::PipelineStageFlagBits2::eAllGraphics |
                                      vk::PipelineStageFlagBits2::eComputeShader,
@@ -1317,6 +1317,7 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, boo
                                      vk::AccessFlagBits2::eIndexRead |
                                      vk::AccessFlagBits2::eIndirectCommandRead);
         }
+        dst_buf->uav_written = true;
         return {dst_buf, dst_off};
     }
     Vulkan::DirectShaders::InvalidateRange(addr, size);

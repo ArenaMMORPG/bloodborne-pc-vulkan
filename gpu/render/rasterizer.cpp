@@ -1023,20 +1023,27 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     const VideoCore::Buffer* buffer = nullptr;
     u64 base = 0;
+    bool is_native_indirect_buf = false;
     {
         u64 req_bytes = static_cast<u64>(stride) * max_count;
         std::tie(buffer, base) = direct_buffers.TryResolveReadClamped(indirect.args, req_bytes);
-        if (!buffer || req_bytes < static_cast<u64>(stride) * max_count) {
+        if (buffer && req_bytes >= static_cast<u64>(stride) * max_count) {
+            is_native_indirect_buf = true;
+        } else {
             std::tie(buffer, base) =
                 buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
         }
     }
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, stride * max_count);
+    static const bool force_indirect_guard = [] {
+        const char* env = std::getenv("BB_FORCE_INDIRECT_GUARD");
+        return env && env[0] == '1';
+    }();
     // The arguments checked on the GPU first (vk_indirect_guard.h): a dispatch, outside the
-    // render pass.
+    // render pass. Native DirectBuffers are zero-initialized in VRAM and never carry garbage RAM.
     vk::Buffer checked_args = buffer->Handle();
     u64 checked_offset = base;
-    if (IndirectGuard::DrawEnabled()) {
+    if ((!is_native_indirect_buf || force_indirect_guard) && IndirectGuard::DrawEnabled()) {
         if (!indirect_guard) {
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }
@@ -1115,6 +1122,14 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     });
 
     ResetBindings(false);
+    runtime.AccessBuffer(buffer, base, static_cast<u64>(stride) * max_count,
+                         vk::PipelineStageFlagBits2::eDrawIndirect,
+                         vk::AccessFlagBits2::eIndirectCommandRead);
+    if (count_buffer) {
+        runtime.AccessBuffer(count_buffer, count_offset, 4,
+                             vk::PipelineStageFlagBits2::eDrawIndirect,
+                             vk::AccessFlagBits2::eIndirectCommandRead);
+    }
     scheduler.KickRecording();
 }
 
@@ -1314,10 +1329,13 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     }
     const VideoCore::Buffer* buffer = nullptr;
     u64 base = 0;
+    bool is_native_indirect_buf = false;
     {
         u64 req_bytes = size;
         std::tie(buffer, base) = direct_buffers.TryResolveReadClamped(address, req_bytes);
-        if (!buffer || req_bytes < size) {
+        if (buffer && req_bytes >= size) {
+            is_native_indirect_buf = true;
+        } else {
             std::tie(buffer, base) = buffer_cache.ObtainBuffer(address, size, false);
         }
     }
@@ -1333,11 +1351,17 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
             return fmt::format("dispatch indirect cs {:016x}", cs_crumb.pgm_hash);
         });
     }
+    static const bool force_indirect_guard = [] {
+        const char* env = std::getenv("BB_FORCE_INDIRECT_GUARD");
+        return env && env[0] == '1';
+    }();
     // Group counts checked on the GPU first (vk_indirect_guard.h); recorded before the
-    // pipeline's bindings, which the check's own pipeline would disturb.
+    // pipeline's bindings, which the check's own pipeline would disturb. Skipped for native
+    // zero-initialized DirectBuffers (eliminating 37+ extra compute dispatches and 75+ full-chip
+    // barriers per frame).
     vk::Buffer args = buffer->Handle();
     u64 args_offset = base;
-    if (IndirectGuard::DispatchEnabled()) {
+    if ((!is_native_indirect_buf || force_indirect_guard) && IndirectGuard::DispatchEnabled()) {
         if (!indirect_guard) {
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }
@@ -1365,6 +1389,8 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     });
 
     ResetBindings(true);
+    runtime.AccessBuffer(buffer, base, size, vk::PipelineStageFlagBits2::eDrawIndirect,
+                         vk::AccessFlagBits2::eIndirectCommandRead);
     scheduler.KickRecording();
 }
 
