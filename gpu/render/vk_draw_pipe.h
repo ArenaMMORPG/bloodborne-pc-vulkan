@@ -90,24 +90,28 @@ public:
     /// it first (StartResolvers; without workers the flag is ignored).
     void Commit(u32 payload_size, bool resolve = false) {
         reinterpret_cast<Header*>(ring.get() + head % Capacity)->payload = payload_size;
-        if (!resolvers.empty()) {
+        const bool has_resolvers = (num_resolvers != 0);
+        if (has_resolvers) {
             auto& slot = slots[(packets + 1) & SlotMask];
             slot.at = head;
             slot.state.store(resolve ? SlotPending : SlotDone, std::memory_order_release);
         }
         head += pending_size;
-        published.store(head, std::memory_order_seq_cst);
+        published.store(head, std::memory_order_release);
         ++packets;
         BbSections::pipe_packets.store(packets, std::memory_order_relaxed);
-        if (!resolvers.empty()) {
-            published_packets.store(packets, std::memory_order_seq_cst);
-            if (resolvers_sleeping.load(std::memory_order_seq_cst)) {
-                resolve_wake.fetch_add(1, std::memory_order_seq_cst);
-                resolve_wake.notify_all();
-            }
+        if (has_resolvers) {
+            published_packets.store(packets, std::memory_order_release);
         }
-        if (sleeping.load(std::memory_order_seq_cst)) {
-            wake.fetch_add(1, std::memory_order_seq_cst);
+        // Single StoreLoad barrier pairing with sleeping/resolvers_sleeping seq_cst stores instead
+        // of 4 separate `memory_order_seq_cst` XCHG instructions per draw packet.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (has_resolvers && resolvers_sleeping.load(std::memory_order_relaxed)) [[unlikely]] {
+            resolve_wake.fetch_add(1, std::memory_order_release);
+            resolve_wake.notify_all();
+        }
+        if (sleeping.load(std::memory_order_relaxed)) [[unlikely]] {
+            wake.fetch_add(1, std::memory_order_release);
             wake.notify_one();
         }
     }
@@ -118,6 +122,7 @@ public:
     using Resolver = void (*)(void* context, u8* packet, u32 size, u64 number, u32 worker);
     void StartResolvers(Resolver resolver_, u32 count) {
         resolver = resolver_;
+        num_resolvers = count;
         slots = std::make_unique<Slot[]>(SlotMask + 1);
         for (u32 i = 0; i < count; ++i) {
             resolvers.emplace_back([this, i](std::stop_token stop) { ResolverRun(stop, i); });
@@ -334,14 +339,17 @@ private:
         char name[16];
         std::snprintf(name, sizeof(name), "bb:Resolve%u", worker);
         Common::SetCurrentThreadName(name);
+        BbThreads::PinToGpuDomain();
         static const auto spin_time = std::chrono::microseconds([] {
             if (const char* env = std::getenv("BB_PIPE_SPIN_US")) {
                 return std::max(0, std::atoi(env));
             }
             return BbThreads::Available() >= 12 ? 200 : 50;
         }());
+        const bool single_worker = (num_resolvers == 1);
+        u64 single_next = 1;
         while (!stop.stop_requested()) {
-            u64 number = next_claim.load(std::memory_order_relaxed);
+            u64 number = single_worker ? single_next : next_claim.load(std::memory_order_relaxed);
             if (number > published_packets.load(std::memory_order_acquire)) {
                 const auto spin_until = std::chrono::steady_clock::now() + spin_time;
                 for (u32 spins = 1;
@@ -359,11 +367,16 @@ private:
                         }
                         resolvers_sleeping.fetch_sub(1, std::memory_order_relaxed);
                     }
-                    number = next_claim.load(std::memory_order_relaxed);
+                    if (!single_worker) {
+                        number = next_claim.load(std::memory_order_relaxed);
+                    }
                 }
                 continue;
             }
-            if (!next_claim.compare_exchange_weak(number, number + 1, std::memory_order_acq_rel)) {
+            if (single_worker) {
+                ++single_next;
+            } else if (!next_claim.compare_exchange_weak(number, number + 1,
+                                                         std::memory_order_acq_rel)) {
                 continue;
             }
             auto& slot = slots[number & SlotMask];
@@ -385,6 +398,7 @@ private:
     };
     std::unique_ptr<Slot[]> slots;
     Resolver resolver = nullptr;
+    u32 num_resolvers = 0;
     u64 resolved_prefix = 0; ///< stage A
     alignas(64) std::atomic<u64> published_packets{0};
     alignas(64) std::atomic<u64> next_claim{1};

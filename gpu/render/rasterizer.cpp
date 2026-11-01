@@ -68,10 +68,13 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
         // BB_RESOLVE_WORKERS=n (stage 2, docs/pipeline_4stage.ru.md): threads that check and copy
-        // the constants of draws between the GPU command thread and the recording thread.
+        // non-ConstRam constants (`cueHeap` + `Flatbuf`) between Stage A and Stage B so Stage A
+        // does not stall on XXH3 + Write-Combined ReBAR memcpy (`~0.75 ms/frame`).
         static const u32 resolvers = [] {
-            const char* env = std::getenv("BB_RESOLVE_WORKERS");
-            return env ? u32(std::clamp(std::atoi(env), 0, 4)) : 0u;
+            if (const char* env = std::getenv("BB_RESOLVE_WORKERS")) {
+                return u32(std::clamp(std::atoi(env), 0, 4));
+            }
+            return BbThreads::Available() >= 8 ? 1u : 0u;
         }();
         if (resolvers != 0) {
             for (u32 i = 0; i < resolvers; ++i) {
@@ -1248,8 +1251,14 @@ u8 Rasterizer::ComputeFullscreenOverwriteMask(const GraphicsPipeline* pipeline,
         const u8* cb_ptr = nullptr;
         if (const auto* ring = FindRingBinding(vs, cb_idx)) {
             if (ring->size >= needed_cb_bytes) {
-                cb_ptr = (ring->ring == 0) ? constant_ring->Data(ring->offset)
-                                           : worker_rings[ring->ring - 1]->Data(ring->offset);
+                if (ring->address != 0 &&
+                    !buffer_cache.IsConstRamRange(ring->address, needed_cb_bytes) &&
+                    memory->ClampRangeSize(ring->address, needed_cb_bytes) == needed_cb_bytes) {
+                    cb_ptr = reinterpret_cast<const u8*>(ring->address);
+                } else {
+                    cb_ptr = (ring->ring == 0) ? constant_ring->Data(ring->offset)
+                                               : worker_rings[ring->ring - 1]->Data(ring->offset);
+                }
             }
         } else {
             const PreparedStage* prep_vs = nullptr;

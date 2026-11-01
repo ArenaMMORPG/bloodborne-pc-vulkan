@@ -569,8 +569,12 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         if (desc.IsSpecial()) {
             if (desc.buffer_type == Shader::BufferType::Flatbuf &&
                 !stage.flattened_ud_buf.empty()) {
-                copy(index, stage.flattened_ud_buf.data(), 0,
-                     stage.flattened_ud_buf.size() * sizeof(u32));
+                const u64 flat_bytes = stage.flattened_ud_buf.size() * sizeof(u32);
+                if (resolvers) {
+                    out.push_back({index, static_cast<u32>(flat_bytes), RingPending, 0, 0, 0});
+                } else {
+                    copy(index, stage.flattened_ud_buf.data(), 0, flat_bytes);
+                }
             }
             continue;
         }
@@ -1362,12 +1366,75 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
         EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
     const bool fast_cue_resolve =
         StageARingBypass() && !precise_readbacks && !VideoCore::BufferCache::LayerActive();
+
+    struct ResolveRingMemo {
+        VAddr key_addr = 0;
+        u32 size = 0;
+        u32 offset = 0;
+        u64 hash = 0;
+        u64 frame = ~0ull;
+        u64 ring_pos = 0;
+    };
+    static constexpr size_t kResolveMemoSize = 4096;
+    using ResolveMemoArray = std::array<ResolveRingMemo, kResolveMemoSize>;
+    thread_local std::unique_ptr<ResolveMemoArray> tls_resolve_memo_ptr;
+    if (!tls_resolve_memo_ptr) [[unlikely]] {
+        tls_resolve_memo_ptr = std::make_unique<ResolveMemoArray>();
+    }
+    auto& tls_memo = *tls_resolve_memo_ptr;
+    const u64 cur_frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    const auto copy_memoized = [&](VAddr key_addr, const void* src_ptr, u64 size,
+                                   RingBinding& binding, bool& used_ring_out) {
+        if (!precise_readbacks && size >= 16 && size <= 4096) {
+            const u64 h = XXH3_64bits(src_ptr, size);
+            const size_t slot =
+                ((key_addr >> 5) ^ (size << 3) ^ (key_addr >> 16)) & (kResolveMemoSize - 1);
+            auto& memo = tls_memo[slot];
+            const u64 cur_pos = ring.Position();
+            if (memo.frame == cur_frame && memo.key_addr == key_addr && memo.size == size &&
+                memo.hash == h && cur_pos - memo.ring_pos < (24ull << 20)) {
+                binding.offset = memo.offset;
+                binding.ring = 1 + worker;
+                used_ring_out = true;
+                return true;
+            }
+            const auto offset = ring.Allocate(size, alignment);
+            if (!offset) {
+                binding.offset = RingNotCopied;
+                return false;
+            }
+            std::memcpy(ring.Data(*offset), src_ptr, size);
+            ring.Flush(*offset, size);
+            memo.key_addr = key_addr;
+            memo.size = static_cast<u32>(size);
+            memo.offset = static_cast<u32>(*offset);
+            memo.hash = h;
+            memo.frame = cur_frame;
+            memo.ring_pos = ring.Position();
+            binding.offset = *offset;
+            binding.ring = 1 + worker;
+            used_ring_out = true;
+            return true;
+        }
+        if (const auto offset = ring.Allocate(size, alignment)) {
+            std::memcpy(ring.Data(*offset), src_ptr, size);
+            ring.Flush(*offset, size);
+            binding.offset = *offset;
+            binding.ring = 1 + worker;
+            used_ring_out = true;
+            return true;
+        }
+        binding.offset = RingNotCopied;
+        return false;
+    };
+
     bool used_ring = false;
     for (u32 i = 0; i < packet.num_stages; ++i) {
         const auto& stage = *reinterpret_cast<const PacketStage*>(in);
         in += sizeof(PacketStage);
         auto* bindings = reinterpret_cast<RingBinding*>(in);
         in += stage.num_ring * sizeof(RingBinding);
+        const u32* const stage_flat = reinterpret_cast<const u32*>(in) + stage.ud_size;
         in += AlignPacket((stage.ud_size + stage.flat_size) * sizeof(u32));
         for (u32 j = 0; j < stage.num_ring; ++j) {
             auto& binding = bindings[j];
@@ -1376,6 +1443,16 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
             }
             const VAddr address = binding.address;
             const u64 size = binding.size;
+            if (address == 0) {
+                // Flatbuf snapshot embedded inside PacketStage.
+                if (size <= u64(stage.flat_size) * sizeof(u32)) {
+                    copy_memoized(reinterpret_cast<VAddr>(stage.info) | 1ULL, stage_flat, size,
+                                  binding, used_ring);
+                } else {
+                    binding.offset = RingNotCopied;
+                }
+                continue;
+            }
             static const bool n1_native_buf =
                 gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
             if (n1_native_buf &&
@@ -1387,15 +1464,8 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
             if (fast_cue_resolve &&
                 VideoCore::DirectBuffers::IsTransientCueHeap(address, size) &&
                 !VideoCore::DirectBuffers::IsCueHeapEverGpuModified()) {
-                if (const auto offset = ring.Allocate(size, alignment)) {
-                    std::memcpy(ring.Data(*offset), reinterpret_cast<const void*>(address), size);
-                    ring.Flush(*offset, size);
-                    binding.offset = *offset;
-                    binding.ring = 1 + worker;
-                    used_ring = true;
-                } else {
-                    binding.offset = RingNotCopied;
-                }
+                copy_memoized(address, reinterpret_cast<const void*>(address), size, binding,
+                              used_ring);
                 continue;
             }
             // The checks stage A made before: the GPU has written or will write these bytes,
@@ -1404,27 +1474,28 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
             const bool copyable = !self.buffer_cache.IsRegionGpuModified(address, size) &&
                                   !self.PendingWriteOverlaps(address, size) &&
                                   !VideoCore::BufferCache::LayerMirrored(address, size);
-            std::optional<u64> offset;
+            bool copied_ok = false;
             if (copyable) {
-                offset = ring.Allocate(size, alignment);
-            }
-            if (offset) {
                 uintptr_t mapped_end = 0;
                 if (fast_cue_resolve && StageAFastConst() &&
                     BbLookupMappedEnd(address, mapped_end) && size <= (mapped_end - address)) {
-                    std::memcpy(ring.Data(*offset), reinterpret_cast<const void*>(address), size);
-                } else {
+                    copied_ok = copy_memoized(address, reinterpret_cast<const void*>(address), size,
+                                              binding, used_ring);
+                } else if (const auto offset = ring.Allocate(size, alignment)) {
                     self.memory->CopySparseMemory(address, ring.Data(*offset), size);
+                    ring.Flush(*offset, size);
+                    binding.offset = *offset;
+                    binding.ring = 1 + worker;
+                    used_ring = true;
+                    copied_ok = true;
+                } else {
+                    binding.offset = RingNotCopied;
                 }
-                ring.Flush(*offset, size);
-                binding.offset = *offset;
-                binding.ring = 1 + worker;
-                used_ring = true;
             } else {
                 binding.offset = RingNotCopied;
             }
             // Read by stage B or the GPU later: a dump over it waits for the packet.
-            if ((!offset || binding.always_note) &&
+            if ((!copied_ok || binding.always_note) &&
                 (!FastNonCeRamSkip() || self.buffer_cache.IsConstRamRange(address, size))) {
                 self.pending_reads.NoteTables(address, size, number, false,
                                               self.draw_pipe->ConsumedPackets());

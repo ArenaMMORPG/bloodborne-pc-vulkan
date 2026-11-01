@@ -181,7 +181,7 @@ void PrepareResources(const Shader::Info& info, PreparedStage& stage, FlatArena&
     stage.image_set_key =
         hashes.empty() ? 0ULL
                        : (XXH3_64bits_withSeed(hashes.data(), hashes.size() * sizeof(u64),
-                                               reinterpret_cast<u64>(&info)) |
+                                               reinterpret_cast<u64>(&stage.program->info)) |
                           1ULL);
     stage.num_images = static_cast<u32>(images.size());
     stage.num_samplers = static_cast<u32>(samplers.size());
@@ -458,7 +458,9 @@ void DrawPreparation::Collect() {
 
 void DrawPreparation::ScannerLoop(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:DrawScan");
-    BbThreads::MakeBackground();
+    if (BbThreads::Available() < 16) {
+        BbThreads::MakeBackground();
+    }
     std::unique_ptr<Gcn::Regs> regs;
     u64 checksum = 0;
     u64 next_seq = 0;
@@ -520,7 +522,9 @@ void DrawPreparation::ScannerLoop(std::stop_token stop) {
 
 void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
     Common::SetCurrentThreadName(("bb:DrawPrep" + std::to_string(index)).c_str());
-    BbThreads::MakeBackground();
+    if (BbThreads::Available() < 16) {
+        BbThreads::MakeBackground();
+    }
     auto regs = std::make_unique<Gcn::Regs>();
     constexpr u64 NoPosition = ~0ull;
     u64 position = NoPosition; ///< `regs` holds the state at the start of this buffer

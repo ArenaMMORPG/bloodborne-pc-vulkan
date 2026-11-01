@@ -198,7 +198,9 @@ CommandProcessor::Status CommandProcessor::RunGraphics(Work& work) {
     }
     Walk& walk = work.walk;
     while (!walk.Done()) {
-        RunCommands();
+        if (num_commands.load(std::memory_order_relaxed) != 0) [[unlikely]] {
+            RunCommands();
+        }
         Level& level = walk.levels[walk.top];
         if (!level.entered) {
             // An indirect (or test) buffer begins.

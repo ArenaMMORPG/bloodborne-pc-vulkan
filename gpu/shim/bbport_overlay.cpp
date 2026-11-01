@@ -1218,6 +1218,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     // 3. Otherwise compare saturated Stage B, Stage A, or Game Engine CPU work.
     const float game_cpu_bound_ms = std::max(0.0f, h.idle_a_ms - h.a_drain_ms);
     const float stage_a_work_ms = h.a_pm4_pipe_ms + h.a_ring_ms;
+    const float serial_a_chain_ms = game_cpu_bound_ms + h.gnm_wait_ms + stage_a_work_ms;
     const float stage_b_work_ms = h.b_total_ms;
     const float gpu_sync_ms = h.gpu_present_ms >= 0.50f
                                   ? (h.b_total_ms + h.gpu_present_ms + h.sync_rec_ms)
@@ -1233,7 +1234,7 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         h.bottleneck_ms = gpu_sync_ms;
         h.bottleneck_ru = "Видеокарта (GPU Present / Sync)";
         h.bottleneck_en = "GPU Execution (Present / Sync)";
-    } else if (stage_b_work_ms >= game_cpu_bound_ms && stage_b_work_ms >= stage_a_work_ms &&
+    } else if ((h.b_busy_pct >= 90.0f || stage_b_work_ms >= serial_a_chain_ms) &&
                stage_b_work_ms >= gpu_sync_ms) {
         h.bottleneck_kind = 3;
         h.bottleneck_ms = stage_b_work_ms;
