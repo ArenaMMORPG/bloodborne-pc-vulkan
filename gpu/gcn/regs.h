@@ -217,6 +217,8 @@ union Regs {
 
     /// The state after CLEAR_STATE.
     void SetDefaults();
+    /// Resets only the Context + Uconfig ranges Stage B ever reads (3.7 KiB vs 208 KiB).
+    void SetStageBDefaults();
 };
 
 #undef GCN_SKIP
@@ -229,16 +231,64 @@ union Regs {
 struct RegDirty {
     static constexpr u32 BlockWords = 32;
     static constexpr u32 NumBlocks = Regs::NumRegs / BlockWords;
+    // Block 4 Step 3.2b: Stage B only ever reads Context [0xA000, 0xA390) (114 x 8-dword chunks),
+    // Uconfig [0xC038, 0xC040) (bit 114), and Uconfig [0xC240, 0xC258) (bits 115..117) = 118 bits.
+    static constexpr u32 StageBChunkWords = 8;
+    static constexpr u32 StageBNumChunks = 118;
+
     std::bitset<NumBlocks> blocks;
+    u64 stage_b_mask[2]{};
+    bool track_all_blocks = true;
     bool reset = false; ///< CLEAR_STATE: the defaults, then only the blocks marked after it
+
+    static constexpr u32 StageBChunkWordOffset(u32 bit) noexcept {
+        if (bit < 114u) {
+            return 0xA000u + bit * StageBChunkWords;
+        }
+        if (bit == 114u) {
+            return 0xC038u;
+        }
+        return 0xC240u + (bit - 115u) * StageBChunkWords;
+    }
+
+    static constexpr void SetStageBBitRange(u64 (&m)[2], u32 lo, u32 hi) noexcept {
+        if (lo < 64u) {
+            const u32 h0 = std::min(hi, 63u);
+            const u64 ones = (h0 - lo == 63u) ? ~0ULL : ((1ULL << (h0 - lo + 1u)) - 1ULL);
+            m[0] |= (ones << lo);
+        }
+        if (hi >= 64u) {
+            const u32 l1 = (lo > 64u) ? (lo - 64u) : 0u;
+            const u32 h1 = hi - 64u;
+            const u64 ones = (1ULL << (h1 - l1 + 1u)) - 1ULL;
+            m[1] |= (ones << l1);
+        }
+    }
 
     void Mark(u32 word, u32 count) {
         if (count == 0 || word >= Regs::NumRegs) {
             return;
         }
-        const u32 last = std::min(word + count, Regs::NumRegs) - 1;
-        for (u32 block = word / BlockWords; block <= last / BlockWords; ++block) {
-            blocks.set(block);
+        const u32 end = std::min(word + count, Regs::NumRegs);
+        if (end > 0xA000u && word < 0xA390u) {
+            const u32 lo = (std::max(word, 0xA000u) - 0xA000u) >> 3;
+            const u32 hi = (std::min(end, 0xA390u) - 1u - 0xA000u) >> 3;
+            SetStageBBitRange(stage_b_mask, lo, hi);
+        } else if (end > 0xC038u && word < 0xC258u) {
+            if (end > 0xC038u && word < 0xC040u) {
+                stage_b_mask[1] |= (1ULL << (114u - 64u));
+            }
+            if (end > 0xC240u && word < 0xC258u) {
+                const u32 lo = 115u + ((std::max(word, 0xC240u) - 0xC240u) >> 3);
+                const u32 hi = 115u + ((std::min(end, 0xC258u) - 1u - 0xC240u) >> 3);
+                SetStageBBitRange(stage_b_mask, lo, hi);
+            }
+        }
+        if (track_all_blocks) {
+            const u32 last = end - 1;
+            for (u32 block = word / BlockWords; block <= last / BlockWords; ++block) {
+                blocks.set(block);
+            }
         }
     }
     template <typename T>
@@ -248,7 +298,11 @@ struct RegDirty {
         Mark(u32(bytes / sizeof(u32)), u32((sizeof(T) + sizeof(u32) - 1) / sizeof(u32)));
     }
     void Clear() {
-        blocks.reset();
+        if (track_all_blocks) {
+            blocks.reset();
+        }
+        stage_b_mask[0] = 0ULL;
+        stage_b_mask[1] = 0ULL;
         reset = false;
     }
     /// Calls `f(block)` for each marked block, in order.

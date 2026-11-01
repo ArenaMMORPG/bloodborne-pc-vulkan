@@ -11,11 +11,7 @@ constexpr u32 ScissorTopLeft = 0x80000000;     ///< (0, 0), window offset off
 constexpr u32 ScissorBottomRight = 0x40004000; ///< (16384, 16384)
 constexpr u32 One = std::bit_cast<u32>(1.0f);
 
-} // namespace
-
-void Regs::SetDefaults() {
-    reg_array.fill(0);
-    auto& r = reg_array;
+void ApplyNonZeroContextDefaults(std::array<u32, Regs::NumRegs>& r) {
     // The CLEAR_STATE values of the context registers that are not zero.
     r[0xA00D] = ScissorBottomRight; // PA_SC_SCREEN_SCISSOR_BR
     r[0xA081] = ScissorTopLeft;     // PA_SC_WINDOW_SCISSOR_TL
@@ -49,6 +45,25 @@ void Regs::SetDefaults() {
     }
     r[0xA316] = 0x0000000e; // VGT_VERTEX_REUSE_BLOCK_CNTL
     r[0xA317] = 0x00000010; // VGT_OUT_DEALLOC_CNTL
+}
+
+} // namespace
+
+void Regs::SetDefaults() {
+    // Only the 4 actual GCN register banks can ever be written; avoid zeroing 184 KiB of unmapped
+    // MMIO holes between banks on every CLEAR_STATE (9x/frame).
+    std::memset(&reg_array[0x2000], 0, 0x0400 * sizeof(u32)); // Config
+    std::memset(&reg_array[0x2C00], 0, 0x0400 * sizeof(u32)); // Sh
+    std::memset(&reg_array[0xA000], 0, 0x0400 * sizeof(u32)); // Context
+    std::memset(&reg_array[0xC000], 0, 0x1000 * sizeof(u32)); // Uconfig
+    ApplyNonZeroContextDefaults(reg_array);
+}
+
+void Regs::SetStageBDefaults() {
+    std::memset(&reg_array[0xA000], 0, 0x0390 * sizeof(u32));
+    std::memset(&reg_array[0xC038], 0, 0x0008 * sizeof(u32));
+    std::memset(&reg_array[0xC240], 0, 0x0018 * sizeof(u32));
+    ApplyNonZeroContextDefaults(reg_array);
 }
 
 // Every named register at its index.

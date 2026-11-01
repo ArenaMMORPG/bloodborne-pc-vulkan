@@ -356,6 +356,11 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
 
 CommandProcessor::CommandProcessor()
     : guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
+    const char* desc_env = std::getenv("BB_DRAW_DESC");
+    const char* verify_env = std::getenv("BB_PIPE_VERIFY");
+    const bool use_draw_desc = !(desc_env && desc_env[0] == '0') &&
+                               !(verify_env && std::strtoul(verify_env, nullptr, 10) != 0);
+    pipe_dirty.track_all_blocks = !use_draw_desc;
     thread = std::jthread{[this](std::stop_token stop) { Run(stop); }};
     if (const char* env = std::getenv("BB_STALL_REPORT"); !(env && env[0] == '0')) {
         stall_watch = std::jthread{[this](std::stop_token stop) { StallWatch(stop); }};

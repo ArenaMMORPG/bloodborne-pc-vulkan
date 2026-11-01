@@ -42,6 +42,7 @@ struct TaskPacket {
     Rasterizer::OrderedTask task;
 };
 struct DrawPacket {
+    static constexpr u8 kCompactStageBDesc = 0x80u;
     PacketKind kind;
     const Pipeline* pipeline;
     const PreparedDraw* prepared;
@@ -51,6 +52,7 @@ struct DrawPacket {
     u16 num_blocks;
     u32 num_stages;
     u32 verify;
+    u64 stage_b_mask[2];
     std::array<Gcn::CbDbExtent, Gcn::NUM_COLOR_BUFFERS> cb_extent;
     Gcn::CbDbExtent db_extent;
     std::array<u16, Gcn::NUM_COLOR_BUFFERS> cb_uid;
@@ -78,6 +80,13 @@ u32 VerifyInterval() {
         return env ? static_cast<u32>(std::strtoul(env, nullptr, 10)) : 0u;
     }();
     return interval;
+}
+bool DrawDescEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_DRAW_DESC");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
 }
 } // namespace
 
@@ -853,9 +862,20 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         dirty.Clear();
         pipe_synced = true;
     }
+    const u32 interval = VerifyInterval();
+    const bool verify = interval && (draw_pipe->packets % interval) == 0;
+    const bool compact_desc = DrawDescEnabled() && interval == 0u;
     std::array<u16, Gcn::RegDirty::NumBlocks> blocks;
     u32 num_blocks = 0;
-    dirty.ForEachBlock([&](size_t block) { blocks[num_blocks++] = static_cast<u16>(block); });
+    u64 sb_mask0 = 0ULL;
+    u64 sb_mask1 = 0ULL;
+    if (compact_desc) {
+        sb_mask0 = dirty.stage_b_mask[0];
+        sb_mask1 = dirty.stage_b_mask[1];
+        num_blocks = static_cast<u32>(std::popcount(sb_mask0) + std::popcount(sb_mask1));
+    } else {
+        dirty.ForEachBlock([&](size_t block) { blocks[num_blocks++] = static_cast<u16>(block); });
+    }
     const auto stages =
         pipeline ? pipeline->GetStages() : std::span<const Shader::Info* const>{};
     // Constants: copied here into the ring, the recording thread only binds them.
@@ -864,8 +884,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         rings;
     u32 num_stages = 0;
     bool resolve = false; // constants left to a resolve worker
-    u32 size = sizeof(DrawPacket) + AlignPacket(num_blocks * sizeof(u16)) +
-               num_blocks * Gcn::RegDirty::BlockWords * sizeof(u32);
+    u32 size = sizeof(DrawPacket) +
+               (compact_desc ? (num_blocks * Gcn::RegDirty::StageBChunkWords * sizeof(u32))
+                             : (AlignPacket(num_blocks * sizeof(u16)) +
+                                num_blocks * Gcn::RegDirty::BlockWords * sizeof(u32)));
     for (const auto* stage : stages) {
         if (stage) {
             auto& ring = rings[num_stages];
@@ -1064,8 +1086,6 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         }
     }
     size += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));
-    const u32 interval = VerifyInterval();
-    const bool verify = interval && (draw_pipe->packets % interval) == 0;
     if (verify) {
         size += sizeof(Gcn::Regs);
     }
@@ -1081,10 +1101,13 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     packet.prepared = used_prepared;
     packet.index_offset = index_offset;
     packet.is_indexed = is_indexed;
-    packet.regs_reset = dirty.reset;
+    packet.regs_reset = static_cast<u8>((dirty.reset ? 1u : 0u) |
+                                        (compact_desc ? DrawPacket::kCompactStageBDesc : 0u));
     packet.num_blocks = static_cast<u16>(num_blocks);
     packet.num_stages = num_stages;
     packet.verify = verify;
+    packet.stage_b_mask[0] = sb_mask0;
+    packet.stage_b_mask[1] = sb_mask1;
     packet.cb_extent = liverpool->last_cb_extent;
     packet.db_extent = liverpool->last_db_extent;
     packet.cb_uid = liverpool->last_cb_uid;
@@ -1095,13 +1118,34 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     packet.worker = ~0u;
     packet.worker_ring_end = 0;
     out += sizeof(DrawPacket);
-    std::memcpy(out, blocks.data(), num_blocks * sizeof(u16));
-    out += AlignPacket(num_blocks * sizeof(u16));
-    for (u32 i = 0; i < num_blocks; ++i) {
-        std::memcpy(out,
-                    liverpool->regs.reg_array.data() + blocks[i] * Gcn::RegDirty::BlockWords,
-                    Gcn::RegDirty::BlockWords * sizeof(u32));
-        out += Gcn::RegDirty::BlockWords * sizeof(u32);
+    if (compact_desc) {
+        u64 m0 = sb_mask0;
+        while (m0 != 0ULL) {
+            const u32 bit = static_cast<u32>(std::countr_zero(m0));
+            m0 &= (m0 - 1ULL);
+            std::memcpy(out,
+                        liverpool->regs.reg_array.data() + Gcn::RegDirty::StageBChunkWordOffset(bit),
+                        Gcn::RegDirty::StageBChunkWords * sizeof(u32));
+            out += Gcn::RegDirty::StageBChunkWords * sizeof(u32);
+        }
+        u64 m1 = sb_mask1;
+        while (m1 != 0ULL) {
+            const u32 bit = 64u + static_cast<u32>(std::countr_zero(m1));
+            m1 &= (m1 - 1ULL);
+            std::memcpy(out,
+                        liverpool->regs.reg_array.data() + Gcn::RegDirty::StageBChunkWordOffset(bit),
+                        Gcn::RegDirty::StageBChunkWords * sizeof(u32));
+            out += Gcn::RegDirty::StageBChunkWords * sizeof(u32);
+        }
+    } else {
+        std::memcpy(out, blocks.data(), num_blocks * sizeof(u16));
+        out += AlignPacket(num_blocks * sizeof(u16));
+        for (u32 i = 0; i < num_blocks; ++i) {
+            std::memcpy(out,
+                        liverpool->regs.reg_array.data() + blocks[i] * Gcn::RegDirty::BlockWords,
+                        Gcn::RegDirty::BlockWords * sizeof(u32));
+            out += Gcn::RegDirty::BlockWords * sizeof(u32);
+        }
     }
     u32 stage_index = 0;
     for (const auto* stage : stages) {
@@ -1245,16 +1289,40 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     }
     const auto& packet = *reinterpret_cast<const DrawPacket*>(data);
     const u8* in = data + sizeof(DrawPacket);
-    const auto* blocks = reinterpret_cast<const u16*>(in);
-    in += AlignPacket(packet.num_blocks * sizeof(u16));
     auto& regs = self.pipe_regs;
-    if (packet.regs_reset) {
-        regs.SetDefaults();
+    const bool compact_desc = (packet.regs_reset & DrawPacket::kCompactStageBDesc) != 0u;
+    if (packet.regs_reset & 1u) {
+        if (compact_desc) {
+            regs.SetStageBDefaults();
+        } else {
+            regs.SetDefaults();
+        }
     }
-    for (u32 i = 0; i < packet.num_blocks; ++i) {
-        std::memcpy(regs.reg_array.data() + blocks[i] * Gcn::RegDirty::BlockWords, in,
-                    Gcn::RegDirty::BlockWords * sizeof(u32));
-        in += Gcn::RegDirty::BlockWords * sizeof(u32);
+    if (compact_desc) {
+        u64 m0 = packet.stage_b_mask[0];
+        while (m0 != 0ULL) {
+            const u32 bit = static_cast<u32>(std::countr_zero(m0));
+            m0 &= (m0 - 1ULL);
+            std::memcpy(regs.reg_array.data() + Gcn::RegDirty::StageBChunkWordOffset(bit), in,
+                        Gcn::RegDirty::StageBChunkWords * sizeof(u32));
+            in += Gcn::RegDirty::StageBChunkWords * sizeof(u32);
+        }
+        u64 m1 = packet.stage_b_mask[1];
+        while (m1 != 0ULL) {
+            const u32 bit = 64u + static_cast<u32>(std::countr_zero(m1));
+            m1 &= (m1 - 1ULL);
+            std::memcpy(regs.reg_array.data() + Gcn::RegDirty::StageBChunkWordOffset(bit), in,
+                        Gcn::RegDirty::StageBChunkWords * sizeof(u32));
+            in += Gcn::RegDirty::StageBChunkWords * sizeof(u32);
+        }
+    } else {
+        const auto* blocks = reinterpret_cast<const u16*>(in);
+        in += AlignPacket(packet.num_blocks * sizeof(u16));
+        for (u32 i = 0; i < packet.num_blocks; ++i) {
+            std::memcpy(regs.reg_array.data() + blocks[i] * Gcn::RegDirty::BlockWords, in,
+                        Gcn::RegDirty::BlockWords * sizeof(u32));
+            in += Gcn::RegDirty::BlockWords * sizeof(u32);
+        }
     }
     ASSERT(packet.num_stages <= Shader::Info::MaxUdSnapshots);
     for (u32 i = 0; i < packet.num_stages; ++i) {
@@ -1381,8 +1449,12 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
     auto& self = *static_cast<Rasterizer*>(context);
     auto& packet = *reinterpret_cast<DrawPacket*>(data);
     u8* in = data + sizeof(DrawPacket);
-    in += AlignPacket(packet.num_blocks * sizeof(u16));
-    in += packet.num_blocks * Gcn::RegDirty::BlockWords * sizeof(u32);
+    if (packet.regs_reset & DrawPacket::kCompactStageBDesc) {
+        in += packet.num_blocks * (Gcn::RegDirty::StageBChunkWords * sizeof(u32));
+    } else {
+        in += AlignPacket(packet.num_blocks * sizeof(u16));
+        in += packet.num_blocks * Gcn::RegDirty::BlockWords * sizeof(u32);
+    }
     auto& ring = *self.worker_rings[worker];
     const u64 alignment = std::max<u64>(self.instance.StorageMinAlignment(),
                                         self.instance.UniformMinAlignment());
