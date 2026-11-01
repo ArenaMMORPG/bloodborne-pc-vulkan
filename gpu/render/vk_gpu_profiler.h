@@ -52,6 +52,10 @@ public:
         return other == &scheduler;
     }
 
+    /// Block 5, Step 5.4: Zero-pass-break per-(VS, PS, WxH, MRTs) draw & vertex/index counter
+    /// recorded only while GpuProfiler capture is active (exposes top shaders inside merged passes).
+    void NoteDraw(u64 vs_hash, u64 ps_hash, u32 width, u32 height, u32 num_mrts, u64 vtx_instances);
+
     /// At the display pass: closes the frame's last segment, reads an old frame's results.
     void BeginFrame();
     static void OnFrame();
@@ -102,6 +106,17 @@ private:
         u64 segments = 0;
     };
     std::unordered_map<u64, Total> totals;
+    struct DrawShaderStat {
+        u64 vs_hash = 0;
+        u64 ps_hash = 0;
+        u32 width = 0;
+        u32 height = 0;
+        u32 num_mrts = 0;
+        u64 draws = 0;
+        u64 vtx_instances = 0;
+    };
+    std::unordered_map<u64, DrawShaderStat> draw_stats;
+    u64 draw_frames = 0;
     static constexpr u64 SubmissionGapKey = 0x5B317ull; ///< Scheduler's "between submissions"
     std::vector<double> gaps;
     u64 frames = 0;

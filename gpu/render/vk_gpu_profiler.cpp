@@ -35,8 +35,10 @@ void GpuProfiler::StartCapture() {
     }
     slice = 0;
     frames = 0;
+    draw_frames = 0;
     current = 0;
     totals.clear();
+    draw_stats.clear();
     gaps.clear();
     window = std::chrono::steady_clock::now();
     instance_ptr = this;
@@ -210,6 +212,22 @@ void GpuProfiler::HudEndSubmission(const Scheduler* sched, u64 tick, bool is_fra
     }
 }
 
+void GpuProfiler::NoteDraw(u64 vs_hash, u64 ps_hash, u32 width, u32 height, u32 num_mrts,
+                           u64 vtx_instances) {
+    u64 key = vs_hash ^ (ps_hash * 0x9E3779B97F4A7C15ull);
+    key ^= (u64(width) << 32) ^ (u64(height) << 16) ^ u64(num_mrts);
+    auto& st = draw_stats[key];
+    if (st.draws == 0) {
+        st.vs_hash = vs_hash;
+        st.ps_hash = ps_hash;
+        st.width = width;
+        st.height = height;
+        st.num_mrts = num_mrts;
+    }
+    ++st.draws;
+    st.vtx_instances += vtx_instances;
+}
+
 void GpuProfiler::WriteTimestamp(u64 key) {
     if (used[slice] + 1 >= SliceQueries) {
         return; // the frame's slice is full: the rest of the frame goes to the last label
@@ -228,6 +246,7 @@ void GpuProfiler::WriteTimestamp(u64 key) {
 void GpuProfiler::BeginFrame() {
     // Close the frame: one more timestamp without a label.
     if (used[slice] > 0 && used[slice] < SliceQueries) {
+        ++draw_frames;
         scheduler.EndRendering();
         const u32 query = slice * SliceQueries + used[slice]++;
         scheduler.Record([pool = *pool, query](vk::CommandBuffer cmdbuf) {
@@ -322,11 +341,45 @@ void GpuProfiler::Print(bool to_file) {
         }
         gaps.clear();
     }
+    if (!draw_stats.empty() && draw_frames > 0) {
+        std::vector<DrawShaderStat> sorted_draws;
+        sorted_draws.reserve(draw_stats.size());
+        for (const auto& [_, st] : draw_stats) {
+            sorted_draws.push_back(st);
+        }
+        std::ranges::sort(sorted_draws, [](const DrawShaderStat& a, const DrawShaderStat& b) {
+            return (a.draws != b.draws) ? (a.draws > b.draws)
+                                        : (a.vtx_instances > b.vtx_instances);
+        });
+        std::printf("  top shader pairs by draws/frame (%zu unique across %llu frames):\n",
+                    sorted_draws.size(), static_cast<unsigned long long>(draw_frames));
+        if (f) {
+            std::fprintf(f, "  top shader pairs by draws/frame (%zu unique across %llu frames):\n",
+                         sorted_draws.size(), static_cast<unsigned long long>(draw_frames));
+        }
+        const double inv_df = 1.0 / double(draw_frames);
+        for (size_t i = 0; i < std::min<size_t>(sorted_draws.size(), 25); ++i) {
+            const auto& st = sorted_draws[i];
+            std::printf("    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",
+                        double(st.draws) * inv_df, double(st.vtx_instances) * inv_df, st.width,
+                        st.height, st.num_mrts, static_cast<unsigned long long>(st.vs_hash),
+                        static_cast<unsigned long long>(st.ps_hash));
+            if (f) {
+                std::fprintf(
+                    f, "    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",
+                    double(st.draws) * inv_df, double(st.vtx_instances) * inv_df, st.width,
+                    st.height, st.num_mrts, static_cast<unsigned long long>(st.vs_hash),
+                    static_cast<unsigned long long>(st.ps_hash));
+            }
+        }
+    }
     if (f) {
         std::fclose(f);
     }
     totals.clear();
+    draw_stats.clear();
     frames = 0;
+    draw_frames = 0;
 }
 
 } // namespace Vulkan

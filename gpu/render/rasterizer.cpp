@@ -2221,11 +2221,20 @@ void Rasterizer::OnSubmit() {
 
 void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& state) {
     auto* profiler = GpuProfiler::Get();
-    if (!profiler || !scheduler.WillBeginRendering(state)) {
+    if (!profiler) {
         return;
     }
     const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+    if (profiler->Records(&scheduler)) {
+        const u64 idx_inst =
+            u64(Regs().num_indices) * u64(std::max<u32>(1u, Regs().num_instances.NumInstances()));
+        profiler->NoteDraw(vs.pgm_hash, ps ? ps->pgm_hash : 0, state.width, state.height,
+                           state.num_color_attachments, idx_inst);
+    }
+    if (!scheduler.WillBeginRendering(state)) {
+        return;
+    }
     std::array<u64, Gcn::NUM_COLOR_BUFFERS + 6> parts{};
     parts[0] = state.width | u64(state.height) << 32;
     parts[1] = vs.pgm_hash;

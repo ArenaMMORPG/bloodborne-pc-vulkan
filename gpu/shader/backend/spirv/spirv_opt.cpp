@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Block 5, Steps 5.1, 5.2 & 5.3: In-process SPIR-V hardware-interpolation rewrite,
-// fast-FP rewrite, and SPIRV-Tools (-O) optimizer.
+// Block 5, Steps 5.1, 5.2, 5.3 & 5.4: In-process SPIR-V hardware-interpolation rewrite,
+// native Vulkan 1.3 shader replacement, safe-InverseSqrt + fast-FP rewrite, and SPIRV-Tools (-O).
 
 #include "shader/backend/spirv/spirv_opt.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <spirv-tools/optimizer.hpp>
 
 #include "common/logging/log.h"
+#include "shader/backend/spirv/native_shaders.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -30,8 +32,10 @@ constexpr u32 kOpExtInst = 12u;
 constexpr u32 kOpEntryPoint = 15u;
 constexpr u32 kOpExecutionMode = 16u;
 constexpr u32 kOpCapability = 17u;
+constexpr u32 kOpTypeBool = 20u;
 constexpr u32 kOpTypeInt = 21u;
 constexpr u32 kOpTypeFloat = 22u;
+constexpr u32 kOpTypeVector = 23u;
 constexpr u32 kOpTypeArray = 28u;
 constexpr u32 kOpTypePointer = 32u;
 constexpr u32 kOpConstant = 43u;
@@ -40,22 +44,34 @@ constexpr u32 kOpFunction = 54u;
 constexpr u32 kOpFunctionEnd = 56u;
 constexpr u32 kOpVariable = 59u;
 constexpr u32 kOpLoad = 61u;
+constexpr u32 kOpStore = 62u;
+constexpr u32 kOpCopyMemory = 63u;
 constexpr u32 kOpAccessChain = 65u;
+constexpr u32 kOpInBoundsAccessChain = 66u;
 constexpr u32 kOpDecorate = 71u;
+constexpr u32 kOpFunctionCall = 57u;
+constexpr u32 kOpCompositeConstruct = 80u;
 constexpr u32 kOpCompositeExtract = 81u;
 constexpr u32 kOpCopyObject = 83u;
 constexpr u32 kOpConvertFToU = 109u;
 constexpr u32 kOpConvertFToS = 110u;
+constexpr u32 kOpBitcast = 124u;
+constexpr u32 kOpFNegate = 127u;
 constexpr u32 kOpFSub = 131u;
 constexpr u32 kOpFMul = 133u;
+constexpr u32 kOpFDiv = 136u;
 constexpr u32 kOpIsNan = 156u;
 constexpr u32 kOpIsInf = 157u;
 constexpr u32 kOpLogicalOr = 166u;
+constexpr u32 kOpLogicalAnd = 167u;
 constexpr u32 kOpSelect = 169u;
 constexpr u32 kOpFOrdEqual = 180u;
+constexpr u32 kOpFOrdGreaterThan = 186u;
+constexpr u32 kOpFOrdLessThanEqual = 188u;
 
 // SPIR-V storage classes, decorations, capabilities, builtins & execution modes
 constexpr u32 kStorageClassInput = 1u;
+constexpr u32 kStorageClassOutput = 3u;
 constexpr u32 kDecoBuiltIn = 11u;
 constexpr u32 kDecoNoPerspective = 13u;
 constexpr u32 kDecoFlat = 14u;
@@ -75,6 +91,7 @@ constexpr u32 kExecModeSignedZeroInfNanPreserve = 4461u;
 // GLSL.std.450 extended instruction opcodes
 constexpr u32 kGlslTrunc = 3u;
 constexpr u32 kGlslFloor = 8u;
+constexpr u32 kGlslInverseSqrt = 32u;
 constexpr u32 kGlslFMin = 37u;
 constexpr u32 kGlslFMax = 40u;
 constexpr u32 kGlslFma = 50u;
@@ -86,6 +103,9 @@ constexpr u32 kGlslNMax = 80u;
 
 // 1.0f + 1.0f / 65536.0f (exact IEEE-754 f32 bits: 0x3f800080), matching InterpolatedIntegerPass.
 constexpr u32 kF32InterpIntNudgeBits = 0x3f800080u;
+constexpr u32 kF32PosZeroBits = 0x00000000u;
+constexpr u32 kF32FltMinBits = 0x00800000u; // 2^-126 (1.17549435e-38f)
+constexpr u32 kF32FltMaxBits = 0x7f7fffffu; // 3.40282347e+38f
 
 std::atomic<u32> g_opt_modules{0};
 std::atomic<u32> g_opt_failed{0};
@@ -100,6 +120,10 @@ std::atomic<u64> g_opt_hw_interp_varyings{0};
 std::atomic<u64> g_opt_hw_interp_channels{0};
 std::atomic<u64> g_opt_hw_interp_int_nudges{0};
 std::atomic<u64> g_opt_self_minmax_folded{0};
+std::atomic<u64> g_opt_safe_rsq_muls_folded{0};
+std::atomic<u64> g_opt_safe_rsq_guards_emitted{0};
+std::atomic<u64> g_opt_vec4_out_stores_coalesced{0};
+std::atomic<u32> g_opt_native_replaced{0};
 
 bool ParseEnvFlag(const char* name, bool default_value) noexcept {
     const char* v = std::getenv(name);
@@ -944,13 +968,18 @@ struct IdPair {
     u32 b = 0;
 };
 
-/// Block 5, Steps 5.2 & 5.3 fast-FP pre-pass over SPIR-V words:
+/// Block 5, Steps 5.2, 5.3 & 5.4 fast-FP + Safe-InverseSqrt + Vec4-Output pre-pass over SPIR-V words:
 /// 1. Strips OpDecorate %id NoContraction so NVIDIA's SASS backend fuses FMUL+FADD into FFMA.
 /// 2. Folds provably exact V_MUL_LEGACY_F32 selects ((a==0 || b==0) ? +0.0 : a*b) whenever
-///    a == b (x*x) or either operand is an f32 constant (zero or finite non-zero).
-/// 3. Folds redundant GCN canonicalization FMax(x, x) / FMin(x, x) / NMax(x, x) / NMin(x, x) -> x.
-/// 4. Strips SignedZeroInfNanPreserve when the module has no OpIsNan/OpIsInf and no remaining
-///    dynamic V_MUL_LEGACY_F32 select (preserving 0 * rsqrt(0) == 0 safety where needed).
+///    a == b (x*x), (-x)*(-x), or either operand is an f32 constant (zero or finite non-zero).
+/// 3. Replaces all remaining V_MUL_LEGACY_F32(x, InverseSqrt(arg)) chains with OpFMul(x, %safe_rsq),
+///    where %safe_rsq = (arg > 0.0 && arg <= FLT_MAX) ? InverseSqrt(clamp(arg, FLT_MIN, FLT_MAX)) : 0.0
+///    is synthesized once per InverseSqrt (eliminating 0 * Inf = NaN without keeping 3x OpSelects).
+/// 4. Folds redundant GCN canonicalization FMax(x, x) / FMin(x, x) / NMax(x, x) / NMin(x, x) -> x.
+/// 5. Coalesces 4 consecutive scalar StorageClassOutput OpAccessChain+OpStore pairs (0..3) into a
+///    single vec4 OpCompositeConstruct + OpStore (unlocking VS gl_Position store-to-load forwarding).
+/// 6. Strips SignedZeroInfNanPreserve when the module has no OpIsNan/OpIsInf, no remaining dynamic
+///    V_MUL_LEGACY_F32 select, and no direct OpBitcast inspecting InverseSqrt/OpFDiv non-finite bits.
 bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
     if (in.size() < 5 || in[0] != kSpirvMagic) {
         return false;
@@ -961,15 +990,36 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
     }
 
     u32 glsl_set_id = 0;
+    u32 bool_type_id = 0;
     u32 f32_type_id = 0;
+    size_t f32_type_pos = 0;
+    u32 existing_f32_zero_id = 0;
+    u32 existing_f32_flt_min_id = 0;
+    u32 existing_f32_flt_max_id = 0;
+
+    std::vector<u8> is_int32_type(bound, 0u);
+    std::vector<u8> has_int32_const(bound, 0u);
+    std::vector<u32> int32_const_val(bound, 0u);
+    std::vector<u8> is_vec4_type(bound, 0u);
+    std::vector<u32> ptr_out_vec4_type(bound, 0u);
+    std::vector<u32> out_var_vec4_type(bound, 0u);
+    std::vector<u32> ptr_uses(bound, 0u);
+
     std::vector<F32ConstKind> const_kind(bound, F32ConstKind::NotConst);
+    std::vector<u32> fneg_arg(bound, 0u);
+    std::vector<u32> rsq_arg(bound, 0u);
+    std::vector<u8> is_fdiv(bound, 0u);
     std::vector<IdPair> fmul_ops(bound);
     std::vector<u32> feq_zero_arg(bound, 0u);
     std::vector<IdPair> lor_ops(bound);
     std::vector<u32> select_replace(bound, 0u);
+    std::vector<IdPair> select_safe_rsq_mul(bound);
+    std::vector<u8> needs_safe_rsq(bound, 0u);
 
     bool has_nan_or_inf_op = false;
     bool has_dynamic_legacy_mul = false;
+    bool has_bitcast_nonfinite_src = false;
+    bool any_safe_rsq = false;
 
     for (size_t pos = 5; pos < in.size();) {
         const u32 wc = in[pos] >> 16;
@@ -984,29 +1034,102 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
                 glsl_set_id = in[pos + 1];
             }
             break;
+        case kOpTypeBool:
+            if (wc == 2 && in[pos + 1] < bound) {
+                bool_type_id = in[pos + 1];
+            }
+            break;
+        case kOpTypeInt:
+            if (wc == 4 && in[pos + 2] == 32u && in[pos + 1] < bound) {
+                is_int32_type[in[pos + 1]] = 1u;
+            }
+            break;
         case kOpTypeFloat:
             if (wc == 3 && in[pos + 2] == 32u && in[pos + 1] < bound) {
                 f32_type_id = in[pos + 1];
+                f32_type_pos = pos;
+            }
+            break;
+        case kOpTypeVector:
+            if (wc == 4 && in[pos + 3] == 4u && in[pos + 1] < bound) {
+                is_vec4_type[in[pos + 1]] = 1u;
+            }
+            break;
+        case kOpTypePointer:
+            if (wc == 4 && in[pos + 2] == kStorageClassOutput && in[pos + 1] < bound &&
+                in[pos + 3] < bound && is_vec4_type[in[pos + 3]]) {
+                ptr_out_vec4_type[in[pos + 1]] = in[pos + 3];
+            }
+            break;
+        case kOpVariable:
+            if (wc >= 4 && in[pos + 3] == kStorageClassOutput && in[pos + 1] < bound &&
+                in[pos + 2] < bound && ptr_out_vec4_type[in[pos + 1]] != 0) {
+                out_var_vec4_type[in[pos + 2]] = ptr_out_vec4_type[in[pos + 1]];
             }
             break;
         case kOpConstant:
-            if (wc == 4 && f32_type_id != 0 && in[pos + 1] == f32_type_id && in[pos + 2] < bound) {
-                const u32 id = in[pos + 2];
-                const u32 bits = in[pos + 3];
-                if (bits == 0u) {
-                    const_kind[id] = F32ConstKind::PosZero;
-                } else if (bits == 0x80000000u) {
-                    const_kind[id] = F32ConstKind::NegZero;
-                } else if ((bits & 0x7f800000u) != 0x7f800000u) {
-                    const_kind[id] = F32ConstKind::FiniteNonZero;
-                } else {
-                    const_kind[id] = F32ConstKind::NonFinite;
+            if (wc == 4 && in[pos + 1] < bound && in[pos + 2] < bound) {
+                if (f32_type_id != 0 && in[pos + 1] == f32_type_id) {
+                    const u32 id = in[pos + 2];
+                    const u32 bits = in[pos + 3];
+                    if (bits == kF32PosZeroBits) {
+                        const_kind[id] = F32ConstKind::PosZero;
+                        if (existing_f32_zero_id == 0) {
+                            existing_f32_zero_id = id;
+                        }
+                    } else if (bits == 0x80000000u) {
+                        const_kind[id] = F32ConstKind::NegZero;
+                    } else if ((bits & 0x7f800000u) != 0x7f800000u) {
+                        const_kind[id] = F32ConstKind::FiniteNonZero;
+                        if (bits == kF32FltMinBits && existing_f32_flt_min_id == 0) {
+                            existing_f32_flt_min_id = id;
+                        } else if (bits == kF32FltMaxBits && existing_f32_flt_max_id == 0) {
+                            existing_f32_flt_max_id = id;
+                        }
+                    } else {
+                        const_kind[id] = F32ConstKind::NonFinite;
+                    }
+                } else if (is_int32_type[in[pos + 1]]) {
+                    has_int32_const[in[pos + 2]] = 1u;
+                    int32_const_val[in[pos + 2]] = in[pos + 3];
                 }
             }
             break;
         case kOpConstantNull:
-            if (wc == 3 && f32_type_id != 0 && in[pos + 1] == f32_type_id && in[pos + 2] < bound) {
-                const_kind[in[pos + 2]] = F32ConstKind::PosZero;
+            if (wc == 3 && in[pos + 1] < bound && in[pos + 2] < bound) {
+                if (f32_type_id != 0 && in[pos + 1] == f32_type_id) {
+                    const_kind[in[pos + 2]] = F32ConstKind::PosZero;
+                    if (existing_f32_zero_id == 0) {
+                        existing_f32_zero_id = in[pos + 2];
+                    }
+                } else if (is_int32_type[in[pos + 1]]) {
+                    has_int32_const[in[pos + 2]] = 1u;
+                    int32_const_val[in[pos + 2]] = 0u;
+                }
+            }
+            break;
+        case kOpFNegate:
+            if (wc == 4 && f32_type_id != 0 && in[pos + 1] == f32_type_id && in[pos + 2] < bound &&
+                in[pos + 3] < bound) {
+                fneg_arg[in[pos + 2]] = in[pos + 3];
+            }
+            break;
+        case kOpExtInst:
+            if (wc == 6 && f32_type_id != 0 && in[pos + 1] == f32_type_id && glsl_set_id != 0 &&
+                in[pos + 3] == glsl_set_id && in[pos + 4] == kGlslInverseSqrt &&
+                in[pos + 2] < bound && in[pos + 5] < bound) {
+                rsq_arg[in[pos + 2]] = in[pos + 5];
+            }
+            break;
+        case kOpFDiv:
+            if (wc == 5 && f32_type_id != 0 && in[pos + 1] == f32_type_id && in[pos + 2] < bound) {
+                is_fdiv[in[pos + 2]] = 1u;
+            }
+            break;
+        case kOpBitcast:
+            if (wc == 4 && in[pos + 3] < bound &&
+                (rsq_arg[in[pos + 3]] != 0 || is_fdiv[in[pos + 3]] != 0)) {
+                has_bitcast_nonfinite_src = true;
             }
             break;
         case kOpFMul:
@@ -1038,6 +1161,42 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
         case kOpIsInf:
             has_nan_or_inf_op = true;
             break;
+        case kOpName:
+        case kOpDecorate:
+            if (wc >= 2 && in[pos + 1] < bound) {
+                ++ptr_uses[in[pos + 1]];
+            }
+            break;
+        case kOpLoad:
+        case kOpAccessChain:
+        case kOpInBoundsAccessChain:
+        case kOpCopyObject:
+            if (wc >= 4 && in[pos + 3] < bound) {
+                ++ptr_uses[in[pos + 3]];
+            }
+            break;
+        case kOpStore:
+            if (wc >= 3 && in[pos + 1] < bound) {
+                ++ptr_uses[in[pos + 1]];
+            }
+            break;
+        case kOpCopyMemory:
+            if (wc >= 3) {
+                if (in[pos + 1] < bound) {
+                    ++ptr_uses[in[pos + 1]];
+                }
+                if (in[pos + 2] < bound) {
+                    ++ptr_uses[in[pos + 2]];
+                }
+            }
+            break;
+        case kOpFunctionCall:
+            for (u32 i = 3; i < wc; ++i) {
+                if (in[pos + i] < bound) {
+                    ++ptr_uses[in[pos + i]];
+                }
+            }
+            break;
         case kOpSelect:
             if (wc == 6 && f32_type_id != 0 && in[pos + 1] == f32_type_id && in[pos + 2] < bound) {
                 const u32 res = in[pos + 2];
@@ -1059,9 +1218,20 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
                         if (ka == F32ConstKind::PosZero || ka == F32ConstKind::NegZero ||
                             kb == F32ConstKind::PosZero || kb == F32ConstKind::NegZero) {
                             select_replace[res] = t_id;
-                        } else if (ma == mb || ka == F32ConstKind::FiniteNonZero ||
+                        } else if (ma == mb ||
+                                   (fneg_arg[ma] != 0 && fneg_arg[ma] == fneg_arg[mb]) ||
+                                   ka == F32ConstKind::FiniteNonZero ||
                                    kb == F32ConstKind::FiniteNonZero) {
                             select_replace[res] = f_id;
+                        } else if (rsq_arg[ma] != 0 || rsq_arg[mb] != 0) {
+                            if (rsq_arg[ma] != 0) {
+                                needs_safe_rsq[ma] = 1u;
+                            }
+                            if (rsq_arg[mb] != 0) {
+                                needs_safe_rsq[mb] = 1u;
+                            }
+                            select_safe_rsq_mul[res] = {ma, mb};
+                            any_safe_rsq = true;
                         } else {
                             has_dynamic_legacy_mul = true;
                         }
@@ -1075,20 +1245,60 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
         pos += wc;
     }
 
-    const bool strip_inf_nan = !has_nan_or_inf_op && !has_dynamic_legacy_mul;
+    u32 next_id = bound;
+    bool emit_bool_type = false;
+    bool emit_f32_zero = false;
+    bool emit_f32_flt_min = false;
+    bool emit_f32_flt_max = false;
+    u32 f32_zero_id = existing_f32_zero_id;
+    u32 f32_flt_min_id = existing_f32_flt_min_id;
+    u32 f32_flt_max_id = existing_f32_flt_max_id;
+
+    if (any_safe_rsq && f32_type_id != 0 && glsl_set_id != 0) {
+        if (bool_type_id == 0) {
+            bool_type_id = next_id++;
+            emit_bool_type = true;
+        }
+        if (f32_zero_id == 0) {
+            f32_zero_id = next_id++;
+            emit_f32_zero = true;
+        }
+        if (f32_flt_min_id == 0) {
+            f32_flt_min_id = next_id++;
+            emit_f32_flt_min = true;
+        }
+        if (f32_flt_max_id == 0) {
+            f32_flt_max_id = next_id++;
+            emit_f32_flt_max = true;
+        }
+    }
+
+    std::vector<u32> safe_rsq_id(bound, 0u);
+    const bool strip_inf_nan =
+        !has_nan_or_inf_op && !has_dynamic_legacy_mul && !has_bitcast_nonfinite_src;
 
     out.clear();
-    out.reserve(in.size());
+    out.reserve(in.size() + 128);
     out.insert(out.end(), in.begin(), in.begin() + 5);
 
     u64 nocontract = 0;
     u64 folded = 0;
     u64 self_minmax = 0;
+    u64 safe_rsq_muls = 0;
+    u64 safe_rsq_guards = 0;
+    u64 vec4_out_coalesced = 0;
     bool stripped_mode = false;
+    bool in_function = false;
 
     for (size_t pos = 5; pos < in.size();) {
         const u32 wc = in[pos] >> 16;
         const u32 op = in[pos] & 0xFFFFu;
+
+        if (op == kOpFunction) {
+            in_function = true;
+        } else if (op == kOpFunctionEnd) {
+            in_function = false;
+        }
 
         if (op == kOpDecorate && wc == 3 && in[pos + 2] == kDecoNoContraction) {
             ++nocontract;
@@ -1108,15 +1318,41 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
                 continue;
             }
         }
-        if (op == kOpSelect && wc == 6 && in[pos + 2] < bound &&
-            select_replace[in[pos + 2]] != 0) {
-            out.push_back((4u << 16) | kOpCopyObject);
-            out.push_back(in[pos + 1]);
-            out.push_back(in[pos + 2]);
-            out.push_back(select_replace[in[pos + 2]]);
-            ++folded;
-            pos += wc;
-            continue;
+        if (op == kOpSelect && wc == 6 && in[pos + 2] < bound) {
+            const u32 res = in[pos + 2];
+            if (select_replace[res] != 0) {
+                out.push_back((4u << 16) | kOpCopyObject);
+                out.push_back(in[pos + 1]);
+                out.push_back(res);
+                out.push_back(select_replace[res]);
+                ++folded;
+                pos += wc;
+                continue;
+            }
+            const IdPair rsq_mul = select_safe_rsq_mul[res];
+            if (rsq_mul.a != 0 && rsq_mul.b != 0) {
+                const u32 lhs =
+                    (rsq_mul.a < bound && safe_rsq_id[rsq_mul.a] != 0) ? safe_rsq_id[rsq_mul.a]
+                                                                       : rsq_mul.a;
+                const u32 rhs =
+                    (rsq_mul.b < bound && safe_rsq_id[rsq_mul.b] != 0) ? safe_rsq_id[rsq_mul.b]
+                                                                       : rsq_mul.b;
+                // Only rewrite if every required %safe_rsq dominated this select.
+                const bool lhs_ready = !(rsq_mul.a < bound && needs_safe_rsq[rsq_mul.a]) ||
+                                       safe_rsq_id[rsq_mul.a] != 0;
+                const bool rhs_ready = !(rsq_mul.b < bound && needs_safe_rsq[rsq_mul.b]) ||
+                                       safe_rsq_id[rsq_mul.b] != 0;
+                if (lhs_ready && rhs_ready) {
+                    out.push_back((5u << 16) | kOpFMul);
+                    out.push_back(f32_type_id);
+                    out.push_back(res);
+                    out.push_back(lhs);
+                    out.push_back(rhs);
+                    ++safe_rsq_muls;
+                    pos += wc;
+                    continue;
+                }
+            }
         }
         if (op == kOpExtInst && wc == 7 && glsl_set_id != 0 && in[pos + 3] == glsl_set_id &&
             (in[pos + 4] == kGlslFMin || in[pos + 4] == kGlslFMax ||
@@ -1131,14 +1367,175 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             continue;
         }
 
+        // Coalesce 4 contiguous scalar StorageClassOutput OpAccessChain(0..3) + OpStore pairs
+        // into a single vec4 OpCompositeConstruct + OpStore (keeping the 4 OpAccessChains for
+        // spirv-opt DCE so any stray reference stays valid).
+        if (in_function && op == kOpAccessChain && wc == 5 && pos + 32 <= in.size() &&
+            in[pos + 3] < bound && out_var_vec4_type[in[pos + 3]] != 0) {
+            const u32 target_var = in[pos + 3];
+            std::array<u32, 4> vals{};
+            size_t cur = pos;
+            bool match4 = true;
+            for (u32 c = 0; c < 4u; ++c) {
+                const u32 wc_a = in[cur] >> 16;
+                const u32 op_a = in[cur] & 0xFFFFu;
+                if (wc_a != 5u || op_a != kOpAccessChain || cur + 8u > in.size()) {
+                    match4 = false;
+                    break;
+                }
+                const u32 ac_id = in[cur + 2];
+                const u32 base = in[cur + 3];
+                const u32 idx_id = in[cur + 4];
+                if (base != target_var || idx_id >= bound || !has_int32_const[idx_id] ||
+                    int32_const_val[idx_id] != c) {
+                    match4 = false;
+                    break;
+                }
+                const u32 wc_b = in[cur + 5] >> 16;
+                const u32 op_b = in[cur + 5] & 0xFFFFu;
+                if (wc_b != 3u || op_b != kOpStore || in[cur + 6] != ac_id) {
+                    match4 = false;
+                    break;
+                }
+                vals[c] = in[cur + 7];
+                cur += 8u;
+            }
+            if (match4) {
+                for (u32 c = 0; c < 4u; ++c) {
+                    const size_t ac_off = pos + static_cast<size_t>(c) * 8u;
+                    const u32 ac_id = in[ac_off + 2u];
+                    if (ac_id >= bound || ptr_uses[ac_id] > 1u) {
+                        out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(ac_off),
+                                   in.begin() + static_cast<std::ptrdiff_t>(ac_off + 5u));
+                    }
+                }
+                const u32 vec_id = next_id++;
+                out.push_back((7u << 16) | kOpCompositeConstruct);
+                out.push_back(out_var_vec4_type[target_var]);
+                out.push_back(vec_id);
+                out.push_back(vals[0]);
+                out.push_back(vals[1]);
+                out.push_back(vals[2]);
+                out.push_back(vals[3]);
+
+                out.push_back((3u << 16) | kOpStore);
+                out.push_back(target_var);
+                out.push_back(vec_id);
+
+                ++vec4_out_coalesced;
+                pos = cur;
+                continue;
+            }
+        }
+
         out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(pos),
                    in.begin() + static_cast<std::ptrdiff_t>(pos + wc));
+
+        if (any_safe_rsq && pos == f32_type_pos) {
+            if (emit_bool_type) {
+                out.push_back((2u << 16) | kOpTypeBool);
+                out.push_back(bool_type_id);
+                emit_bool_type = false;
+            }
+            if (emit_f32_zero) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_zero_id);
+                out.push_back(kF32PosZeroBits);
+                emit_f32_zero = false;
+            }
+            if (emit_f32_flt_min) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_flt_min_id);
+                out.push_back(kF32FltMinBits);
+                emit_f32_flt_min = false;
+            }
+            if (emit_f32_flt_max) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_flt_max_id);
+                out.push_back(kF32FltMaxBits);
+                emit_f32_flt_max = false;
+            }
+        }
+
+        // Right after %rsq = InverseSqrt(%arg), synthesize finite %safe_rsq once.
+        if (in_function && op == kOpExtInst && wc == 6 && in[pos + 2] < bound &&
+            needs_safe_rsq[in[pos + 2]]) {
+            const u32 rsq_res = in[pos + 2];
+            const u32 arg = in[pos + 5];
+            const u32 clamp_lo_id = next_id++;
+            const u32 clamp_id = next_id++;
+            const u32 fin_rsq_id = next_id++;
+            const u32 gt0_id = next_id++;
+            const u32 le_max_id = next_id++;
+            const u32 valid_id = next_id++;
+            const u32 safe_id = next_id++;
+
+            out.push_back((7u << 16) | kOpExtInst);
+            out.push_back(f32_type_id);
+            out.push_back(clamp_lo_id);
+            out.push_back(glsl_set_id);
+            out.push_back(kGlslNMax);
+            out.push_back(arg);
+            out.push_back(f32_flt_min_id);
+
+            out.push_back((7u << 16) | kOpExtInst);
+            out.push_back(f32_type_id);
+            out.push_back(clamp_id);
+            out.push_back(glsl_set_id);
+            out.push_back(kGlslNMin);
+            out.push_back(clamp_lo_id);
+            out.push_back(f32_flt_max_id);
+
+            out.push_back((6u << 16) | kOpExtInst);
+            out.push_back(f32_type_id);
+            out.push_back(fin_rsq_id);
+            out.push_back(glsl_set_id);
+            out.push_back(kGlslInverseSqrt);
+            out.push_back(clamp_id);
+
+            out.push_back((5u << 16) | kOpFOrdGreaterThan);
+            out.push_back(bool_type_id);
+            out.push_back(gt0_id);
+            out.push_back(arg);
+            out.push_back(f32_zero_id);
+
+            out.push_back((5u << 16) | kOpFOrdLessThanEqual);
+            out.push_back(bool_type_id);
+            out.push_back(le_max_id);
+            out.push_back(arg);
+            out.push_back(f32_flt_max_id);
+
+            out.push_back((5u << 16) | kOpLogicalAnd);
+            out.push_back(bool_type_id);
+            out.push_back(valid_id);
+            out.push_back(gt0_id);
+            out.push_back(le_max_id);
+
+            out.push_back((6u << 16) | kOpSelect);
+            out.push_back(f32_type_id);
+            out.push_back(safe_id);
+            out.push_back(valid_id);
+            out.push_back(fin_rsq_id);
+            out.push_back(f32_zero_id);
+
+            safe_rsq_id[rsq_res] = safe_id;
+            ++safe_rsq_guards;
+        }
+
         pos += wc;
     }
+
+    out[3] = next_id;
 
     g_opt_nocontract_stripped.fetch_add(nocontract, std::memory_order_relaxed);
     g_opt_legacy_mul_folded.fetch_add(folded, std::memory_order_relaxed);
     g_opt_self_minmax_folded.fetch_add(self_minmax, std::memory_order_relaxed);
+    g_opt_safe_rsq_muls_folded.fetch_add(safe_rsq_muls, std::memory_order_relaxed);
+    g_opt_safe_rsq_guards_emitted.fetch_add(safe_rsq_guards, std::memory_order_relaxed);
+    g_opt_vec4_out_stores_coalesced.fetch_add(vec4_out_coalesced, std::memory_order_relaxed);
     if (stripped_mode) {
         g_opt_inf_nan_stripped.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1172,12 +1569,16 @@ bool OptimizeSPIRV(std::vector<u32>& spv, u64 pgm_hash) {
     const bool run_val = SpirvValEnabled();
 
     std::vector<u32> hw_interp_buf;
+    std::vector<u32> native_buf;
     std::vector<u32> fast_fp_buf;
     const std::vector<u32>* input = &spv;
     if (HwInterpEnabled() && ApplyHwInterpSpirvPass(*input, hw_interp_buf)) {
         input = &hw_interp_buf;
     }
-    if (FastFpEnabled() && ApplyFastFpSpirvPass(*input, fast_fp_buf)) {
+    if (pgm_hash != 0 && TryReplaceWithNativeShader(pgm_hash, *input, native_buf)) {
+        input = &native_buf;
+        g_opt_native_replaced.fetch_add(1, std::memory_order_relaxed);
+    } else if (FastFpEnabled() && ApplyFastFpSpirvPass(*input, fast_fp_buf)) {
         input = &fast_fp_buf;
     }
 
@@ -1232,6 +1633,12 @@ SpirvOptStats GetAndResetSpirvOptStats() noexcept {
     s.hw_interp_channels = g_opt_hw_interp_channels.exchange(0, std::memory_order_relaxed);
     s.hw_interp_int_nudges = g_opt_hw_interp_int_nudges.exchange(0, std::memory_order_relaxed);
     s.self_minmax_folded = g_opt_self_minmax_folded.exchange(0, std::memory_order_relaxed);
+    s.safe_rsq_muls_folded = g_opt_safe_rsq_muls_folded.exchange(0, std::memory_order_relaxed);
+    s.safe_rsq_guards_emitted =
+        g_opt_safe_rsq_guards_emitted.exchange(0, std::memory_order_relaxed);
+    s.vec4_out_stores_coalesced =
+        g_opt_vec4_out_stores_coalesced.exchange(0, std::memory_order_relaxed);
+    s.native_replaced = g_opt_native_replaced.exchange(0, std::memory_order_relaxed);
     return s;
 }
 

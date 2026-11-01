@@ -17,6 +17,7 @@
 #include "render/direct_shaders.h"
 #include "render/pipeline_cache.h"
 #include "render/pipeline_store.h"
+#include "shader/backend/spirv/native_shaders.h"
 #include "shader/backend/spirv/spirv_opt.h"
 #include "shader/info.h"
 #include "shader/specialization.h"
@@ -41,8 +42,17 @@ std::string BinaryName(u64 pgm_hash, size_t perm_idx) {
 std::string OptBinaryName(u64 pgm_hash, size_t perm_idx) {
     const bool hw_interp = Shader::Backend::SPIRV::HwInterpEnabled();
     const bool fast_fp = Shader::Backend::SPIRV::FastFpEnabled();
-    const char* prefix = hw_interp ? (fast_fp ? "opt3" : "opt3_strict")
-                                   : (fast_fp ? "opt2" : "opt1");
+    const bool native_sh = Shader::Backend::SPIRV::NativeShadersEnabled();
+    const char* prefix = "opt1";
+    if (hw_interp) {
+        if (fast_fp) {
+            prefix = native_sh ? "opt4" : "opt4_nonat";
+        } else {
+            prefix = "opt3_strict";
+        }
+    } else if (fast_fp) {
+        prefix = "opt2_r2";
+    }
     return fmt::format("{}_{:#018x}_{}", prefix, pgm_hash, perm_idx);
 }
 
@@ -52,10 +62,14 @@ const char* DriverCacheBlobName() noexcept {
     }
     const bool hw_interp = Shader::Backend::SPIRV::HwInterpEnabled();
     const bool fast_fp = Shader::Backend::SPIRV::FastFpEnabled();
+    const bool native_sh = Shader::Backend::SPIRV::NativeShadersEnabled();
     if (hw_interp) {
-        return fast_fp ? "vk_driver_cache_opt3" : "vk_driver_cache_opt3_strict";
+        if (fast_fp) {
+            return native_sh ? "vk_driver_cache_opt4" : "vk_driver_cache_opt4_nonat";
+        }
+        return "vk_driver_cache_opt3_strict";
     }
-    return fast_fp ? "vk_driver_cache_opt2" : "vk_driver_cache_opt1";
+    return fast_fp ? "vk_driver_cache_opt2_r2" : "vk_driver_cache_opt1";
 }
 
 /// Pipeline entries: the version, graphics (0) or compute (1), the key, the support data.
@@ -654,18 +668,24 @@ void PipelineCache::WarmUp() {
                 ? 100.0 * (double(opt_stats.words_before) - double(opt_stats.words_after)) /
                       double(opt_stats.words_before)
                 : 0.0;
-        std::printf("[bb_vulkan] Step 5.3 SPIR-V Optimizer (HW_INTERP=%d, FAST_FP=%d): upgraded %u "
-                    "cached modules (%llu -> %llu words, -%.2f%%, HwInterpMods=%u, Varyings=%llu, "
-                    "Channels=%llu, IntNudges=%llu, SelfMinMax=%llu, NoContract=-%llu, "
+        std::printf("[bb_vulkan] Step 5.4 SPIR-V Optimizer (HW_INTERP=%d, FAST_FP=%d, NATIVE=%d): "
+                    "upgraded %u cached modules (%llu -> %llu words, -%.2f%%, NativeRepl=%u, "
+                    "HwInterpMods=%u, Varyings=%llu, Channels=%llu, IntNudges=%llu, "
+                    "SafeRsqMul=%llu/%llu, Vec4Out=%llu, SelfMinMax=%llu, NoContract=-%llu, "
                     "LegacyMulFold=%llu, InfNanStrip=%u, failed=%u) in %.1f ms\n",
                     Shader::Backend::SPIRV::HwInterpEnabled() ? 1 : 0,
-                    Shader::Backend::SPIRV::FastFpEnabled() ? 1 : 0, opt_stats.modules_optimized,
+                    Shader::Backend::SPIRV::FastFpEnabled() ? 1 : 0,
+                    Shader::Backend::SPIRV::NativeShadersEnabled() ? 1 : 0,
+                    opt_stats.modules_optimized,
                     static_cast<unsigned long long>(opt_stats.words_before),
                     static_cast<unsigned long long>(opt_stats.words_after), pct,
-                    opt_stats.hw_interp_modules,
+                    opt_stats.native_replaced, opt_stats.hw_interp_modules,
                     static_cast<unsigned long long>(opt_stats.hw_interp_varyings),
                     static_cast<unsigned long long>(opt_stats.hw_interp_channels),
                     static_cast<unsigned long long>(opt_stats.hw_interp_int_nudges),
+                    static_cast<unsigned long long>(opt_stats.safe_rsq_muls_folded),
+                    static_cast<unsigned long long>(opt_stats.safe_rsq_guards_emitted),
+                    static_cast<unsigned long long>(opt_stats.vec4_out_stores_coalesced),
                     static_cast<unsigned long long>(opt_stats.self_minmax_folded),
                     static_cast<unsigned long long>(opt_stats.nocontract_stripped),
                     static_cast<unsigned long long>(opt_stats.legacy_mul_folded),
@@ -679,13 +699,14 @@ void PipelineCache::WarmUp() {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("[bb_vulkan] V4.2 Prewarmed %zu graphics + %zu compute PSOs (%zu programs) across "
                 "%u threads in %.1f ms (VkPipelineCache=%s, %.2f MiB, SPIRV_OPT=%d, FAST_FP=%d, "
-                "HW_INTERP=%d)\n",
+                "HW_INTERP=%d, NATIVE=%d)\n",
                 graphics_pipelines.size(), compute_pipelines.size(), program_cache.size(),
                 num_workers, elapsed_ms, had_driver_cache ? "HIT" : "SEEDED",
                 double(loaded_driver_bytes) / (1024.0 * 1024.0),
                 Shader::Backend::SPIRV::SpirvOptEnabled() ? 1 : 0,
                 Shader::Backend::SPIRV::FastFpEnabled() ? 1 : 0,
-                Shader::Backend::SPIRV::HwInterpEnabled() ? 1 : 0);
+                Shader::Backend::SPIRV::HwInterpEnabled() ? 1 : 0,
+                Shader::Backend::SPIRV::NativeShadersEnabled() ? 1 : 0);
     LOG_INFO(Render, "Preloaded {} pipelines ({} graphics, {} compute) in {:.1f} ms",
              num_pipelines, graphics_pipelines.size(), compute_pipelines.size(), elapsed_ms);
     if (num_total > num_pipelines) {

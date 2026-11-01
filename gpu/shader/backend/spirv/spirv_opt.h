@@ -22,6 +22,10 @@ struct SpirvOptStats {
     u64 hw_interp_channels = 0;
     u64 hw_interp_int_nudges = 0;
     u64 self_minmax_folded = 0;
+    u64 safe_rsq_muls_folded = 0;
+    u64 safe_rsq_guards_emitted = 0;
+    u64 vec4_out_stores_coalesced = 0;
+    u32 native_replaced = 0;
 };
 
 /// Controlled by BB_SPIRV_OPT (default 1 = enabled, 0 = raw EmitSPIRV output).
