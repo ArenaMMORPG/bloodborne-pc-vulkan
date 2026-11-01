@@ -1198,11 +1198,10 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         }
         if (desc.is_written) {
             if (n1_native_bufs && !VideoCore::GuestInPlace() &&
-                !VideoCore::BufferCache::LayerActive() &&
-                !texture_cache.HasOverlappingImage(address, size) && !texture_cache.IsMeta(address)) {
+                !VideoCore::BufferCache::LayerActive()) {
                 std::tie(buffer, offset) =
                     direct_buffers.TryResolveWrite(address, size, /*full_overwrite=*/false,
-                                                   /*track_access=*/false);
+                                                   /*track_access=*/false, &texture_cache);
                 if (buffer) {
                     buffer->uav_written = true;
                     is_direct_buf = true;

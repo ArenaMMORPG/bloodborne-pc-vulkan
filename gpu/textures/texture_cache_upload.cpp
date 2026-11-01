@@ -159,16 +159,15 @@ void TextureCache::RefreshImage(Image& image) {
     BbStats::Timer timer{BbStats::t_refresh};
     const ImageInfo& info = image.info;
 
-    // Maybe written (a page under it was, not it): compared by its first 8x8 texels.
+    // Maybe written (a page under it was, not it): compared by full bytes when <= 16 KiB, else 8x8.
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
-        const u32 w = std::min(info.size.width, 8u);
-        const u32 h = std::min(info.size.height, 8u);
-        const u32 bytes = (info.props.is_block ? (w + 3) / 4 : w) *
-                          (info.props.is_block ? (h + 3) / 4 : h) * (info.num_bits / 8);
-        const u64 hash = XXH3_64bits(std::bit_cast<const u8*>(info.guest_address), bytes);
+        const u64 hash = ComputeSmallOrSampleHash(info);
         if (image.hash == hash) {
             image.flags &= ~ImageFlagBits::MaybeCpuDirty;
+            if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+                image.hot_check_tick = gc_tick;
+            }
             return;
         }
         image.hash = hash;
@@ -235,6 +234,10 @@ void TextureCache::RefreshImage(Image& image) {
     WatchImage(image, copies.empty() ? "refresh: nothing to copy" : "refresh: uploading");
     if (copies.empty()) {
         image.flags &= ~ImageFlagBits::Dirty;
+        if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+            image.hash = ComputeSmallOrSampleHash(info);
+            image.hot_check_tick = gc_tick;
+        }
         return;
     }
 
@@ -246,6 +249,10 @@ void TextureCache::RefreshImage(Image& image) {
         copy.bufferOffset += linear_offset;
     }
     runtime.UploadImage(&image, linear, copies);
+    if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+        image.hash = ComputeSmallOrSampleHash(info);
+        image.hot_check_tick = gc_tick;
+    }
 }
 
 } // namespace VideoCore

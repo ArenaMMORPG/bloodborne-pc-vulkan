@@ -1011,6 +1011,14 @@ std::uint32_t GXGnmCommandContext_MapSubresource(
         return 8;
     }
 
+    if (mapType != 0u && subByteSize != 0u) {
+        const auto mappedAddr = *reinterpret_cast<const std::uint64_t*>(mappedOut + 0x00);
+        if (mappedAddr != 0u) {
+            gx_direct_vk::PrepareDirectTextureWrite(
+                reinterpret_cast<const void*>(mappedAddr), subByteSize);
+        }
+    }
+
     std::uint32_t numMips = static_cast<std::uint8_t*>(resCore)[0x32];
     std::uint32_t mipSlice = 0;
     std::uint32_t arraySlice = 0;

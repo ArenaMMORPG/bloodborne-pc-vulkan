@@ -47,10 +47,10 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     if (!is_gds) {
         texture_cache.ClearMeta(address);
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
-            !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasOverlappingImage(address, num_bytes)) {
+            !VideoCore::BufferCache::LayerActive()) {
             const auto [nat_buf, nat_off] =
-                direct_buffers.TryResolveWrite(address, num_bytes, /*full_overwrite=*/true);
+                direct_buffers.TryResolveWrite(address, num_bytes, /*full_overwrite=*/true,
+                                               /*track_access=*/true, &texture_cache);
             if (nat_buf) {
                 buffer_cache.NoteExternalGpuModified(address, num_bytes);
                 runtime.FillBuffer(nat_buf, nat_off, num_bytes, value);
@@ -94,10 +94,10 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (n1_native_bufs && !dst_gds && !VideoCore::GuestInPlace() &&
         !VideoCore::BufferCache::LayerActive() &&
-        !texture_cache.HasOverlappingImage(dst, num_bytes) && !texture_cache.IsMeta(dst) &&
-        (src_gds || !texture_cache.FindImageFromRange(src, num_bytes))) {
+        (src_gds || num_bytes < 4096 || !texture_cache.FindImageFromRange(src, num_bytes))) {
         const auto [nat_dst, nat_dst_off] =
-            direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true);
+            direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true,
+                                           /*track_access=*/true, &texture_cache);
         if (nat_dst) {
             const VideoCore::Buffer* src_buffer = nullptr;
             u64 src_offset = 0;
@@ -180,6 +180,28 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
 
     if (direct_buffers.NeedsProcessEvents(scheduler.IsRendering())) [[unlikely]] {
         direct_buffers.ProcessEvents(memory);
+    }
+
+    if (regions.size() == 1) {
+        const auto& r0 = regions[0];
+        if (r0.byte_size >= 4096 && r0.dst_va && r0.src_va &&
+            r0.reserved != gx_direct_vk::kCopyFlagKnownCpuSource) {
+            const u64 cur_tex_gen = texture_cache.RegistryGeneration() + 1ULL;
+            const size_t slot = static_cast<size_t>(
+                (((r0.src_va >> 12) * 0x9E3779B97F4A7C15ULL) ^
+                 ((r0.dst_va >> 12) * 0xBF58476D1CE4E5B9ULL)) &
+                (kDirectBufImgCopyMemoSlots - 1));
+            const auto& m = direct_buf_img_copy_memo[slot];
+            if (m.tex_gen == cur_tex_gen && m.src_va == r0.src_va && m.dst_va == r0.dst_va &&
+                m.byte_size == r0.byte_size && m.src_id && m.dst_id &&
+                !VideoCore::DirectBuffers::OverlapsNativeOwnedRange(r0.dst_va, r0.byte_size)) {
+                auto& src_img = texture_cache.GetImage(m.src_id);
+                auto& dst_img = texture_cache.GetImage(m.dst_id);
+                runtime.CopyColorAndDepth(&src_img, &dst_img);
+                dst_img.gpu_write_tick = scheduler.CurrentTick();
+                return;
+            }
+        }
     }
 
     static const bool v7_inpass_rename =
@@ -450,12 +472,11 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
         const s32 transient_idx = transient_index_by_reg[idx];
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
             !VideoCore::BufferCache::LayerActive() &&
-            !texture_cache.HasOverlappingImage(reg.dst_va, reg.byte_size) &&
-            !texture_cache.IsMeta(reg.dst_va) &&
             (reg.byte_size < 4096 ||
              !texture_cache.FindImageFromRange(reg.src_va, reg.byte_size, true, 4_MB))) {
             const auto [nat_dst, nat_dst_off] =
-                direct_buffers.TryResolveWrite(reg.dst_va, reg.byte_size, /*full_overwrite=*/true);
+                direct_buffers.TryResolveWrite(reg.dst_va, reg.byte_size, /*full_overwrite=*/true,
+                                               /*track_access=*/true, &texture_cache);
             if (nat_dst) {
                 const VideoCore::Buffer* src_buf = nullptr;
                 u64 src_off = 0;
@@ -550,6 +571,21 @@ void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
                             runtime.CopyBuffer(tail_src_buf, tail_dst_buf, std::span{&tcopy, 1});
                             texture_cache.InvalidateMemoryFromGPU(dst_tail, tail);
                         }
+                    } else if (reg.reserved != gx_direct_vk::kCopyFlagKnownCpuSource &&
+                               !VideoCore::DirectBuffers::OverlapsNativeOwnedRange(reg.dst_va,
+                                                                                   reg.byte_size)) {
+                        const size_t slot = static_cast<size_t>(
+                            (((reg.src_va >> 12) * 0x9E3779B97F4A7C15ULL) ^
+                             ((reg.dst_va >> 12) * 0xBF58476D1CE4E5B9ULL)) &
+                            (kDirectBufImgCopyMemoSlots - 1));
+                        direct_buf_img_copy_memo[slot] = DirectBufImgCopyMemo{
+                            .src_va = reg.src_va,
+                            .dst_va = reg.dst_va,
+                            .byte_size = reg.byte_size,
+                            .src_id = src_img_id,
+                            .dst_id = dst_img_id,
+                            .tex_gen = texture_cache.RegistryGeneration() + 1ULL,
+                        };
                     }
                     continue;
                 }
@@ -681,10 +717,10 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
 
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive() &&
-        !texture_cache.HasOverlappingImage(dst, num_bytes)) {
+    if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive()) {
         const auto [nat_dst, nat_off] =
-            direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true);
+            direct_buffers.TryResolveWrite(dst, num_bytes, /*full_overwrite=*/true,
+                                           /*track_access=*/true, &texture_cache);
         if (nat_dst) {
             buffer_cache.NoteExternalGpuModified(dst, num_bytes);
             runtime.FillBuffer(nat_dst, nat_off, num_bytes, value);

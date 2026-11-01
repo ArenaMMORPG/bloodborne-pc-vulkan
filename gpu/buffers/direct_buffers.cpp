@@ -1250,8 +1250,25 @@ const u8* Manager::TryGetCpuMirrorPtr(VAddr addr, u64 size) noexcept {
     return nullptr;
 }
 
+namespace {
+inline bool VerifyEntryNoTexOverlap(const TextureCache& tex_cache, VAddr base_va,
+                                    u64 alloc_size, u64& inout_verified_gen) noexcept {
+    const u64 cur_gen = tex_cache.RegistryGeneration() + 1ULL;
+    if (inout_verified_gen == cur_gen) {
+        return true;
+    }
+    if (tex_cache.HasOverlappingImage(base_va, alloc_size) ||
+        tex_cache.HasMetaInRange(base_va, alloc_size)) {
+        return false;
+    }
+    inout_verified_gen = cur_gen;
+    return true;
+}
+} // namespace
+
 std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, bool full_overwrite,
-                                                       bool track_access) {
+                                                       bool track_access,
+                                                       const TextureCache* tex_cache) {
     if (size == 0 || addr >= kMaxGuestVa || entries_by_base.empty() || !AnyBitmap64k(addr, size)) {
         return {nullptr, 0};
     }
@@ -1281,6 +1298,11 @@ std::pair<const Buffer*, u64> Manager::TryResolveWrite(VAddr addr, u64 size, boo
         }
     }
     if (hit_entry) {
+        if (tex_cache &&
+            !VerifyEntryNoTexOverlap(*tex_cache, hit_base, hit_entry->alloc_size,
+                                     hit_entry->verified_no_tex_gen)) {
+            return {nullptr, 0};
+        }
         const VAddr base = hit_base;
         if (hit_entry->dirty_writeback) {
             FlushPendingWritebacks();
@@ -1518,9 +1540,10 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         return true;
     };
 
+    constexpr u64 kMaxStageBufferBytes = 4ULL << 20;
     for (u32 idx = 0; idx < regions.size(); ++idx) {
         const auto& reg = regions[idx];
-        if (reg.byte_size == 0 || reg.byte_size > (512ULL << 10) || reg.dst_va >= kMaxGuestVa) {
+        if (reg.byte_size == 0 || reg.byte_size > kMaxStageBufferBytes || reg.dst_va >= kMaxGuestVa) {
             continue;
         }
 
@@ -1557,7 +1580,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         const auto& e = *entry_ptr;
         if (!e.buffer || reg.dst_va < base_va ||
             reg.dst_va + reg.byte_size > base_va + e.alloc_size ||
-            e.alloc_size > (512ULL << 10)) {
+            e.alloc_size > kMaxStageBufferBytes) {
             continue;
         }
         const u64 dst_in_buf_off = reg.dst_va - base_va;
@@ -1567,7 +1590,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
         const bool shadow_partial_ok =
             can_use_shadow && !e.gpu_written_without_shadow &&
             (e.has_cpu_shadow || e.zero_known || e.needs_zero_init);
-        if (!full_overwrite && !e.needs_zero_init && !shadow_partial_ok) {
+        if (!full_overwrite && !((e.needs_zero_init && slice_span <= kMaxCpuShadowBytes) || shadow_partial_ok)) {
             continue;
         }
 
@@ -1599,14 +1622,8 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             continue;
         }
 
-        if (tex_cache.HasOverlappingImage(reg.dst_va, reg.byte_size) ||
-            tex_cache.IsMeta(reg.dst_va)) {
-            continue;
-        }
-
-        // Source cannot itself be a native GPU VkBuffer (whose guest RAM is uninitialized/stale).
-        if (OverlapsNativeOwnedRange(reg.src_va, reg.byte_size) ||
-            OverlapsLiveEntry(reg.src_va, reg.byte_size)) {
+        if (!VerifyEntryNoTexOverlap(tex_cache, base_va, entry_ptr->alloc_size,
+                                     entry_ptr->verified_no_tex_gen)) {
             continue;
         }
 
@@ -1615,11 +1632,16 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
             IsTransientCueHeap(reg.src_va, reg.byte_size) &&
             (known_cpu_src || !IsCueHeapEverGpuModified() ||
              !buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size));
-        uintptr_t mapped_end = 0;
-        const bool fast_mapped =
-            cue_src || (BbLookupMappedEnd(reg.src_va, mapped_end) &&
-                        mapped_end > reg.src_va && (mapped_end - reg.src_va) >= reg.byte_size);
         if (!cue_src) {
+            // Source cannot itself be a native GPU VkBuffer (whose guest RAM is uninitialized/stale).
+            if (OverlapsNativeOwnedRange(reg.src_va, reg.byte_size) ||
+                OverlapsLiveEntry(reg.src_va, reg.byte_size)) {
+                continue;
+            }
+            uintptr_t mapped_end = 0;
+            const bool fast_mapped =
+                BbLookupMappedEnd(reg.src_va, mapped_end) &&
+                mapped_end > reg.src_va && (mapped_end - reg.src_va) >= reg.byte_size;
             if ((!fast_mapped &&
                  memory->ClampRangeSize(reg.src_va, reg.byte_size) != reg.byte_size) ||
                 (!known_cpu_src && (buf_cache.IsRegionGpuModified(reg.src_va, reg.byte_size) ||
@@ -1627,6 +1649,7 @@ void Manager::StageNativeCpuCopyBatch(std::span<const NativeCopyRegion> regions,
                 continue;
             }
         }
+        const bool fast_mapped = true;
 
         const bool use_shadow = can_use_shadow && (full_overwrite || shadow_partial_ok);
         StagedSlice* coalesced_prev = nullptr;

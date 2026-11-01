@@ -163,9 +163,9 @@ public:
     /// VkBuffer (flushing any active stream override first and arming WAR barrier tracking when
     /// `track_access` is true). If a write partially crosses buffer boundaries, retires the entry
     /// and returns {nullptr, 0}.
-    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(VAddr addr, u64 size,
-                                                                bool full_overwrite = false,
-                                                                bool track_access = true);
+    [[nodiscard]] std::pair<const Buffer*, u64> TryResolveWrite(
+        VAddr addr, u64 size, bool full_overwrite = false, bool track_access = true,
+        const TextureCache* tex_cache = nullptr);
 
     /// N1.2b: Renames full-buffer CPU-source `DirectCopyBuffers` updates (`FlushBufferUpdates_A/B`)
     /// of native `DEFAULT` `GXGnmBuffer`s directly into `stream_buffer` without calling
@@ -207,6 +207,7 @@ private:
         bool noted_ext_gpu_mod{false};
         u64 raw_size{0};
         u64 alloc_size{0};
+        u64 verified_no_tex_gen{0};
         const Buffer* stream_override_buf{nullptr};
         u64 stream_override_off{0};
         std::unique_ptr<u8[]> cpu_shadow{};

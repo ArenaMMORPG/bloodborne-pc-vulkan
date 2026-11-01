@@ -69,6 +69,21 @@ void TextureCache::UnregisterImage(ImageId image_id) {
 // A guest write fault on an edge page that the image only partly covers gives that page up
 // (head or tail) without marking the image dirty: its other pages would show a write into it.
 
+u64 TextureCache::ComputeSmallOrSampleHash(const ImageInfo& info) noexcept {
+    if (info.guest_address == 0 || info.guest_size == 0) {
+        return 0;
+    }
+    if (info.guest_size <= kSharedHotPageMaxBytes) {
+        return XXH3_64bits(std::bit_cast<const u8*>(info.guest_address), info.guest_size);
+    }
+    const u32 w = std::min(info.size.width, 8u);
+    const u32 h = std::min(info.size.height, 8u);
+    const u32 bytes = (info.props.is_block ? (w + 3) / 4 : w) *
+                      (info.props.is_block ? (h + 3) / 4 : h) * (info.num_bits / 8);
+    return XXH3_64bits(std::bit_cast<const u8*>(info.guest_address),
+                       std::min<u64>(bytes, info.guest_size));
+}
+
 void TextureCache::TrackImage(ImageId image_id) {
     Image& image = slot_images[image_id];
     if (False(image.flags & ImageFlagBits::Registered)) {
@@ -82,7 +97,7 @@ void TextureCache::TrackImage(ImageId image_id) {
     if (!image.IsTracked()) {
         image.track_addr = begin;
         image.track_addr_end = end;
-        if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+        if (False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
             page_watch.WatchImage<true>(begin, image.info.guest_size);
         }
         return;
@@ -104,7 +119,7 @@ void TextureCache::TrackImageHead(ImageId image_id) {
     ASSERT(image.track_addr != 0 && begin < image.track_addr);
     const u64 size = image.track_addr - begin;
     image.track_addr = begin;
-    if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+    if (False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
         page_watch.WatchImage<true>(begin, size);
     }
 }
@@ -118,7 +133,7 @@ void TextureCache::TrackImageTail(ImageId image_id) {
     ASSERT(image.track_addr_end != 0 && image.track_addr_end < end);
     const VAddr from = image.track_addr_end;
     image.track_addr_end = end;
-    if (False(image.flags & ImageFlagBits::DirectImmutable)) {
+    if (False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
         page_watch.WatchImage<true>(from, end - from);
     }
 }
@@ -132,14 +147,15 @@ void TextureCache::UntrackImage(ImageId image_id) {
     const u64 size = image.track_addr_end - image.track_addr;
     image.track_addr = 0;
     image.track_addr_end = 0;
-    if (size != 0 && False(image.flags & ImageFlagBits::DirectImmutable)) {
+    if (size != 0 &&
+        False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
         page_watch.WatchImage<false>(from, size);
     }
 }
 
 void TextureCache::UntrackImageHead(ImageId image_id) {
     Image& image = slot_images[image_id];
-    if (True(image.flags & ImageFlagBits::DirectImmutable)) {
+    if (True(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
         return;
     }
     const VAddr begin = image.info.guest_address;
@@ -157,7 +173,7 @@ void TextureCache::UntrackImageHead(ImageId image_id) {
 
 void TextureCache::UntrackImageTail(ImageId image_id) {
     Image& image = slot_images[image_id];
-    if (True(image.flags & ImageFlagBits::DirectImmutable)) {
+    if (True(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage))) {
         return;
     }
     const VAddr end = image.info.guest_address + image.info.guest_size;
@@ -175,11 +191,19 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
 
 void TextureCache::MarkAsMaybeDirty(ImageId image_id, Image& image) {
     if (image.hash == 0) {
-        image.hash = XXH3_64bits(std::bit_cast<const u8*>(image.info.guest_address),
-                                 image.info.guest_size);
+        image.hash = ComputeSmallOrSampleHash(image.info);
     }
     image.flags |= ImageFlagBits::MaybeCpuDirty;
     UntrackImage(image_id);
+    if (image.info.guest_size <= kSharedHotPageMaxBytes &&
+        False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified))) {
+        if (image.hot_page_hits < 255) {
+            ++image.hot_page_hits;
+        }
+        if (image.hot_page_hits >= 2) {
+            image.flags |= ImageFlagBits::SharedHotPage;
+        }
+    }
 }
 
 void TextureCache::TouchImage(const Image& image) {
@@ -233,6 +257,17 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
                                          image.info.size.height, u32(image.info.pixel_format),
                                          u32(image.info.tile_mode));
             UntrackImage(image_id);
+            if (image.info.guest_size <= kSharedHotPageMaxBytes &&
+                False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::GpuModified))) {
+                if (image.hot_page_hits < 255) {
+                    ++image.hot_page_hits;
+                }
+                if (image.hot_page_hits >= 2) {
+                    image.flags |= ImageFlagBits::SharedHotPage;
+                }
+            }
+        } else if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+            return;
         } else if (pages_end < end) {
             // A write on its first page, before it: that page is given up.
             UntrackImageHead(image_id);
@@ -260,7 +295,8 @@ bool TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) 
     if (!mark_dirty) {
         ForEachImageInRegion(addr, size, [&](ImageId image_id, Image& image) {
             any_overlapped = true;
-            if (False(image.flags & ImageFlagBits::DirectImmutable) && image.IsTracked()) {
+            if (False(image.flags & (ImageFlagBits::DirectImmutable | ImageFlagBits::SharedHotPage)) &&
+                image.IsTracked()) {
                 UntrackImage(image_id);
             }
         });
@@ -268,14 +304,18 @@ bool TextureCache::DisarmWatchedRange(VAddr addr, size_t size, bool mark_dirty) 
     }
     ForEachImageInRegion(pages_begin, pages_end - pages_begin, [&](ImageId image_id, Image& image) {
         any_overlapped = true;
-        if (True(image.flags & ImageFlagBits::DirectImmutable) || !image.IsTracked()) {
+        if (True(image.flags & ImageFlagBits::DirectImmutable)) {
             return;
         }
         const VAddr begin = image.info.guest_address;
         const VAddr end = begin + image.info.guest_size;
         if (image.Overlaps(addr, size)) {
             image.flags |= ImageFlagBits::CpuDirty;
-            UntrackImage(image_id);
+            if (False(image.flags & ImageFlagBits::SharedHotPage) && image.IsTracked()) {
+                UntrackImage(image_id);
+            }
+        } else if (True(image.flags & ImageFlagBits::SharedHotPage) || !image.IsTracked()) {
+            return;
         } else if (pages_end < end) {
             UntrackImageHead(image_id);
         } else if (begin < pages_begin) {

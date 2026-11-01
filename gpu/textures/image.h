@@ -36,6 +36,7 @@ enum ImageFlagBits : u32 {
     Dirty = MaybeCpuDirty | CpuDirty | GpuDirty,
     GpuModified = 1 << 3,     ///< the GPU wrote it as an image
     DirectImmutable = 1 << 4, ///< V3.2: immutable .tpf/.gnf asset in DEVICE_LOCAL VRAM (no page traps)
+    SharedHotPage = 1 << 5,   ///< C1: small (<= 16 KiB) CPU-hot page texture checked once/tick via XXH3 (no page traps)
     Registered = 1 << 6,      ///< in the cache's page table
     Picked = 1 << 7,      ///< seen in the current region walk
 };
@@ -191,6 +192,8 @@ struct Image {
     boost::container::static_vector<u64, 16> mip_hashes{};
     u64 lru_id{};
     u64 hash{};
+    u64 hot_check_tick = ~0ull;
+    u8 hot_page_hits = 0;
 
 private:
     static Common::IncrementalIdProvider<u64> next_uid;

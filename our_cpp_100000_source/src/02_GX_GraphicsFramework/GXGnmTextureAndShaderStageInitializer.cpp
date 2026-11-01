@@ -3821,8 +3821,9 @@ uint32_t GXGnmBuffer_CreateAndInitialize(
             }
         }
     } else if (n1_native_eligible) {
+        const uint32_t initSpan = (hasCounterTail != 0) ? allocSize : desc->byteSize;
         gx_direct_vk::RegisterDirectNativeBuffer(
-            outBuf->resourceId, gpuMem, desc->byteSize, allocSize,
+            outBuf->resourceId, gpuMem, initSpan, allocSize,
             desc->bindFlags, desc->usageType, 0u);
     }
     return 0;
@@ -3862,7 +3863,7 @@ void GXRefCountedTexture3DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture3DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3875,7 +3876,7 @@ void GXRefCountedTexture3DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture3DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);
@@ -3903,7 +3904,7 @@ void GXRefCountedTexture2DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture2DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3916,7 +3917,7 @@ void GXRefCountedTexture2DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture2DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);
@@ -3944,7 +3945,7 @@ void GXRefCountedTexture1DResource_Destructor(GXRefCountedTextureResource* self)
     self->vtable = &g_Vtable_GXRefCountedTexture1DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
         self->hwResource.gpuBaseAddr = nullptr;
     }
@@ -3957,7 +3958,7 @@ void GXRefCountedTexture1DResource_DeletingDestructor(GXRefCountedTextureResourc
     self->vtable = &g_Vtable_GXRefCountedTexture1DResource;
     GXMemoryAllocator* alloc = self->hwResource.allocator;
     if (alloc != nullptr && self->hwResource.gpuBaseAddr != nullptr) {
-        gx_direct_vk::UnwatchDirectTextureRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
+        gx_direct_vk::RetireDirectGpuRange(self->hwResource.gpuBaseAddr, self->hwResource.allocSize);
         alloc->vtable->FreeAligned(alloc, self->hwResource.gpuBaseAddr);
     }
     OperatorDelete_Global(self);

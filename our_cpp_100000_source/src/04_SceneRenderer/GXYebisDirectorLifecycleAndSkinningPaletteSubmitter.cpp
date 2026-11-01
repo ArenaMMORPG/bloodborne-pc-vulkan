@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
+#include "gx_direct_vulkan.h"
 
 namespace {
 
@@ -1119,8 +1120,11 @@ void sub_21d2dd0(void* self) {
         auto* smallBuf = static_cast<uint8_t*>(
             reinterpret_cast<void*(*)(void*, uint64_t, uint64_t)>(gfxAllocVt[0x58 / 8])(gfxAlloc, 0x0cULL, 4ULL));
         *reinterpret_cast<void**>(dir + 0x2650) = smallBuf;
+        gx_direct_vk::PrepareDirectBufferWrite(smallBuf, 0x0cULL);
         *reinterpret_cast<uint64_t*>(smallBuf + 0x00) = 0x0003000100020000ULL;
         *reinterpret_cast<uint32_t*>(smallBuf + 0x08) = 0x00020001u;
+        gx_direct_vk::NoteDirectAssetBufferWrite(smallBuf, 0x0cULL);
+        gx_direct_vk::RegisterDirectImmutableBuffer(0u, smallBuf, 0x0cu, 0x0cu, 2u);
     }
 
     if (alreadyHadContext == 0 && g_YebisRingBuffersAllocated_56c3ce0 == 0) {
@@ -1138,6 +1142,10 @@ void sub_21d2dd0(void* self) {
         g_YebisRingBuf0_B_56c3d10 = allocGfx(sizeB, 4ULL);
         g_YebisRingBuf0_C_56c3d20 = allocGfx(0x3ffffcULL, 4ULL);
         g_YebisRingBuf0_D_56c3d30 = allocGfx(0x3ffffcULL, 4ULL);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf0_A_56c3d00, sizeA);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf0_B_56c3d10, sizeB);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf0_C_56c3d20, 0x3ffffcULL);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf0_D_56c3d30, 0x3ffffcULL);
 
         sub_10945f0(
             g_YebisGnmCtx0_56a6d28,
@@ -1155,6 +1163,10 @@ void sub_21d2dd0(void* self) {
         g_YebisRingBuf1_B_56c3d18 = allocGfx(sizeB, 4ULL);
         g_YebisRingBuf1_C_56c3d28 = allocGfx(0x3ffffcULL, 4ULL);
         g_YebisRingBuf1_D_56c3d38 = allocGfx(0x3ffffcULL, 4ULL);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf1_A_56c3d08, sizeA);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf1_B_56c3d18, sizeB);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf1_C_56c3d28, 0x3ffffcULL);
+        gx_direct_vk::RegisterTransientCpuRing(g_YebisRingBuf1_D_56c3d38, 0x3ffffcULL);
 
         sub_10945f0(
             g_YebisGnmCtx1_56b54e0,
@@ -1170,6 +1182,7 @@ void sub_21d2dd0(void* self) {
 
         g_YebisContextSlotIdx_56a6d20 = 0u;
         uint64_t* fenceMem = static_cast<uint64_t*>(allocGfx(0x10ULL, 8ULL));
+        gx_direct_vk::RegisterTransientCpuRing(fenceMem, 0x10ULL);
         g_YebisFenceLabel0_56c3cf0 = fenceMem;
         g_YebisFenceLabel1_56c3cf8 = fenceMem;
         fenceMem[0] = 0ULL;
@@ -1414,6 +1427,7 @@ void sub_21d2830(void* self) {
 
     void* smallBuf = *reinterpret_cast<void**>(dir + 0x2650);
     if (smallBuf != nullptr) {
+        gx_direct_vk::RetireDirectBufferRange(smallBuf, 0x0cULL);
         void* gfxAlloc = g_GlobalGfxAllocator_55406a8;
         auto* vt = *reinterpret_cast<void***>(gfxAlloc);
         reinterpret_cast<void(*)(void*, void*)>(vt[0x70 / 8])(gfxAlloc, smallBuf);

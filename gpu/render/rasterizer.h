@@ -1186,6 +1186,16 @@ private:
         }
         return nullptr;
     }
+    static constexpr size_t kDirectBufImgCopyMemoSlots = 64;
+    struct DirectBufImgCopyMemo {
+        VAddr src_va{0};
+        VAddr dst_va{0};
+        u32 byte_size{0};
+        VideoCore::ImageId src_id{};
+        VideoCore::ImageId dst_id{};
+        u64 tex_gen{0};
+    };
+    std::array<DirectBufImgCopyMemo, kDirectBufImgCopyMemoSlots> direct_buf_img_copy_memo{};
     VideoCore::DirectBuffers::Manager direct_buffers{instance, scheduler, runtime};
     std::unique_ptr<ConstantRing> constant_ring;
     std::unique_ptr<class OcclusionQueries> occlusion;

@@ -190,6 +190,21 @@ public:
         }
         std::scoped_lock lock{mutex};
         Image& image = slot_images[image_id];
+        if (True(image.flags & ImageFlagBits::SharedHotPage)) {
+            if (True(image.flags & ImageFlagBits::GpuModified)) {
+                image.track_addr = 0;
+                image.track_addr_end = 0;
+                image.flags &= ~ImageFlagBits::SharedHotPage;
+            } else if (False(image.flags & ImageFlagBits::Dirty) &&
+                       image.hot_check_tick != gc_tick) {
+                const u64 h = ComputeSmallOrSampleHash(image.info);
+                image.hot_check_tick = gc_tick;
+                if (h != image.hash) {
+                    image.hash = h;
+                    image.flags |= ImageFlagBits::CpuDirty;
+                }
+            }
+        }
         TrackImage(image_id);
         WatchImage(image, "update image (slow path)");
         TouchImage(image);
@@ -250,6 +265,20 @@ public:
         const auto it = surface_metas.find(address);
         return it != surface_metas.end() ? std::optional{it->second.type} : std::nullopt;
     }
+    [[nodiscard]] bool HasMetaInRange(VAddr addr, size_t size) const noexcept {
+        if (size == 0 || surface_metas.empty()) {
+            return false;
+        }
+        const VAddr end = addr + size;
+        for (const auto& [maddr, _] : surface_metas) {
+            if (maddr >= addr && maddr < end) {
+                return true;
+            }
+        }
+        return false;
+    }
+    static constexpr u64 kSharedHotPageMaxBytes = 16384;
+    [[nodiscard]] static u64 ComputeSmallOrSampleHash(const ImageInfo& info) noexcept;
     bool IsMetaCleared(VAddr address, u32 slice) const {
         const auto it = surface_metas.find(address);
         return it != surface_metas.end() && (it->second.clear_mask & (1u << slice));
@@ -336,7 +365,9 @@ private:
             __atomic_load_n(reinterpret_cast<const u32*>(&image.flags), __ATOMIC_ACQUIRE);
         constexpr u32 Dirty = u32(ImageFlagBits::Dirty);
         constexpr u32 Registered = u32(ImageFlagBits::Registered);
+        constexpr u32 SharedHot = u32(ImageFlagBits::SharedHotPage);
         return (flags & (Dirty | Registered)) == Registered &&
+               ((flags & SharedHot) == 0 || image.hot_check_tick == gc_tick) &&
                image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
                image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8;
     }

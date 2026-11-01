@@ -1274,11 +1274,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
     }
-    // N2.5: Direct zero-fault streaming for auxiliary transient CPU command/constant rings
-    // (`dcbRingBuffer`, `ccbRingBuffer`, `CGGlobalRing` DCB/CCB & Yebis2 `g_GlobalCueHeap`),
+    // N2.5 / C1: Direct zero-fault streaming for auxiliary transient CPU command/constant rings
+    // (`dcbRingBuffer`, `ccbRingBuffer`, `CGGlobalRing` DCB/CCB & Yebis2 `Gnmx::GfxContext` rings),
     // avoiding 64 MiB BufferCache VRAM chunks and mprotect(PROT_READ) write faults on DCB rings.
     if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
-        size != 0 && size <= STREAM_THRESHOLD &&
+        size != 0 && size <= 16_MB &&
         DirectBuffers::IsTransientAuxCpuRing(device_addr, size) &&
         !gpu_modified_ranges.Intersects(device_addr, size)) {
         const u64 cur_tick = scheduler.CurrentTick();
@@ -1319,10 +1319,8 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     // - Clean static `.flver` level meshes (`> 64 KiB && !IsRegionCpuModified`, `402.8 MiB`) skip
     //   streaming completely (`0 B/frame` copied) and hit `BindMemo` in `DEVICE_LOCAL` VRAM `arena`.
     if (!is_written && !GuestInPlace() && !LayerMode() && !no_stream_constram &&
-        size != 0 &&
+        size != 0 && size <= 16_MB &&
         DirectBuffers::IsTransientCueHeap(device_addr, size) &&
-        (size <= STREAM_THRESHOLD ||
-         (size <= 4_MB && IsRegionCpuModified(device_addr, size))) &&
         (!DirectBuffers::IsCueHeapEverGpuModified() ||
          !gpu_modified_ranges.Intersects(device_addr, size))) {
         const u64 cur_tick = scheduler.CurrentTick();
@@ -1556,21 +1554,28 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     }
     // BB_EXP_NO_STREAM=1 (experiment, the flicker): never through the stream buffer.
     static const bool no_stream = std::getenv("BB_EXP_NO_STREAM") != nullptr;
-    // For read-only buffers use device local stream buffer to reduce renderpass breaks.
+    static const bool n1_native_buf_fallback =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    static const bool precise_readbacks_fallback =
+        EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Precise;
+    const u64 fallback_stream_max = n1_native_buf_fallback ? 4_MB : STREAM_THRESHOLD;
+    // For read-only buffers use device local stream buffer to reduce renderpass breaks and avoid
+    // allocating 64 MiB BufferCache VRAM chunks or queuing SmallGuestCopy -> RecordHostCopy stalls.
     const bool gpu_modified =
-        (!is_written && size <= STREAM_THRESHOLD && !no_stream) &&
+        (!is_written && size <= fallback_stream_max && !no_stream) &&
         (!GuestInPlace() ? gpu_modified_ranges.Intersects(device_addr, size)
                          : IsRegionGpuModified(device_addr, size));
-    if (!is_written && size <= STREAM_THRESHOLD && !gpu_modified &&
+    if (!is_written && size <= fallback_stream_max && !gpu_modified &&
         !no_stream) {
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
             ++region.stream_count;
             region.stream_bytes += size;
         }
-        // bbport: the guest data is copied on a copy thread, started now; submission and
-        // guest-visible fences wait for it (Scheduler::WaitHostCopies).
-        if (!stream_buffer.mapped_data.empty() &&
+        // bbport: the guest data is copied on a copy thread when N1 native buffers are disabled;
+        // with N1 enabled, synchronous memcpy into stream_buffer eliminates 80/frame RecordHostCopy
+        // closures and WaitDeferredSignals spins.
+        if (!n1_native_buf_fallback && !stream_buffer.mapped_data.empty() &&
             !BbToggle::Disabled(BbToggle::DeferredStreamCopies)) {
             if (const auto offset = stream_buffer.Reserve(size, instance.UniformMinAlignment())) {
                 SmallGuestCopy({
@@ -1585,8 +1590,14 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 return {&stream_buffer, *offset};
             }
         }
-        const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
-        memory->CopySparseMemory(device_addr, data, size);
+        const u64 align = std::max<u64>(
+            16ULL, std::max<u64>(instance.UniformMinAlignment(), instance.StorageMinAlignment()));
+        const auto [data, offset] = stream_buffer.Map(size, align);
+        if (!precise_readbacks_fallback) {
+            std::memcpy(data, reinterpret_cast<const void*>(device_addr), size);
+        } else {
+            memory->CopySparseMemory(device_addr, data, size);
+        }
         stream_buffer.Commit();
         TraceBinding(device_addr, size, false, 3);
         return {&stream_buffer, offset};
@@ -1750,7 +1761,10 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_add
     TraceBinding(device_addr, size, false, 9);
     const auto staging = staging_pool.Request(size, VideoCore::MemoryType::HostUncached,
                                               instance.StorageMinAlignment());
-    if (!BbToggle::Disabled(BbToggle::DeferredUploads)) {
+    static const bool n1_sync_small_img =
+        gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    if (!BbToggle::Disabled(BbToggle::DeferredUploads) &&
+        !(n1_sync_small_img && staging.size <= 64_KB)) {
         // bbport: texture data is copied on the copy threads (streaming: 100+ MB per frame);
         // the upload reads the staging only after submission, which waits for the copies.
         constexpr u64 Chunk = 1_MB;
