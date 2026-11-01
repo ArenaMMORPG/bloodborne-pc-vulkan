@@ -37,6 +37,7 @@
 #include "render/shader_capture.h"
 #include "render/vk_draw_prep.h"
 #include "shader/backend/spirv/emit_spirv.h"
+#include "shader/backend/spirv/spirv_opt.h"
 #include "shader/info.h"
 #include "shader/runtime_info.h"
 #include "upscale/motion_history.h"
@@ -1794,6 +1795,16 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     if (capture) {
         BbShaderCapture::Write(*in_info, in_runtime_info, profile, in_binding, code, perm_idx, spv,
                                info, binding);
+    }
+    if (Shader::Backend::SPIRV::SpirvOptEnabled()) {
+        PipelineStore::SaveShaderBinary(std::vector<u32>{spv}, info.pgm_hash, perm_idx);
+        Shader::Backend::SPIRV::OptimizeSPIRV(spv, info.pgm_hash);
+        DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
+        const vk::ShaderModule module = CompileSPV(spv, instance.GetDevice());
+        PipelineStore::SaveOptShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
+        SetObjectName(instance.GetDevice(), module,
+                      GetShaderName(info.hw_stage, info.pgm_hash, perm_idx));
+        return module;
     }
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 

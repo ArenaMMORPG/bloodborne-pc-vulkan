@@ -29,5 +29,6 @@ void SaveGraphics(const GraphicsPipelineKey& key, u64 hash,
 void SaveShaderMeta(const Shader::Info& info, const Shader::StageSpecialization& spec,
                     u64 perm_hash, size_t perm_idx);
 void SaveShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx);
+void SaveOptShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx);
 
 } // namespace Vulkan::PipelineStore

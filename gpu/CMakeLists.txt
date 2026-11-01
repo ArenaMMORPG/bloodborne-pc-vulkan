@@ -61,6 +61,7 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
+pkg_check_modules(SPIRV_TOOLS REQUIRED IMPORTED_TARGET SPIRV-Tools)
 if (NOT WIN32)
     pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 endif()
@@ -210,6 +211,7 @@ if (NOT WIN32)
 endif()
 target_link_directories(bbgpu PUBLIC "/home/kekw3/Documents/BloodBorne/AI_WORK_FOR_PORTING/toolchain/sysroot/usr/lib")
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
+    PkgConfig::SPIRV_TOOLS
     "${CMAKE_CURRENT_SOURCE_DIR}/../our_cpp_100000_source/build/libbb_gx_engine_native.a")
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)

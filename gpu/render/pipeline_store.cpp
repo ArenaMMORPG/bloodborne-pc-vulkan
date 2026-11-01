@@ -17,6 +17,7 @@
 #include "render/direct_shaders.h"
 #include "render/pipeline_cache.h"
 #include "render/pipeline_store.h"
+#include "shader/backend/spirv/spirv_opt.h"
 #include "shader/info.h"
 #include "shader/specialization.h"
 #include "vulkan/instance.h"
@@ -35,6 +36,14 @@ std::string MetaName(u64 perm_hash) {
 
 std::string BinaryName(u64 pgm_hash, size_t perm_idx) {
     return fmt::format("{:#018x}_{}", pgm_hash, perm_idx);
+}
+
+std::string OptBinaryName(u64 pgm_hash, size_t perm_idx) {
+    return fmt::format("opt1_{:#018x}_{}", pgm_hash, perm_idx);
+}
+
+const char* DriverCacheBlobName() noexcept {
+    return Shader::Backend::SPIRV::SpirvOptEnabled() ? "vk_driver_cache_opt1" : "vk_driver_cache";
 }
 
 /// Pipeline entries: the version, graphics (0) or compute (1), the key, the support data.
@@ -110,6 +119,14 @@ void SaveShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
     Store().Save(BbCache::BlobType::ShaderBinary, BinaryName(pgm_hash, perm_idx), std::move(spv));
 }
 
+void SaveOptShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
+    if (!Store().IsOpened()) {
+        return;
+    }
+    Store().Save(BbCache::BlobType::ShaderBinary, OptBinaryName(pgm_hash, perm_idx),
+                 std::move(spv));
+}
+
 } // namespace PipelineStore
 
 void ComputePipelineKey::Serialize(Serialization::Archive& ar) const {
@@ -169,7 +186,7 @@ bool PipelineCache::InitDriverPipelineCache(bool load_from_store, size_t* loaded
     }
     if (load_from_store && Store().IsOpened()) {
         std::vector<u8> driver_blob;
-        Store().Load(BbCache::BlobType::ShaderProfile, "vk_driver_cache", driver_blob);
+        Store().Load(BbCache::BlobType::ShaderProfile, DriverCacheBlobName(), driver_blob);
         if (driver_blob.size() >= sizeof(VkPipelineCacheHeaderVersionOne)) {
             VkPipelineCacheHeaderVersionOne hdr{};
             std::memcpy(&hdr, driver_blob.data(), sizeof(hdr));
@@ -215,7 +232,7 @@ void PipelineCache::SaveDriverPipelineCache() {
     }
     auto [res, bytes] = instance.GetDevice().getPipelineCacheData(*pipeline_cache);
     if (res == vk::Result::eSuccess && bytes.size() >= sizeof(VkPipelineCacheHeaderVersionOne)) {
-        Store().Save(BbCache::BlobType::ShaderProfile, "vk_driver_cache", std::move(bytes));
+        Store().Save(BbCache::BlobType::ShaderProfile, DriverCacheBlobName(), std::move(bytes));
         driver_cache_dirty.store(false, std::memory_order_relaxed);
         last_driver_cache_save_sec = static_cast<u32>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -258,31 +275,59 @@ bool PipelineCache::PreloadStage(Serialization::Archive& ar, const Shader::Info*
     }
     out_runtime = spec.runtime_info;
 
-    std::vector<u32> spv{};
-    Store().Load(BbCache::BlobType::ShaderBinary, BinaryName(program->info.pgm_hash, perm_idx),
-                 spv);
-    // SPIR-V starts with its magic number and a 5-word header; anything else is a damaged file
-    // (a crash or power loss while it was written) the driver must not see.
-    if (spv.size() < 5 || spv[0] != 0x07230203u) {
-        if (!spv.empty()) {
-            throw Serialization::CorruptData{"damaged SPIR-V in the shader cache"};
+    const u64 pgm_hash = program->info.pgm_hash;
+    // Load SPIR-V and create VkShaderModule only when this (pgm_hash, perm_idx) is not already
+    // resident in program_cache. When BB_SPIRV_OPT=1 (default), loads opt1_<hash>_<perm>.spv or
+    // upgrades the existing raw <hash>_<perm>.spv in-place once and caches opt1_ on disk.
+    const auto load_and_compile = [&](vk::ShaderModule& out_mod) -> bool {
+        std::vector<u32> spv{};
+        bool upgraded_from_raw = false;
+        if (Shader::Backend::SPIRV::SpirvOptEnabled()) {
+            Store().Load(BbCache::BlobType::ShaderBinary, OptBinaryName(pgm_hash, perm_idx), spv);
+            if (!spv.empty() && (spv.size() < 5 || spv[0] != 0x07230203u)) {
+                spv.clear();
+            }
+            if (spv.empty()) {
+                Store().Load(BbCache::BlobType::ShaderBinary, BinaryName(pgm_hash, perm_idx), spv);
+                if (spv.size() < 5 || spv[0] != 0x07230203u) {
+                    if (!spv.empty()) {
+                        throw Serialization::CorruptData{"damaged SPIR-V in the shader cache"};
+                    }
+                    return false;
+                }
+                Shader::Backend::SPIRV::OptimizeSPIRV(spv, pgm_hash);
+                upgraded_from_raw = true;
+            }
+        } else {
+            Store().Load(BbCache::BlobType::ShaderBinary, BinaryName(pgm_hash, perm_idx), spv);
+            if (spv.size() < 5 || spv[0] != 0x07230203u) {
+                if (!spv.empty()) {
+                    throw Serialization::CorruptData{"damaged SPIR-V in the shader cache"};
+                }
+                return false;
+            }
         }
-        return false;
-    }
-    // A module the driver rejects is a damaged entry (the cache is rebuilt), not a fatal error.
-    const auto compile = [&] {
+        // A module the driver rejects is a damaged entry (the cache is rebuilt), not a fatal error.
         auto [result, created] = instance.GetDevice().createShaderModule(
             {.codeSize = spv.size() * sizeof(u32), .pCode = spv.data()});
         if (result != vk::Result::eSuccess) {
             throw Serialization::CorruptData{"cached SPIR-V rejected by the driver"};
         }
-        return created;
+        if (upgraded_from_raw) {
+            PipelineStore::SaveOptShaderBinary(std::move(spv), pgm_hash, perm_idx);
+            driver_cache_dirty.store(true, std::memory_order_relaxed);
+        }
+        out_mod = created;
+        return true;
     };
 
     vk::ShaderModule module{};
-    auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
+    auto [it_pgm, new_program] = program_cache.try_emplace(pgm_hash);
     if (new_program) {
-        module = compile();
+        if (!load_and_compile(module)) {
+            program_cache.erase(it_pgm);
+            return false;
+        }
         it_pgm.value() = std::move(program);
         spec.info = &it_pgm.value()->info;
         it_pgm.value()->info_template = std::make_unique<Shader::Info>(it_pgm.value()->info);
@@ -306,7 +351,9 @@ bool PipelineCache::PreloadStage(Serialization::Archive& ar, const Shader::Info*
         } else {
             const auto it = std::ranges::find(modules, spec, &Program::Module::spec);
             if (it == modules.end()) {
-                module = compile();
+                if (!load_and_compile(module)) {
+                    return false;
+                }
             } else {
                 const size_t idx = std::distance(modules.begin(), it);
                 if (perm_idx != idx) {
@@ -583,8 +630,24 @@ void PipelineCache::WarmUp() {
         }
     }
 
-    if (!had_driver_cache && total_items > 0) {
+    if ((!had_driver_cache || driver_cache_dirty.load(std::memory_order_relaxed)) &&
+        total_items > 0) {
         SaveDriverPipelineCache();
+    }
+
+    const auto opt_stats = Shader::Backend::SPIRV::GetAndResetSpirvOptStats();
+    if (opt_stats.modules_optimized > 0 || opt_stats.modules_failed > 0) {
+        const double pct =
+            opt_stats.words_before > 0
+                ? 100.0 * (double(opt_stats.words_before) - double(opt_stats.words_after)) /
+                      double(opt_stats.words_before)
+                : 0.0;
+        std::printf("[bb_vulkan] Step 5.1 SPIR-V Optimizer: upgraded %u cached modules (%llu -> "
+                    "%llu words, -%.2f%%, failed=%u) in %.1f ms\n",
+                    opt_stats.modules_optimized,
+                    static_cast<unsigned long long>(opt_stats.words_before),
+                    static_cast<unsigned long long>(opt_stats.words_after), pct,
+                    opt_stats.modules_failed, double(opt_stats.total_ns) / 1e6);
     }
 
     const u32 num_pipelines =
@@ -592,10 +655,11 @@ void PipelineCache::WarmUp() {
     const double elapsed_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::printf("[bb_vulkan] V4.2 Prewarmed %zu graphics + %zu compute PSOs (%zu programs) across "
-                "%u threads in %.1f ms (VkPipelineCache=%s, %.2f MiB)\n",
+                "%u threads in %.1f ms (VkPipelineCache=%s, %.2f MiB, SPIRV_OPT=%d)\n",
                 graphics_pipelines.size(), compute_pipelines.size(), program_cache.size(),
                 num_workers, elapsed_ms, had_driver_cache ? "HIT" : "SEEDED",
-                double(loaded_driver_bytes) / (1024.0 * 1024.0));
+                double(loaded_driver_bytes) / (1024.0 * 1024.0),
+                Shader::Backend::SPIRV::SpirvOptEnabled() ? 1 : 0);
     LOG_INFO(Render, "Preloaded {} pipelines ({} graphics, {} compute) in {:.1f} ms",
              num_pipelines, graphics_pipelines.size(), compute_pipelines.size(), elapsed_ms);
     if (num_total > num_pipelines) {
