@@ -19,6 +19,7 @@
 #include "bbport_gnm_hooks.h"
 #include "core/emulator_settings.h"
 #include "cp/cp_diagnostics.h"
+#include "cp/cp_packets.h"
 #include "cp/cp_pm4.h"
 
 template <>
