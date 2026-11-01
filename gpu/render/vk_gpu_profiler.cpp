@@ -111,11 +111,6 @@ GpuProfiler::GpuProfiler(const Instance& instance, Scheduler& scheduler_)
         };
         hud_pool = Check<"create HUD timestamp query pool">(device.createQueryPoolUnique(hud_info));
         device.resetQueryPool(*hud_pool, 0, HudSlices * HudSliceQueries);
-        const u32 query = hud_slice * HudSliceQueries + hud_used[hud_slice]++;
-        hud_subm_open = true;
-        scheduler.Record([pool_h = *hud_pool, query](vk::CommandBuffer cmdbuf) {
-            cmdbuf.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, pool_h, query);
-        });
     }
     std::printf("GPU profile: on (timestamp period %.2f ns)\n", period_ns);
 }

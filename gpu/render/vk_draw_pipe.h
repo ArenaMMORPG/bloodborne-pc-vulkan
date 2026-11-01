@@ -341,10 +341,10 @@ private:
         Common::SetCurrentThreadName(name);
         BbThreads::PinToGpuDomain();
         static const auto spin_time = std::chrono::microseconds([] {
-            if (const char* env = std::getenv("BB_PIPE_SPIN_US")) {
+            if (const char* env = std::getenv("BB_RESOLVE_SPIN_US")) {
                 return std::max(0, std::atoi(env));
             }
-            return 50;
+            return 3;
         }());
         const bool single_worker = (num_resolvers == 1);
         u64 single_next = 1;

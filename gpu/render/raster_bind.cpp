@@ -1032,7 +1032,8 @@ void Rasterizer::BindSpecialBuffer(const Shader::BufferResource& desc, const Sha
     case Shader::BufferType::GdsBuffer: {
         const auto* gds = buffer_cache.GetGdsBuffer();
         buffer_infos.emplace_back(gds->Handle(), 0, gds->SizeBytes());
-        needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes());
+        needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes(), desc.is_written);
+        bound_buffers.emplace_back(gds, 0, gds->SizeBytes(), desc.is_written);
         break;
     }
     case Shader::BufferType::Flatbuf: {

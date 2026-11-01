@@ -545,8 +545,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         FlushPendingHleCopies(*this);
     }
     ++tls_draws_in_frame;
-    if (!HonestLabels() && !tls_mid_frame_flushed && tls_draws_in_frame >= 900 &&
-        scheduler.WillBeginRendering(state)) {
+    static const u32 mid_flush_draws = [] {
+        if (const char* env = std::getenv("BB_MID_FLUSH_DRAWS")) {
+            return static_cast<u32>(std::max(0, std::atoi(env)));
+        }
+        return 1400u;
+    }();
+    if (!HonestLabels() && mid_flush_draws != 0 && !tls_mid_frame_flushed &&
+        tls_draws_in_frame >= mid_flush_draws && scheduler.WillBeginRendering(state)) {
         tls_mid_frame_flushed = true;
         SubmitInfo info{};
         scheduler.Flush(info);
@@ -1944,8 +1950,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     }
 
     scheduler.EndRendering();
-    if (needs_barrier || runtime.HasPendingBarriers()) {
-        runtime.FlushBarriers();
+    if (needs_barrier || runtime.HasPendingComputeBarriers()) {
+        runtime.FlushBarriers(false);
     }
     mark();
     // BB_DISPATCH_LOG=1 (diagnostics): the shape of each kind of real compute dispatch, once: the
@@ -2069,8 +2075,8 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
 
     scheduler.EndRendering();
-    if (needs_barrier || runtime.HasPendingBarriers()) {
-        runtime.FlushBarriers();
+    if (needs_barrier || runtime.HasPendingComputeBarriers()) {
+        runtime.FlushBarriers(false);
     }
     const auto& cs_crumb = pipeline->GetStage(Shader::SwStage::Compute);
     if (auto* profiler = GpuProfiler::Get()) {

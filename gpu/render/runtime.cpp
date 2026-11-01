@@ -166,15 +166,8 @@ void Runtime::AccessGlobal(vk::PipelineStageFlags2 stage, vk::AccessFlags2 acces
     }
 }
 
-void Runtime::FlushBarriers() {
+void Runtime::FlushBarriers(bool include_graphics) {
     BeforeImageAccess();
-    const auto src_stages =
-        pending_write_stages | (pending_war_hazard ? pending_stages : vk::PipelineStageFlags2{});
-    const bool has_writes = bool(pending_writes);
-    const bool memory = has_writes || (pending_buffer_hazard && bool(src_stages));
-    if (!memory && image_barriers.empty()) {
-        return;
-    }
     static const bool scoped_barriers =
         gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_GpuBarrierCoalesce);
     static constexpr vk::PipelineStageFlags2 AllBufferStages =
@@ -187,20 +180,51 @@ void Runtime::FlushBarriers() {
         AccessBit::eVertexAttributeRead | AccessBit::eUniformRead |
         AccessBit::eShaderRead | AccessBit::eShaderWrite |
         AccessBit::eTransferRead | AccessBit::eTransferWrite;
+    static constexpr vk::PipelineStageFlags2 ComputeTransferStages =
+        Stage::eDrawIndirect | Stage::eComputeShader | Stage::eCopy | Stage::eClear;
+    static constexpr vk::AccessFlags2 ComputeTransferAccesses =
+        AccessBit::eIndirectCommandRead | AccessBit::eUniformRead |
+        AccessBit::eShaderRead | AccessBit::eShaderWrite |
+        AccessBit::eTransferRead | AccessBit::eTransferWrite;
+
+    const bool has_gfx_war = pending_war_hazard &&
+                             bool(pending_stages & ~ComputeTransferStages);
+    const bool compute_transfer_only =
+        !include_graphics && scoped_barriers && image_barriers.empty() && !global_write &&
+        !has_gfx_war;
+
+    auto src_stages =
+        pending_write_stages | (pending_war_hazard ? pending_stages : vk::PipelineStageFlags2{});
+    auto effective_writes = pending_writes;
+    if (!compute_transfer_only) {
+        src_stages |= deferred_gfx_src_stages;
+        effective_writes |= deferred_gfx_writes;
+    }
+    const bool has_writes = bool(effective_writes);
+    const bool memory = has_writes || (pending_buffer_hazard && bool(src_stages));
+    if (!memory && image_barriers.empty()) {
+        return;
+    }
     const bool use_scoped_buffer_barrier = scoped_barriers && !global_write;
     const vk::PipelineStageFlags2 dst_stages =
-        use_scoped_buffer_barrier
-            ? AllBufferStages
-            : (Stage::eAllGraphics | Stage::eComputeShader | Stage::eTransfer);
+        compute_transfer_only
+            ? ComputeTransferStages
+            : (use_scoped_buffer_barrier
+                   ? AllBufferStages
+                   : (Stage::eAllGraphics | Stage::eComputeShader | Stage::eTransfer));
     const vk::AccessFlags2 dst_access =
         !has_writes ? AccessBit::eNone
-                    : (use_scoped_buffer_barrier
-                           ? AllBufferReadWriteAccesses
-                           : (AccessBit::eMemoryRead | AccessBit::eMemoryWrite));
-    scheduler.EndRendering();
+                    : (compute_transfer_only
+                           ? ComputeTransferAccesses
+                           : (use_scoped_buffer_barrier
+                                  ? AllBufferReadWriteAccesses
+                                  : (AccessBit::eMemoryRead | AccessBit::eMemoryWrite)));
+    if (scheduler.IsRendering() || !image_barriers.empty()) {
+        scheduler.EndRendering();
+    }
     scheduler.Record([barrier = vk::MemoryBarrier2{
                           .srcStageMask = src_stages,
-                          .srcAccessMask = pending_writes,
+                          .srcAccessMask = effective_writes,
                           .dstStageMask = dst_stages,
                           .dstAccessMask = dst_access,
                       },
@@ -216,6 +240,15 @@ void Runtime::FlushBarriers() {
     });
     image_barriers.clear();
     if (memory) {
+        if (compute_transfer_only) {
+            if (bool(pending_writes)) {
+                deferred_gfx_src_stages |= pending_write_stages;
+                deferred_gfx_writes |= pending_writes;
+            }
+        } else {
+            deferred_gfx_src_stages = {};
+            deferred_gfx_writes = {};
+        }
         if (pending_war_hazard) {
             pending_stages = {};
             accesses.Clear();
@@ -308,7 +341,7 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
         });
     }
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriers(false);
     }
     scheduler.Record([src = src->Handle(), dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -331,7 +364,7 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
 void Runtime::FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32 value) {
     scheduler.EndRendering();
     if (IsBufferAccessed(dst, offset, size, true)) {
-        FlushBarriers();
+        FlushBarriers(false);
     }
     scheduler.Record([dst = dst->Handle(), offset, size, value](vk::CommandBuffer cmdbuf) {
         cmdbuf.fillBuffer(dst, offset, size, value);
@@ -349,7 +382,7 @@ void Runtime::CopyFromGuestChunk(vk::Buffer src, const VideoCore::Buffer* dst,
         return IsBufferAccessed(dst, copy.dstOffset, copy.size, true);
     });
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriers(false);
     }
     scheduler.Record([src, dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {

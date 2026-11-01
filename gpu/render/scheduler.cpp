@@ -121,10 +121,11 @@ Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
     if (threaded_recording && !(env && env[0] == '0')) {
         record_chunk = AcquireChunk();
         ordered_chunk = AcquireChunk();
-        // A segment of ~64 KiB of closures is ~60 draws: a frame of ~700 draws gives each
-        // thread several segments, and the render passes a cut reopens stay few.
+        // G3.1: After N3.2 shrank DrawRecord closures from 712 B to 24 B, a full 2,180-draw frame
+        // totals ~85-100 KiB of closures. Segments of 16 KiB (~350 draws, cut strictly between
+        // render passes in MaybeSplit) balance work evenly across all 3 bb:VkRecorder threads.
         const char* segment_kb = std::getenv("BB_VK_SEGMENT_KB");
-        split_bytes = size_t(segment_kb ? std::max(1, std::atoi(segment_kb)) : 64) * 1024;
+        split_bytes = size_t(segment_kb ? std::max(1, std::atoi(segment_kb)) : 16) * 1024;
         const u32 count = RecordingThreadCount();
         for (u32 i = 0; i < count; ++i) {
             auto worker = std::make_unique<Worker>();
@@ -253,6 +254,7 @@ void Scheduler::BeginRendering(const RenderState& state, u8 color_dont_care_mask
         .pStencilAttachment = ds.has_stencil ? &pass.stencil : nullptr,
     };
     if (workers.empty()) {
+        EnsureSubmissionProfileOpen();
         pass.Begin(current_cmdbuf);
     } else {
         Record([pass](vk::CommandBuffer cmdbuf) mutable { pass.Begin(cmdbuf); });
@@ -535,8 +537,8 @@ void Scheduler::KickRecording(bool force) {
     if (!force) {
         MaybeSplit();
     }
-    // Batches of tens of KiB keep the queue handoff cheap relative to the work it carries.
-    if (!force && full_chunks.empty() && CurrentChunk().Size() < 32 * 1024) {
+    // Batches of ~12 KiB stream promptly to the active worker with compact 24 B draw closures.
+    if (!force && full_chunks.empty() && CurrentChunk().Size() < 12 * 1024) {
         return;
     }
     HandOver();
@@ -999,6 +1001,19 @@ void Scheduler::QueueSubmit(std::span<const vk::CommandBuffer> cmdbufs, SubmitIn
     recorded_submissions.fetch_add(1, std::memory_order_relaxed);
 }
 
+void Scheduler::OpenSubmissionProfile() {
+    if (submission_profile_open) {
+        return;
+    }
+    submission_profile_open = true;
+    GpuProfiler::HudBeginSubmission(this);
+    if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
+        profiler->Mark(0x5B318ull, [] {
+            return std::string{"(submission start: copies and barriers before its first mark)"};
+        });
+    }
+}
+
 void Scheduler::SubmitExecution(SubmitInfo& info) {
     ProducerScope producer{*this, "SubmitExecution"};
     if (async_submit) {
@@ -1013,15 +1028,17 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     EndRendering();
     CarrySuspend(false);
     const bool is_frame_end = std::exchange(frame_end_submission, false);
+    const bool had_profile_commands = std::exchange(submission_profile_open, false);
     GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        // Until the next submission's first timestamp: mostly the GPU waiting for it.
         if (is_frame_end) {
             submission_in_frame = 0;
-            profiler->Mark(0x5B319ull, [] {
-                return std::string{"(after a frame's last submission: presenter, GPU idle)"};
-            });
-        } else {
+            if (had_profile_commands) {
+                profiler->Mark(0x5B319ull, [] {
+                    return std::string{"(after a frame's last submission: presenter, GPU idle)"};
+                });
+            }
+        } else if (had_profile_commands) {
             // Numbered within the frame: which of the frame's submissions the GPU waits after.
             const u32 n = std::min(submission_in_frame++, 15u);
             profiler->Mark(0x5B320ull + n, [n] {
@@ -1055,12 +1072,6 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     // No semaphore query here (an ioctl per submission): PopPendingOperations asks when an
     // operation waits, the GPU signal thread on every fence.
     AllocateWorkerCommandBuffers();
-    GpuProfiler::HudBeginSubmission(this);
-    if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        profiler->Mark(0x5B318ull, [] { // as in SubmitAsync
-            return std::string{"(submission start: copies and barriers before its first mark)"};
-        });
-    }
     CarryResume(false);
     PopPendingOperations();
 }
@@ -1073,14 +1084,17 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
     EndRendering();
     CarrySuspend(false);
     const bool is_frame_end = std::exchange(frame_end_submission, false);
+    const bool had_profile_commands = std::exchange(submission_profile_open, false);
     GpuProfiler::HudEndSubmission(this, tick, is_frame_end);
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
         if (is_frame_end) {
             submission_in_frame = 0;
-            profiler->Mark(0x5B319ull, [] {
-                return std::string{"(after a frame's last submission: presenter, GPU idle)"};
-            });
-        } else {
+            if (had_profile_commands) {
+                profiler->Mark(0x5B319ull, [] {
+                    return std::string{"(after a frame's last submission: presenter, GPU idle)"};
+                });
+            }
+        } else if (had_profile_commands) {
             // Numbered within the frame: which of the frame's submissions the GPU waits after.
             const u32 n = std::min(submission_in_frame++, 15u);
             profiler->Mark(0x5B320ull + n, [n] {
@@ -1097,7 +1111,9 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
         direct_mode = false;
         direct_segment = false;
     } else {
+        submission_profile_open = true;
         Record([](vk::CommandBuffer cmdbuf) { Check(cmdbuf.end()); });
+        submission_profile_open = false;
     }
     // Guest memory copies into staging this submission reads: on the copy threads by then.
     BbCopy::FlushBatch();
@@ -1125,15 +1141,6 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
     });
     KickRecording(true);
     AllocateWorkerCommandBuffers();
-    GpuProfiler::HudBeginSubmission(this);
-    // BB_GPU_PROFILE: the next submission's first command, so that the gap above holds only the
-    // GPU's time between submissions; what comes before its first mark is the work recorded
-    // outside passes and dispatches (copies, uploads, barriers).
-    if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
-        profiler->Mark(0x5B318ull, [] {
-            return std::string{"(submission start: copies and barriers before its first mark)"};
-        });
-    }
     CarryResume(false);
     PopPendingOperations();
 }

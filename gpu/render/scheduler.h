@@ -168,6 +168,7 @@ public:
     /// records directly (Record() included, so callers may mix both) until the next
     /// KickRecording() or submission.
     [[gnu::noinline]] vk::CommandBuffer CommandBuffer() {
+        EnsureSubmissionProfileOpen();
         ProducerScope producer{*this, "CommandBuffer"};
         if (!workers.empty() && !direct_mode) {
             EnterDirectMode();
@@ -220,6 +221,7 @@ public:
     /// everything it uses (capture by value): it may run later on the recording thread.
     template <typename Func>
     void Record(Func&& func) {
+        EnsureSubmissionProfileOpen();
         ProducerScope producer{*this, "Record"};
         if (workers.empty() || direct_mode) {
             func(current_cmdbuf);
@@ -290,6 +292,7 @@ public:
         if (!IsRecordingDeferred()) {
             return;
         }
+        EnsureSubmissionProfileOpen();
         ASSERT(bytes + 1024 <= RecordChunk::Capacity);
         if (RecordChunk::Capacity - CurrentChunk().Size() < bytes + 1024) {
             RetireChunk();
@@ -636,6 +639,13 @@ private:
     std::vector<std::unique_ptr<SubmissionBatch>> all_batches;
     std::vector<SubmissionBatch*> free_batches; ///< guarded by recorder_mutex
     bool frame_end_submission = false;
+    bool submission_profile_open = false;
+    void EnsureSubmissionProfileOpen() {
+        if (!submission_profile_open) [[unlikely]] {
+            OpenSubmissionProfile();
+        }
+    }
+    void OpenSubmissionProfile();
     u32 submission_in_frame = 0; ///< BB_GPU_PROFILE: submissions since the frame's last one
     bool async_submit = false; ///< BB_ASYNC_SUBMIT (default on)
     std::atomic<u64> submitted_tick{0}; ///< the last tick handed to the queue (WaitSubmitted)

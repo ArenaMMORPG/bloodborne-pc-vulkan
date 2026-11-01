@@ -124,9 +124,15 @@ public:
     /// game's memory). A write there makes every later access wait for a barrier.
     void AccessGlobal(vk::PipelineStageFlags2 stage, vk::AccessFlags2 access);
 
-    /// Records the queued barriers (memory and image layouts).
-    void FlushBarriers();
+    /// Records the queued barriers (memory and image layouts). When `include_graphics` is false
+    /// and no image transitions / global writes / graphics WAR hazards are pending, scopes the
+    /// memory barrier to Compute + Transfer + DrawIndirect and defers graphics stage visibility
+    /// until the next graphics pass or submission boundary.
+    void FlushBarriers(bool include_graphics = true);
     [[nodiscard]] bool HasPendingBarriers() const noexcept {
+        return bool(pending_writes) || bool(deferred_gfx_writes) || !image_barriers.empty();
+    }
+    [[nodiscard]] bool HasPendingComputeBarriers() const noexcept {
         return bool(pending_writes) || !image_barriers.empty();
     }
 
@@ -164,6 +170,8 @@ private:
     vk::PipelineStageFlags2 pending_stages{};       ///< of accesses since the last barrier
     vk::PipelineStageFlags2 pending_write_stages{}; ///< of write accesses since the last barrier
     vk::AccessFlags2 pending_writes{};              ///< their write accesses
+    vk::PipelineStageFlags2 deferred_gfx_src_stages{}; ///< writes not yet visible to graphics stages
+    vk::AccessFlags2 deferred_gfx_writes{};            ///< write access bits deferred for graphics
     bool pending_buffer_hazard = false;             ///< IsBufferAccessed matched since the last barrier
     bool pending_war_hazard = false;                ///< write-after-read matched since the last barrier
     bool global_write = false;                      ///< AccessGlobal wrote since the last barrier

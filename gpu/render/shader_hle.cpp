@@ -129,7 +129,7 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
                runtime.IsBufferAccessed(dst, r.dst_offset, r.dst_size, true);
     });
     if (needs_flush) {
-        runtime.FlushBarriers();
+        runtime.FlushBarriers(false);
     }
     const u32 count = static_cast<u32>(copies.size());
     scheduler.RecordCrumb({.name = "HLE copy shader"}, [src = src->Handle(), dst = dst->Handle(), table = stream.Handle(), src_min,
