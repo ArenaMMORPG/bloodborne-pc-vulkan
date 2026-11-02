@@ -321,8 +321,8 @@ struct PipelineCache::FastSelect {
         bool rt_verified = false;
         Shader::RuntimeInfo runtime_info{};
     };
-    static constexpr u32 MaxStages = 3; ///< VS mode (PS+VS) or EsGs mode (PS+ES+GS)
-    static constexpr u32 MaxSigWords = 88;
+    static constexpr u32 MaxStages = 4; ///< VS (2), EsGs (3), or LsHs tessellation (4: PS+HS+VS+LS)
+    static constexpr u32 MaxSigWords = 96;
     static constexpr u32 NumSets = 512;
     static constexpr u32 NumWays = 4;
     static constexpr u32 TableSize = NumSets * NumWays;
@@ -837,18 +837,20 @@ bool FastSelectVerify() {
 }
 
 /// Packs every register field and global setting that `RefreshGraphicsKey` + `BuildRuntimeInfo`
-/// read in `VgtStages::Vs` or `VgtStages::EsGs` + `IsVertexInputDynamicState()` mode into `out`.
-/// Returns 0 if the draw configuration is not eligible for fast selection.
+/// read in `VgtStages::Vs`, `VgtStages::EsGs`, or `VgtStages::LsHs` + `IsVertexInputDynamicState()`
+/// mode into `out`. Returns 0 if the draw configuration is not eligible for fast selection.
 u32 BuildFastSelectSig(const Gcn::Regs& regs, const DrawIndirectParams& params,
-                       bool dynamic_vertex_input,
-                       std::array<u32, 88>& out) noexcept {
+                       bool dynamic_vertex_input, bool tessellation_supported,
+                       std::array<u32, 96>& out) noexcept {
     if (!dynamic_vertex_input || regs.num_interp > 32u) {
         return 0;
     }
     const bool is_vs = (regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::Vs);
     const bool is_esgs = (regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::EsGs &&
                           !regs.vgt_gs_mode.onchip && !regs.vgt_strmout_config.raw);
-    if (!is_vs && !is_esgs) {
+    const bool is_lshs =
+        (regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::LsHs && tessellation_supported);
+    if (!is_vs && !is_esgs && !is_lshs) {
         return 0;
     }
     std::memcpy(&out[0], &regs.reg_array[0x2C08], 4 * sizeof(u32)); // PS address + settings
@@ -869,7 +871,7 @@ u32 BuildFastSelectSig(const Gcn::Regs& regs, const DrawIndirectParams& params,
              (u32(regs.barycentric_control.front_face_all_bits) << 18) |
              (u32(IsDualSourceBlend(regs.blend_control[0])) << 19) |
              (u32(regs.aa_config.NumSamples()) << 20);
-    out[10] = u32(regs.primitive_type);
+    out[10] = u32(regs.primitive_type) | (u32(regs.stage_enable.raw) << 16);
     out[11] = regs.reg_array[0xA204]; // PA_CL_CLIP_CNTL
     out[12] = regs.reg_array[0xA207]; // PA_CL_VS_OUT_CNTL
     out[13] = u32(regs.color_control.mode) |
@@ -926,6 +928,14 @@ u32 BuildFastSelectSig(const Gcn::Regs& regs, const DrawIndirectParams& params,
         out[idx++] = regs.vgt_gs_vert_itemsize[0];
         out[idx++] = std::bit_cast<u32>(regs.vgt_gs_mode);
     }
+    if (is_lshs) {
+        std::memcpy(&out[idx], &regs.reg_array[0x2D08], 4 * sizeof(u32)); // HS address + settings
+        idx += 4;
+        std::memcpy(&out[idx], &regs.reg_array[0x2D48], 4 * sizeof(u32)); // LS address + settings
+        idx += 4;
+        out[idx++] = std::bit_cast<u32>(regs.ls_hs_config);
+        out[idx++] = std::bit_cast<u32>(regs.tess_config);
+    }
     return idx;
 }
 } // namespace
@@ -965,7 +975,8 @@ void PipelineCache::CommitFastSelect(const GraphicsPipeline* pipeline,
     }
     std::array<u32, FastSelect::MaxSigWords> sig{};
     const u32 sig_len =
-        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(), sig);
+        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(),
+                           instance.IsTessellationSupported(), sig);
     if (sig_len == 0) {
         return;
     }
@@ -1033,7 +1044,8 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
     const auto& regs = liverpool->regs;
     std::array<u32, FastSelect::MaxSigWords> sig{};
     const u32 sig_len =
-        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(), sig);
+        BuildFastSelectSig(regs, params, instance.IsVertexInputDynamicState(),
+                           instance.IsTessellationSupported(), sig);
     if (sig_len == 0) {
         ++f.not_eligible;
         return nullptr;
@@ -1243,10 +1255,22 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
         Shader::Backend::Bindings binding{};
         bool spec_ok = true;
         bool filled_vsharps = false;
+        const Shader::Info* tcs_info = nullptr;
         for (u32 i = 0; i < way.num_stages; ++i) {
             const auto& st = way.stages[i];
             const auto& modules = st.program->modules;
             auto& info = st.program->info;
+            if (st.sw_stage == SwStage::TessellationControl) {
+                tcs_info = &info;
+            }
+            if (st.hw_stage == HwStage::Local && tcs_info) {
+                Shader::TessellationDataConstantBuffer tess_constants{};
+                tcs_info->ReadTessConstantBuffer(tess_constants);
+                if (st.runtime_info.hw.ls.ls_stride != tess_constants.ls_stride) {
+                    spec_ok = false;
+                    break;
+                }
+            }
             const bool want_vsharps =
                 (st.sw_stage == SwStage::Vertex && info.has_fetch_shader && way_fetch[i] != nullptr);
             if (st.perm_idx >= modules.size() ||

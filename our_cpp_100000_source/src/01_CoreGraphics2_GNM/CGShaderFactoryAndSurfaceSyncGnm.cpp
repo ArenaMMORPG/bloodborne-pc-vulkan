@@ -1171,6 +1171,25 @@ void CGSurfaceSyncTrackerGnm_FlushToGfxContext(
         return;
     }
 
+    // Block 4 Step 4.2 (BB_DIRECT_RING, default on): Vulkan TextureCache & BufferCache track
+    // render target / UAV / buffer hazards natively, and `AcquireMem` / `PfpSyncMe` / `EventWrite`
+    // (`0x10 / 0x33 / 0x1B / 0x3B / 0x38`) are 100% no-ops in `cp_graphics.cpp`. Reset the tracker
+    // directly without emitting 875 dead PM4 packets (1.22M dwords/s) per frame.
+    if (gx_direct_vk::DirectRingEnabled()) {
+        if (self->cache_sync_mode != 0) {
+            self->gfx_min_addr_256 = 0xFFFFFFFFu;
+            self->gfx_max_addr_256 = 0;
+            self->cs_min_addr_256  = 0xFFFFFFFFu;
+            self->cs_max_addr_256  = 0;
+            self->target_mask_flags = 0;
+            self->cache_sync_mode   = 0;
+        }
+        self->pending_event_mode = 0;
+        self->event_cache_action = 0;
+        self->event_stall_mode   = 1;
+        return;
+    }
+
     if (self->cache_sync_mode != 0) {
         switch (self->cache_sync_mode) {
         case 1:

@@ -172,7 +172,9 @@ void CommandProcessor::EndGraphics(Work& work) {
     if (rasterizer) {
         rasterizer->RetireSubmission(); // prepared draws live until the recording thread is past
         rasterizer->GetDrawPreparation().EndSubmission();
-        rasterizer->SubmitForSignals();
+        if (rasterizer->HasUnsubmittedSignals()) {
+            rasterizer->SubmitForSignals();
+        }
     }
     const u64 sub_idx = BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
     if (BbStats::enabled && (sub_idx & 31ULL) == 0ULL) {
@@ -360,17 +362,23 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                         const u32 sh_offset = body[2] & 0xFFFFu;
                         if (sh_offset >= ComputeShOffset && sh_offset <= ComputeShOffset + ComputeWords) {
                             u32 mask = body[2] >> 16;
-                            if (static_cast<u32>(__builtin_popcount(mask)) == body_words - 3u) {
+                            const u32 count = body_words - 3u;
+                            if (static_cast<u32>(__builtin_popcount(mask)) == count) {
                                 auto* state = reinterpret_cast<u32*>(&queues[GfxQueueId].cs_state);
                                 const u32 base = sh_offset - ComputeShOffset;
-                                u32 src = 3u;
-                                while (mask != 0u) {
-                                    const u32 bit = static_cast<u32>(__builtin_ctz(mask));
-                                    mask &= (mask - 1u);
-                                    if ((base + bit) * sizeof(u32) < sizeof(ComputeProgram)) {
-                                        state[base + bit] = body[src];
+                                if ((mask & (mask + 1u)) == 0u &&
+                                    (base + count) * sizeof(u32) <= sizeof(ComputeProgram)) {
+                                    std::memcpy(&state[base], body + 3u, count * sizeof(u32));
+                                } else {
+                                    u32 src = 3u;
+                                    while (mask != 0u) {
+                                        const u32 bit = static_cast<u32>(__builtin_ctz(mask));
+                                        mask &= (mask - 1u);
+                                        if ((base + bit) * sizeof(u32) < sizeof(ComputeProgram)) {
+                                            state[base + bit] = body[src];
+                                        }
+                                        ++src;
                                     }
-                                    ++src;
                                 }
                             }
                         }

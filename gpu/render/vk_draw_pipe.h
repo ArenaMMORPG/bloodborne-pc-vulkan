@@ -389,7 +389,7 @@ private:
             if (const char* env = std::getenv("BB_RESOLVE_SPIN_US")) {
                 return std::max(0, std::atoi(env));
             }
-            return BbThreads::Available() >= 12 ? 20 : 10;
+            return 0;
         }();
         static const auto spin_time = std::chrono::microseconds(spin_us);
         const bool single_worker = (num_resolvers == 1);

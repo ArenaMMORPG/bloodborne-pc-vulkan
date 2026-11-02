@@ -86,8 +86,14 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
     const u32 header = packet[0];
     const u32 body_words = BodyWords(header);
     const u32* body = packet + 1;
+    const bool track_all = dirty && dirty->track_all_blocks;
     const auto mark = [&](u32 index, u32 count) {
         if (dirty) {
+            dirty->Mark(index, count);
+        }
+    };
+    const auto mark_sh = [&](u32 index, u32 count) {
+        if (track_all) [[unlikely]] {
             dirty->Mark(index, count);
         }
     };
@@ -95,7 +101,11 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
         const u32 index = bank + (body[0] & 0xFFFF);
         const u32 count = body_words - 1;
         std::memcpy(&regs.reg_array[index], body + 1, count * sizeof(u32));
-        mark(index, count);
+        if (bank == Bank::Sh) {
+            mark_sh(index, count);
+        } else {
+            mark(index, count);
+        }
     };
     const auto write = [&](u32 index, u32 value) {
         regs.reg_array[index] = value;
@@ -187,11 +197,23 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
         if (vk_op == DirectVk::Op::DrawIndexed && body_words == 6u) {
             DirectVk::DrawIndexedArgs a{};
             std::memcpy(&a, body + 2u, sizeof(a));
-            write(Reg::VgtIndxOffset, static_cast<u32>(a.base_vertex));
-            write(Reg::VgtNumInstances, a.instance_count);
-            write(Reg::VgtDmaMaxSize, a.index_count);
-            write(Reg::VgtNumIndices, a.index_count);
-            write(Reg::VgtDrawInitiator, 0u);
+            regs.reg_array[Reg::VgtIndxOffset] = static_cast<u32>(a.base_vertex);
+            regs.reg_array[Reg::VgtNumInstances] = a.instance_count;
+            regs.reg_array[Reg::VgtDmaMaxSize] = a.index_count;
+            regs.reg_array[Reg::VgtNumIndices] = a.index_count;
+            regs.reg_array[Reg::VgtDrawInitiator] = 0u;
+            if (dirty) {
+                if (!track_all) [[likely]] {
+                    dirty->stage_b_mask[0] |= (1ULL << 32) | (1ULL << 63);
+                    dirty->stage_b_mask[1] |= (1ULL << (83 - 64)) | (1ULL << (116 - 64));
+                } else {
+                    mark(Reg::VgtIndxOffset, 1u);
+                    mark(Reg::VgtNumInstances, 1u);
+                    mark(Reg::VgtDmaMaxSize, 1u);
+                    mark(Reg::VgtNumIndices, 1u);
+                    mark(Reg::VgtDrawInitiator, 1u);
+                }
+            }
             break;
         }
         if (vk_op == DirectVk::Op::DrawIndexAddr && body_words == 6u) {
@@ -226,14 +248,21 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
                 return;
             }
             u32 mask = body[2] >> 16;
-            if (static_cast<u32>(std::popcount(mask)) != body_words - 3u) {
+            const u32 count = body_words - 3u;
+            if (static_cast<u32>(std::popcount(mask)) != count) {
                 return;
             }
-            u32 src = 3u;
-            while (mask != 0u) {
-                const u32 bit = static_cast<u32>(std::countr_zero(mask));
-                mask &= (mask - 1u);
-                write(Bank::Sh + sh_offset + bit, body[src++]);
+            if ((mask & (mask + 1u)) == 0u) [[likely]] {
+                std::memcpy(&regs.reg_array[Bank::Sh + sh_offset], body + 3u, count * sizeof(u32));
+                mark_sh(Bank::Sh + sh_offset, count);
+            } else {
+                u32 src = 3u;
+                while (mask != 0u) {
+                    const u32 bit = static_cast<u32>(std::countr_zero(mask));
+                    mask &= (mask - 1u);
+                    regs.reg_array[Bank::Sh + sh_offset + bit] = body[src++];
+                }
+                mark_sh(Bank::Sh + sh_offset, 16u);
             }
             break;
         }
@@ -298,11 +327,21 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
         if (vk_op == DirectVk::Op::BindVsShader && body_words == 9u) {
             const bool only_sh = ((body[1] >> 18) & 1u) != 0u;
             std::memcpy(&regs.reg_array[Bank::Sh + 0x48u], body + 2u, 4u * sizeof(u32));
-            mark(Bank::Sh + 0x48u, 4u);
+            mark_sh(Bank::Sh + 0x48u, 4u);
             if (!only_sh) {
-                write(Bank::Context + 0x1B1u, body[6]);
-                write(Bank::Context + 0x1C3u, body[7]);
-                write(Bank::Context + 0x207u, body[8]);
+                regs.reg_array[Bank::Context + 0x1B1u] = body[6];
+                regs.reg_array[Bank::Context + 0x1C3u] = body[7];
+                regs.reg_array[Bank::Context + 0x207u] = body[8];
+                if (dirty) {
+                    if (!track_all) [[likely]] {
+                        dirty->stage_b_mask[0] |= (1ULL << 54) | (1ULL << 56);
+                        dirty->stage_b_mask[1] |= (1ULL << 0);
+                    } else {
+                        mark(Bank::Context + 0x1B1u, 1u);
+                        mark(Bank::Context + 0x1C3u, 1u);
+                        mark(Bank::Context + 0x207u, 1u);
+                    }
+                }
             }
             break;
         }
@@ -313,25 +352,37 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
             if (valid && body_words == 14u) {
                 const u32* ps = body + 2u;
                 std::memcpy(&regs.reg_array[Bank::Sh + 0x08u], ps, 4u * sizeof(u32));
-                mark(Bank::Sh + 0x08u, 4u);
+                mark_sh(Bank::Sh + 0x08u, 4u);
                 if (!only_sh) {
                     regs.reg_array[Bank::Context + 0x1C4u] = ps[4];
                     regs.reg_array[Bank::Context + 0x1C5u] = ps[5];
-                    mark(Bank::Context + 0x1C4u, 2u);
                     regs.reg_array[Bank::Context + 0x1B3u] = ps[6];
                     regs.reg_array[Bank::Context + 0x1B4u] = ps[7];
-                    mark(Bank::Context + 0x1B3u, 2u);
-                    write(Bank::Context + 0x1B6u, ps[8]);
-                    write(Bank::Context + 0x1B8u, ps[9]);
-                    write(Bank::Context + 0x203u, ps[10]);
-                    write(Bank::Context + 0x08Fu, ps[11]);
+                    regs.reg_array[Bank::Context + 0x1B6u] = ps[8];
+                    regs.reg_array[Bank::Context + 0x1B8u] = ps[9];
+                    regs.reg_array[Bank::Context + 0x203u] = ps[10];
+                    regs.reg_array[Bank::Context + 0x08Fu] = ps[11];
+                    if (dirty) {
+                        if (!track_all) [[likely]] {
+                            dirty->stage_b_mask[0] |=
+                                (1ULL << 17) | (1ULL << 54) | (1ULL << 55) | (1ULL << 56);
+                            dirty->stage_b_mask[1] |= (1ULL << 0);
+                        } else {
+                            mark(Bank::Context + 0x1C4u, 2u);
+                            mark(Bank::Context + 0x1B3u, 2u);
+                            mark(Bank::Context + 0x1B6u, 1u);
+                            mark(Bank::Context + 0x1B8u, 1u);
+                            mark(Bank::Context + 0x203u, 1u);
+                            mark(Bank::Context + 0x08Fu, 1u);
+                        }
+                    }
                 }
                 break;
             }
             if (!valid && body_words == 2u) {
                 regs.reg_array[Bank::Sh + 0x08u] = 0u;
                 regs.reg_array[Bank::Sh + 0x09u] = 0u;
-                mark(Bank::Sh + 0x08u, 2u);
+                mark_sh(Bank::Sh + 0x08u, 2u);
                 if (!only_sh) {
                     write(Bank::Context + 0x203u, 0u);
                 }
@@ -682,11 +733,13 @@ void CommandProcessor::Run(std::stop_token stop) {
                 std::scoped_lock lock{queue.mutex};
                 queue.works.pop_front();
                 last_decoded = nullptr;
-                --num_submits;
+                const u32 remaining = --num_submits;
                 std::scoped_lock submit_lock{submit_mutex};
                 ++decoded_total;
                 frame_end = !frame_ends.empty() && frame_ends.front().first <= decoded_total;
-                submit_cv.notify_all();
+                if (remaining == 0 || frame_end) {
+                    submit_cv.notify_all();
+                }
             }
             if (frame_end) {
                 SignalDecodedFrames(); // BB_SUBMIT_LOCK=frame: a frame's last submission decoded
