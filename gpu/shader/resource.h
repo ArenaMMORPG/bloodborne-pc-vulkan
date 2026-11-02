@@ -44,14 +44,33 @@ struct SharpFetch {
     template <u32 num_dwords = N>
         requires(num_dwords <= N)
     constexpr bool Fetch(const u32* flatbuf, T* out) const {
-        for (u32 i = 0; i < num_dwords; i++) {
-            if (offsets[i] == UNKNOWN_LOCATION) {
-                return false;
+        constexpr u8 all_loaded = static_cast<u8>((1u << num_dwords) - 1u);
+        if ((load_mask & all_loaded) == all_loaded) [[likely]] {
+            const SharpLocation o0 = offsets[0];
+            if (o0 != UNKNOWN_LOCATION) [[likely]] {
+                if constexpr (num_dwords == 4) {
+                    if (offsets[1] == o0 + 1 && offsets[2] == o0 + 2 &&
+                        offsets[3] == o0 + 3) [[likely]] {
+                        std::memcpy(out, flatbuf + o0, 4 * sizeof(u32));
+                        return true;
+                    }
+                } else if constexpr (num_dwords == 8) {
+                    if (offsets[1] == o0 + 1 && offsets[2] == o0 + 2 &&
+                        offsets[3] == o0 + 3 && offsets[4] == o0 + 4 &&
+                        offsets[5] == o0 + 5 && offsets[6] == o0 + 6 &&
+                        offsets[7] == o0 + 7) [[likely]] {
+                        std::memcpy(out, flatbuf + o0, 8 * sizeof(u32));
+                        return true;
+                    }
+                }
             }
         }
         std::array<u32, num_dwords> dwords;
         u8 mask = load_mask;
         for (u32 i = 0; i < num_dwords; i++, mask >>= 1) {
+            if (offsets[i] == UNKNOWN_LOCATION) {
+                return false;
+            }
             dwords[i] = (mask & 1) ? flatbuf[offsets[i]] : immediates[i];
         }
         std::memcpy(out, dwords.data(), sizeof(dwords));
@@ -97,18 +116,24 @@ struct BufferResource {
         return buffer_type != BufferType::Guest;
     }
 
-    /// The V# at draw time (a null buffer if it cannot be read or is invalid).
-    constexpr ::Gcn::Buffer GetSharp(const auto& info) const noexcept {
+    constexpr ::Gcn::Buffer GetSharpDirect(const u32* flat, VAddr pgm_base) const noexcept {
         ::Gcn::Buffer buffer;
-        if (!sharp_fetch.Fetch(info.FlatUserData().data(), &buffer)) {
+        if (!sharp_fetch.Fetch(flat, &buffer)) {
             return ::Gcn::Buffer::Null();
         }
         if (post_op == SharpFetchPostOp::BitwiseOrDw1WithImm) {
             reinterpret_cast<u32*>(&buffer)[1] |= post_op_dw1_mask;
         } else if (post_op == SharpFetchPostOp::OffsetByProgramBase) {
-            buffer.base_address += info.ProgramBase();
+            buffer.base_address += pgm_base;
         }
         return buffer.Valid() ? buffer : ::Gcn::Buffer::Null();
+    }
+
+    /// The V# at draw time (a null buffer if it cannot be read or is invalid).
+    constexpr ::Gcn::Buffer GetSharp(const auto& info) const noexcept {
+        return GetSharpDirect(info.FlatUserData().data(),
+                              post_op == SharpFetchPostOp::OffsetByProgramBase ? info.ProgramBase()
+                                                                               : 0);
     }
 };
 using BufferResourceList = boost::container::static_vector<BufferResource, NUM_BUFFERS>;
@@ -150,11 +175,9 @@ struct ImageResource {
     MipStorageFallbackMode mip_fallback_mode{};
     SharpFetchPostOp post_op{};
 
-    /// The T# at draw time; a null image (depth or color) if unreadable or invalid, and for
-    /// depth reads of formats other than 16/32-bit.
-    constexpr ::Gcn::Image GetSharp(const auto& info) const noexcept {
+    constexpr ::Gcn::Image GetSharpDirect(const u32* flat) const noexcept {
         ::Gcn::Image image{};
-        if (!Fetch(info.FlatUserData().data(), &image)) {
+        if (!Fetch(flat, &image)) {
             return ::Gcn::Image::Null(is_depth);
         }
         if (post_op == SharpFetchPostOp::ConvertCubeTo2DArray) {
@@ -173,6 +196,12 @@ struct ImageResource {
         return image;
     }
 
+    /// The T# at draw time; a null image (depth or color) if unreadable or invalid, and for
+    /// depth reads of formats other than 16/32-bit.
+    constexpr ::Gcn::Image GetSharp(const auto& info) const noexcept {
+        return GetSharpDirect(info.FlatUserData().data());
+    }
+
     /// A 4-dword T# has its pitch equal to the width.
     constexpr bool Fetch(const u32* flatbuf, ::Gcn::Image* out) const {
         if (!is_r128) {
@@ -183,6 +212,13 @@ struct ImageResource {
         }
         out->pitch = out->width;
         return true;
+    }
+
+    constexpr u32 NumBindingsDirect(const ::Gcn::Image& tsharp) const noexcept {
+        if (mip_fallback_mode != MipStorageFallbackMode::DynamicIndex) {
+            return 1;
+        }
+        return tsharp.last_level - tsharp.base_level + 1;
     }
 
     u32 NumBindings(const auto& info) const {
@@ -201,12 +237,12 @@ struct SamplerResource {
     SharpLocation post_op_tsharp_dw3_off{}; ///< DisableAnisoIfSingleLod: the T#'s dword 3
     bool is_depth{};
 
-    constexpr ::Gcn::Sampler GetSharp(const auto& info) const noexcept {
+    constexpr ::Gcn::Sampler GetSharpDirect(const u32* flat) const noexcept {
         ::Gcn::Sampler sampler{};
-        sharp_fetch.Fetch(info.FlatUserData().data(), &sampler);
+        sharp_fetch.Fetch(flat, &sampler);
         switch (post_op) {
         case SharpFetchPostOp::DisableAnisoIfSingleLod: {
-            const u32 tsharp_dw3 = info.FlatUserData()[post_op_tsharp_dw3_off];
+            const u32 tsharp_dw3 = flat[post_op_tsharp_dw3_off];
             if (((tsharp_dw3 >> 12) & 0xff) == 0) {
                 sampler.max_aniso = ::Gcn::AnisoRatio::One;
             }
@@ -231,12 +267,20 @@ struct SamplerResource {
         }
         return sampler;
     }
+
+    constexpr ::Gcn::Sampler GetSharp(const auto& info) const noexcept {
+        return GetSharpDirect(info.FlatUserData().data());
+    }
 };
 using SamplerResourceList = boost::container::static_vector<SamplerResource, NUM_SAMPLERS>;
 
 /// An FMask T# (its size specializes the shader; reads are answered with constants).
 struct FMaskResource {
     SharpLocation sharp_idx;
+
+    constexpr ::Gcn::Image GetSharpDirect(const u32* flat) const noexcept {
+        return *reinterpret_cast<const ::Gcn::Image*>(&flat[sharp_idx]);
+    }
 
     constexpr ::Gcn::Image GetSharp(const auto& info) const noexcept {
         return info.template ReadUdSharp<::Gcn::Image>(sharp_idx);

@@ -131,13 +131,14 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     std::array<Gcn::Image, TextureSet::MaxImages> local_image_sharps{};
     std::array<u64, TextureSet::MaxImages> local_image_hashes{};
     bool have_local_sharps = false;
+    const u32* const stage_flat = stage.FlatUserData().data();
     if (!on_helper && !prepared && !stage.images.empty() &&
         stage.images.size() <= TextureSet::MaxImages &&
         !BbToggle::Disabled(BbToggle::TextureSetMemo) && !FrameCapture::Active()) {
         const u32 cnt = static_cast<u32>(stage.images.size());
         for (u32 i = 0; i < cnt; ++i) {
             const auto& res = stage.images[i];
-            local_image_sharps[i] = res.GetSharp(stage);
+            local_image_sharps[i] = res.GetSharpDirect(stage_flat);
             local_image_hashes[i] = ImageDescHash(local_image_sharps[i], res);
         }
         have_local_sharps = true;
@@ -191,8 +192,9 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 
     for (u32 image_index = 0; image_index < stage.images.size(); ++image_index) {
         const auto& image_desc = stage.images[image_index];
-        auto tsharp =
-            eff_image_sharps ? eff_image_sharps[image_index] : image_desc.GetSharp(stage);
+        auto tsharp = eff_image_sharps
+                          ? eff_image_sharps[image_index]
+                          : image_desc.GetSharpDirect(stage_flat);
         u8 srv_gen8 = 0u;
         u16 srv_uid = VideoCore::DirectTextures::UnpackAndCleanSrv(tsharp, srv_gen8);
         // bbport: a hash lookup per texture per draw for a diagnostic only.
@@ -320,7 +322,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 desc_entry.found_id = image_id;
                 desc_entry.found_uid = resolved_img.image_uid;
                 desc_entry.found_direct_immutable =
-                    True(resolved_img.flags & VideoCore::ImageFlagBits::DirectImmutable) &&
+                    VideoCore::True(resolved_img.flags & VideoCore::ImageFlagBits::DirectImmutable) &&
                     !texture_cache.GetAssociatedDepth(resolved_img);
                 desc_entry.found_desc = desc;
                 desc_entry.view_memo = {};
@@ -536,7 +538,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 const bool imm_ro =
                     !is_storage && !image.info.props.is_depth && !image.scene_proxy &&
                     !image.MaybePromptIcon() && !image.prompt_atlas &&
-                    !True(image.flags & VideoCore::ImageFlagBits::GpuModified) &&
+                    !VideoCore::True(image.flags & VideoCore::ImageFlagBits::GpuModified) &&
                     texture_cache.IsRegisteredImmutable(image_id, image.image_uid);
                 resolved[binding_index] = {image_id, false, imm_ro, *image_view.image_view,
                                            image.backing, image.image_uid, desc.view_info.range};
@@ -687,10 +689,11 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
     u64 local_native_hits = 0;
     u64 local_native_misses = 0;
 
+    const u32* const stage_flat = stage.FlatUserData().data();
     for (u32 sampler_index = 0; sampler_index < stage.samplers.size(); ++sampler_index) {
         const auto& sampler = stage.samplers[sampler_index];
-        auto ssharp =
-            prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage);
+        auto ssharp = prepared ? prepared->sampler_sharps[sampler_index]
+                               : sampler.GetSharpDirect(stage_flat);
         u16 smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
         static const bool n2_native_tex =
             gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);

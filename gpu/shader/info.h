@@ -188,7 +188,11 @@ struct Info : InfoPersistent {
     static inline thread_local u32 num_ud_snapshots = 0;
 
     const UdSnapshot* Snapshot() const noexcept {
-        for (u32 i = 0; i < num_ud_snapshots; ++i) {
+        const u32 n = num_ud_snapshots;
+        if (n == 0) {
+            return nullptr;
+        }
+        for (u32 i = 0; i < n; ++i) {
             if (ud_snapshots[i].info == this) {
                 return &ud_snapshots[i];
             }
@@ -196,20 +200,20 @@ struct Info : InfoPersistent {
         return nullptr;
     }
     std::span<const u32> UserData() const noexcept {
-        if (const auto* snapshot = Snapshot()) [[unlikely]] {
+        if (const auto* snapshot = Snapshot()) {
             return {snapshot->user_data, snapshot->user_data_size};
         }
         return user_data;
     }
     std::span<const u32> FlatUserData() const noexcept {
-        if (const auto* snapshot = Snapshot()) [[unlikely]] {
+        if (const auto* snapshot = Snapshot()) {
             return {snapshot->flat, snapshot->flat_size};
         }
         return flattened_ud_buf;
     }
 
     VAddr ProgramBase() const noexcept {
-        if (const auto* snapshot = Snapshot()) [[unlikely]] {
+        if (const auto* snapshot = Snapshot()) {
             return snapshot->pgm_base;
         }
         return pgm_base;
@@ -220,12 +224,9 @@ struct Info : InfoPersistent {
         return *reinterpret_cast<const T*>(&FlatUserData()[sharp_idx]);
     }
 
-    /// A value at `dword_offset` of the table the user data pointer at `ptr_index` points to
-    /// (of the user data itself for NumScalarRegs).
     template <typename T>
-    T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
+    static T ReadUdRegDirect(std::span<const u32> ud, u32 ptr_index, u32 dword_offset) noexcept {
         T data{};
-        const auto ud = UserData();
         const u32* base = ud.data();
         if (ptr_index != IR::NumScalarRegs) {
             if (ptr_index >= ud.size() || ud.size() - ptr_index < 2) {
@@ -233,12 +234,10 @@ struct Info : InfoPersistent {
             }
             std::memcpy(&base, &ud[ptr_index], sizeof(base));
             base = reinterpret_cast<const u32*>(VAddr(base) & 0xFFFFFFFFFFFFULL);
-            // Missing vertex tables can follow a failed game allocation. Like an unavailable
-            // SRT load, a null table supplies an empty descriptor, never a host read at +offset.
             if (!base) {
                 return data;
             }
-            if (guest_read_hook) {
+            if (guest_read_hook) [[unlikely]] {
                 guest_read_hook(base + dword_offset, sizeof(T));
             }
         } else if (dword_offset > ud.size() ||
@@ -247,6 +246,13 @@ struct Info : InfoPersistent {
         }
         std::memcpy(&data, base + dword_offset, sizeof(T));
         return data;
+    }
+
+    /// A value at `dword_offset` of the table the user data pointer at `ptr_index` points to
+    /// (of the user data itself for NumScalarRegs).
+    template <typename T>
+    T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
+        return ReadUdRegDirect<T>(UserData(), ptr_index, dword_offset);
     }
 
     /// Copies the user data registers the shader reads into the push data.

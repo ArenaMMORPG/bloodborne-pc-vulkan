@@ -270,6 +270,24 @@ void RegisterTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
     g_cue_heap_end.store(addr + byte_size, std::memory_order_release);
 }
 
+void GetTransientCueHeapBounds(VAddr& out_base, VAddr& out_end) noexcept {
+    static const bool enabled =
+        gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging);
+    if (!enabled) {
+        out_base = 0;
+        out_end = 0;
+        return;
+    }
+    const VAddr end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (end == 0) {
+        out_base = 0;
+        out_end = 0;
+        return;
+    }
+    out_base = g_cue_heap_base.load(std::memory_order_relaxed);
+    out_end = end;
+}
+
 bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept {
     static const bool enabled =
         gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_ZeroFaultCueStaging);
@@ -916,13 +934,26 @@ void NoteNativeGpuBlockFree(VAddr addr, u64 byte_size) noexcept {
 }
 
 u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size, bool for_write) noexcept {
-    u64 clamped = ClampTransientCueReadSize(addr, requested_size);
+    const VAddr cue_end = g_cue_heap_end.load(std::memory_order_acquire);
+    if (cue_end != 0) {
+        const VAddr cue_base = g_cue_heap_base.load(std::memory_order_relaxed);
+        if (addr >= cue_base && addr < cue_end) {
+            return ClampTransientCueReadSize(addr, requested_size);
+        }
+    }
+    u64 clamped = requested_size;
     static const bool n1_enabled =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (!n1_enabled || clamped == 0) {
+    if (!n1_enabled || clamped == 0 || addr < kNativeDirBase) {
         return clamped;
     }
-    if ((addr & 3ULL) == 0ULL && addr != 0) {
+    const u64 rel = addr - kNativeDirBase;
+    if (rel >= kNativeDirMaxBytes) {
+        return clamped;
+    }
+    const size_t cur_page = static_cast<size_t>(rel >> kNativePageShift);
+    const u32 end_rel4 = g_native_page_end_rel4[cur_page].load(std::memory_order_acquire);
+    if (end_rel4 != 0u && (addr & 3ULL) == 0ULL) {
         const size_t base_set = ExactBufSetIdx(addr);
         bool matched = false;
         for (size_t p = 0; p < kExactBufProbeSets && !matched; ++p) {
@@ -945,15 +976,6 @@ u64 ClampNativeGpuReadSize(VAddr addr, u64 requested_size, bool for_write) noexc
             }
         }
     }
-    if (addr < kNativeDirBase) {
-        return clamped;
-    }
-    const u64 rel = addr - kNativeDirBase;
-    if (rel >= kNativeDirMaxBytes) {
-        return clamped;
-    }
-    const size_t cur_page = static_cast<size_t>(rel >> kNativePageShift);
-    const u32 end_rel4 = g_native_page_end_rel4[cur_page].load(std::memory_order_acquire);
     const u64 end_rel = static_cast<u64>(end_rel4) << 2;
     if (end_rel > rel) {
         clamped = std::min<u64>(clamped, end_rel - rel);
@@ -2140,6 +2162,13 @@ void bb_direct_vk_note_fresh_gpu_range(const void* gpu_addr, uint64_t byte_size)
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    if (VideoCore::DirectBuffers::IsTransientCueHeap(addr, byte_size)) {
+        VideoCore::DirectBuffers::NoteTransientCueHeapAlloc(addr, byte_size);
+        if (auto* buf = VideoCore::DirectBuffers::g_active_buf_cache.load(std::memory_order_acquire)) {
+            buf->NoteFreshRange(addr, byte_size);
+        }
+        return;
+    }
     const bool had_native = VideoCore::DirectBuffers::OverlapsNativeOwnedRange(addr, byte_size);
     if (had_native) {
         VideoCore::DirectBuffers::ClearNativeOwnedRange(addr, byte_size);
@@ -2269,6 +2298,10 @@ void bb_direct_vk_retire_buffer_range(const void* gpu_addr, uint64_t byte_size) 
         return;
     }
     const VAddr addr = reinterpret_cast<VAddr>(gpu_addr);
+    if (VideoCore::DirectBuffers::IsTransientCueHeap(addr, byte_size)) {
+        VideoCore::DirectBuffers::NoteTransientCueHeapFree(addr, byte_size);
+        return;
+    }
     if (const VAddr exact_end = VideoCore::DirectBuffers::LookupExactBufferEnd(addr);
         exact_end > addr && (exact_end - addr) > byte_size) {
         byte_size = exact_end - addr;

@@ -78,6 +78,7 @@ void DrainEvents(std::vector<Event>& out);
 /// staging ring) so DirectCopyBuffers and BufferCache::ObtainBuffer stream host RAM directly
 /// without creating a 512 MiB VRAM mirror or arming mprotect(PROT_READ) page traps on cueHeap.
 void RegisterTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
+void GetTransientCueHeapBounds(VAddr& out_base, VAddr& out_end) noexcept;
 [[nodiscard]] bool IsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
 [[nodiscard]] bool OverlapsTransientCueHeap(VAddr addr, u64 byte_size) noexcept;
 /// N2.5: Registers auxiliary transient CPU command/constant rings (`dcbRingBuffer`, `ccbRingBuffer`,

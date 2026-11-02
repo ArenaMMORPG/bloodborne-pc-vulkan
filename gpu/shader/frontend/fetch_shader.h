@@ -41,14 +41,18 @@ struct VertexAttribute {
     }
 
     /// The attribute's V#, with the load's offset and typed format applied.
-    constexpr ::Gcn::Buffer GetSharp(const Shader::Info& info) const noexcept {
-        auto buffer = info.ReadUdReg<::Gcn::Buffer>(sgpr_base, dword_offset);
+    constexpr ::Gcn::Buffer GetSharpDirect(std::span<const u32> ud) const noexcept {
+        auto buffer = Shader::Info::ReadUdRegDirect<::Gcn::Buffer>(ud, sgpr_base, dword_offset);
         buffer.base_address += inst_offset;
         if (data_format) {
             buffer.data_format = data_format;
             buffer.num_format = num_format;
         }
         return buffer;
+    }
+
+    constexpr ::Gcn::Buffer GetSharp(const Shader::Info& info) const noexcept {
+        return GetSharpDirect(info.UserData());
     }
 
     bool operator==(const VertexAttribute& other) const {

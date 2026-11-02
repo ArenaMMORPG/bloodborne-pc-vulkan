@@ -164,6 +164,12 @@ public:
         return used_prepared;
     }
 
+    /// Consumes the vertex stream V#s already fetched during `TryFastSelect` (`MatchesInPlace`)
+    /// for `pipeline`, avoiding a second vertex-table read in `Rasterizer::PostDraw`.
+    bool ConsumeFastVsharps(
+        const GraphicsPipeline* pipeline,
+        boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS>& out) noexcept;
+
     const ComputePipeline* GetComputePipeline();
 
     /// A stage's translation: its Info, module, fetch shader and permutation hash.
@@ -263,6 +269,7 @@ private:
     void PrintFastSelectStats();
     void InvalidateFastSelect();
     u64 last_target = 0;
+    u64 last_target_quick_key = ~0ull;
     u32 last_target_frame = ~0u;
     u32 stats_frame = ~0u;
     u64 frame_start_draws = 0, last_frame_draws = 0;

@@ -1377,6 +1377,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             break;
         }
     }
+    const u32* const stage_flat = stage.FlatUserData().data();
+    const VAddr stage_pgm_base = stage.ProgramBase();
     u32 ring_cursor = 0;
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
@@ -1415,7 +1417,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else if (desc.IsSpecial()) {
             BindSpecialBuffer(desc, stage, binding.buffer, alignment);
         } else {
-            const auto vsharp = prepared ? prepared->buffer_sharps[index] : desc.GetSharp(stage);
+            const auto vsharp = prepared ? prepared->buffer_sharps[index]
+                                         : desc.GetSharpDirect(stage_flat, stage_pgm_base);
             BindGuestBuffer(desc, vsharp, stage, binding.buffer, push_data, alignment);
         }
         set_writes[write_index++] = vk::WriteDescriptorSet{

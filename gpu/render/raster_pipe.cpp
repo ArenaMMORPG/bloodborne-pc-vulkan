@@ -574,6 +574,13 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     const bool is_copy_shader = (stage.pgm_hash == Game::BufferCopyShader());
     static const bool n1_native_buf =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
+    const u32* const stage_flat = stage.FlatUserData().data();
+    const VAddr stage_pgm_base = stage.ProgramBase();
+    VAddr cue_base = 0;
+    VAddr cue_end = 0;
+    VideoCore::DirectBuffers::GetTransientCueHeapBounds(cue_base, cue_end);
+    const bool cue_gpu_modified = VideoCore::DirectBuffers::IsCueHeapEverGpuModified();
+    const bool has_const_ram = buffer_cache.IsConstRamRange(0, (1ULL << 40) - 1);
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
         if (desc.IsSpecial()) {
@@ -588,24 +595,49 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
             continue;
         }
-        const Gcn::Buffer vsharp = prepared_stage ? prepared_stage->buffer_sharps[index]
-                                                  : desc.GetSharp(stage);
+        const Gcn::Buffer vsharp = prepared_stage
+                                       ? prepared_stage->buffer_sharps[index]
+                                       : desc.GetSharpDirect(stage_flat, stage_pgm_base);
         const VAddr address = vsharp.base_address;
         if (address == 0) {
+            continue;
+        }
+        const u64 unclamped_size = vsharp.GetSize();
+        if (unclamped_size == 0) {
+            continue;
+        }
+        // Fast path for transient `cueHeap` constant/storage buffers: `cueHeap` is never in
+        // `NativeOwnedBitmap` or `ExactBufferTable`, so check `cueHeap` bounds first before
+        // probing native buffer tables or bitmaps.
+        if (!desc.is_written && stage_a_bypass && !constants_in_place && v7_fast_const &&
+            !is_copy_shader && !cue_gpu_modified && !has_const_ram &&
+            address >= cue_base && address < cue_end) {
+            const u64 cue_size =
+                (unclamped_size > VideoCore::BufferCache::STREAM_THRESHOLD)
+                    ? VideoCore::DirectBuffers::ClampTransientCueReadSize(address, unclamped_size)
+                    : std::min<u64>(unclamped_size, cue_end - address);
+            if (cue_size > 0 && cue_size <= VideoCore::BufferCache::STREAM_THRESHOLD) {
+                if (resolvers) {
+                    out.push_back({index, static_cast<u32>(cue_size), RingPending, address, 0,
+                                   u32(hle_candidate)});
+                    continue;
+                }
+                if (copy(index, nullptr, address, cue_size)) {
+                    if (hle_candidate) {
+                        NotePendingRead(address, cue_size, true);
+                    }
+                    continue;
+                }
+            }
             continue;
         }
         // N1.2 / N1.2c / N3.1: Native-owned GXGnmBuffers (DEFAULT / IMMUTABLE / DYNAMIC) live in
         // dedicated VMA DEVICE_LOCAL VkBuffers (or renamed stream_buffer slices) and their guest
         // RAM at `address` is never CPU-updated after CreateAndInitialize. Short-circuit via the
-        // lossless 4-byte NativeOwnedBitmap BEFORE vsharp.GetSize() and BEFORE probing the 4 MiB
-        // Murmur3 ExactBufferTable (`ClampNativeGpuReadSize`), eliminating ~50,000 L2/L3 cache
-        // misses per frame (~1.25 ms Stage A ConstRing spin for 0 copied bytes).
+        // lossless 4-byte NativeOwnedBitmap BEFORE probing the 4 MiB Murmur3 ExactBufferTable
+        // (`ClampNativeGpuReadSize`), eliminating ~50,000 L2/L3 cache misses per frame.
         if (!desc.is_written && n1_native_buf &&
             VideoCore::DirectBuffers::IsNativeOwnedAddress(address)) {
-            continue;
-        }
-        const u64 unclamped_size = vsharp.GetSize();
-        if (unclamped_size == 0) {
             continue;
         }
         const u64 raw_size =
@@ -991,13 +1023,15 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         size += AlignPacket(sizeof(Gcn::ComputeProgram));
     }
     static const bool no_stream_constram = std::getenv("BB_EXP_NO_STREAM") != nullptr;
+    const bool has_any_constram = buffer_cache.IsConstRamRange(0, (1ULL << 40) - 1);
     auto note_stage_b_read = [&](VAddr r_addr, u64 r_size) {
-        if (FastNonCeRamSkip() && !buffer_cache.IsConstRamRange(r_addr, r_size)) {
+        if (FastNonCeRamSkip() && (!has_any_constram || !buffer_cache.IsConstRamRange(r_addr, r_size))) {
             return;
         }
         const bool sync_stream = !no_stream_constram && r_size != 0 &&
                                  r_size <= VideoCore::BufferCache::CONSTRAM_STREAM_THRESHOLD &&
                                  !VideoCore::ConstantsInPlace() &&
+                                 has_any_constram &&
                                  buffer_cache.IsConstRamRange(r_addr, r_size) &&
                                  !buffer_cache.IsRegionGpuModified(r_addr, r_size) &&
                                  !PendingWriteOverlaps(r_addr, r_size);
@@ -1041,35 +1075,48 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                     ? &used_prepared->vertex
                     : nullptr;
             if (ready) {
-                for (u32 i = 0; i < ready->num_ranges; ++i) {
-                    const auto& r = ready->ranges[i];
-                    if (fast_native_post_skip &&
-                        VideoCore::DirectBuffers::IsNativeOwnedAddress(r.base)) {
-                        continue;
-                    }
-                    note_stage_b_read(r.base, r.end - r.base);
-                }
-            } else {
-                const auto& vs = graphics->GetStage(Shader::SwStage::Vertex);
-                for (const auto& attrib : fetch->attributes) {
-                    const auto buffer = attrib.GetSharp(vs);
-                    vsharps.push_back(buffer);
-                    if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                if (!fast_native_post_skip || has_any_constram) {
+                    for (u32 i = 0; i < ready->num_ranges; ++i) {
+                        const auto& r = ready->ranges[i];
                         if (fast_native_post_skip &&
-                            VideoCore::DirectBuffers::IsNativeOwnedAddress(buffer.base_address)) {
+                            VideoCore::DirectBuffers::IsNativeOwnedAddress(r.base)) {
                             continue;
                         }
-                        const u64 vb_bytes = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
-                            buffer.base_address, buffer.GetSize());
-                        if (BbCeStats::Enabled()) {
-                            BbCeStats::Check(BbCeStats::Vertex, buffer.base_address, vb_bytes);
+                        note_stage_b_read(r.base, r.end - r.base);
+                    }
+                }
+            } else {
+                const bool got_fast_vsharps =
+                    pipeline_cache.ConsumeFastVsharps(graphics, vsharps) &&
+                    vsharps.size() == fetch->attributes.size();
+                if (!got_fast_vsharps) {
+                    vsharps.clear();
+                    const auto& vs = graphics->GetStage(Shader::SwStage::Vertex);
+                    const auto vs_ud = vs.UserData();
+                    for (const auto& attrib : fetch->attributes) {
+                        vsharps.push_back(attrib.GetSharpDirect(vs_ud));
+                    }
+                }
+                if (!fast_native_post_skip || has_any_constram || BbCeStats::Enabled()) {
+                    for (const auto& buffer : vsharps) {
+                        if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                            if (fast_native_post_skip &&
+                                VideoCore::DirectBuffers::IsNativeOwnedAddress(
+                                    buffer.base_address)) {
+                                continue;
+                            }
+                            const u64 vb_bytes = VideoCore::DirectBuffers::ClampNativeGpuReadSize(
+                                buffer.base_address, buffer.GetSize());
+                            if (BbCeStats::Enabled()) {
+                                BbCeStats::Check(BbCeStats::Vertex, buffer.base_address, vb_bytes);
+                            }
+                            note_stage_b_read(buffer.base_address, vb_bytes);
                         }
-                        note_stage_b_read(buffer.base_address, vb_bytes);
                     }
                 }
             }
         }
-        if (is_indexed) {
+        if (is_indexed && (!fast_native_post_skip || has_any_constram || BbCeStats::Enabled())) {
             const auto& regs = liverpool->regs;
             const u32 index_size =
                 regs.index_buffer_type.index_type == Gcn::IndexType::Index16 ? 2 : 4;
@@ -1524,6 +1571,10 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
         return false;
     };
 
+    VAddr cue_base = 0;
+    VAddr cue_end = 0;
+    VideoCore::DirectBuffers::GetTransientCueHeapBounds(cue_base, cue_end);
+    const bool cue_gpu_modified = VideoCore::DirectBuffers::IsCueHeapEverGpuModified();
     bool used_ring = false;
     for (u32 i = 0; i < packet.num_stages; ++i) {
         const auto& stage = *reinterpret_cast<const PacketStage*>(in);
@@ -1549,19 +1600,18 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
                 }
                 continue;
             }
+            if (fast_cue_resolve && !cue_gpu_modified &&
+                address >= cue_base && address < cue_end && (cue_end - address) >= size) {
+                copy_memoized(address, reinterpret_cast<const void*>(address), size, binding,
+                              used_ring);
+                continue;
+            }
             static const bool n1_native_buf =
                 gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
             if (n1_native_buf &&
                 (VideoCore::DirectBuffers::IsNativeOwnedAddress(address) ||
                  VideoCore::DirectBuffers::OverlapsNativeOwnedRange(address, size))) {
                 binding.offset = RingNotCopied;
-                continue;
-            }
-            if (fast_cue_resolve &&
-                VideoCore::DirectBuffers::IsTransientCueHeap(address, size) &&
-                !VideoCore::DirectBuffers::IsCueHeapEverGpuModified()) {
-                copy_memoized(address, reinterpret_cast<const void*>(address), size, binding,
-                              used_ring);
                 continue;
             }
             // The checks stage A made before: the GPU has written or will write these bytes,

@@ -81,6 +81,7 @@ std::atomic<u64> g_registered_binaries{0};
 std::atomic<u64> g_manifest_binaries_bound{0};
 std::atomic<u64> g_stage_a_direct_hits{0};
 std::atomic<u64> g_worker_direct_hits{0};
+std::atomic<u64> g_invalidation_epoch{1};
 
 [[nodiscard]] constexpr u64 MixHash64(u64 x) noexcept {
     x ^= x >> 30;
@@ -462,6 +463,7 @@ void AttachProgramToSlot(VAddr pgm_base, u64 shader_hash, Program* program) noex
 
 void ClearCachedPrograms() noexcept {
     std::scoped_lock lock{g_writer_mutex};
+    g_invalidation_epoch.fetch_add(1ULL, std::memory_order_release);
     for (auto& entry : g_program_dir) {
         entry.program.store(nullptr, std::memory_order_release);
         entry.hash.store(0ULL, std::memory_order_release);
@@ -481,6 +483,7 @@ void InvalidateRange(VAddr addr, u64 byte_size) noexcept {
     const u64 max_span =
         std::max<u64>(g_max_ucode_span.load(std::memory_order_acquire), 256ULL);
     std::scoped_lock lock{g_writer_mutex};
+    bool invalidated_any = false;
 
     // Fast path when `[addr - max_span, end)` spans <= 256 KiB (<= 1,024 256-byte sets, < 1 us):
     // guaranteed to visit every slot whose `[s_start, s_start + ucode_alloc_bytes)` overlaps `[addr, end)`.
@@ -501,8 +504,12 @@ void InvalidateRange(VAddr addr, u64 byte_size) noexcept {
                     slot.pgm_base = 0;
                     slot.cached_program.store(nullptr, std::memory_order_release);
                     slot.seq.store(prev + 2u, std::memory_order_release);
+                    invalidated_any = true;
                 }
             }
+        }
+        if (invalidated_any) {
+            g_invalidation_epoch.fetch_add(1ULL, std::memory_order_release);
         }
         return;
     }
@@ -522,9 +529,17 @@ void InvalidateRange(VAddr addr, u64 byte_size) noexcept {
                 slot.pgm_base = 0;
                 slot.cached_program.store(nullptr, std::memory_order_release);
                 slot.seq.store(prev + 2u, std::memory_order_release);
+                invalidated_any = true;
             }
         }
     }
+    if (invalidated_any) {
+        g_invalidation_epoch.fetch_add(1ULL, std::memory_order_release);
+    }
+}
+
+u64 InvalidationEpoch() noexcept {
+    return g_invalidation_epoch.load(std::memory_order_acquire);
 }
 
 Telemetry ReadTelemetry() noexcept {
@@ -607,6 +622,7 @@ void bb_direct_vk_register_shader_binary(const void* gpu_ucode_addr, uint32_t uc
     }
 
     auto& slot = set[chosen];
+    const bool overwriting_valid = slot.valid.load(std::memory_order_relaxed) != 0u;
     const u32 prev_seq = slot.seq.load(std::memory_order_relaxed);
     const u32 odd_seq = (prev_seq | 1u) == prev_seq ? (prev_seq + 2u) : (prev_seq + 1u);
     slot.seq.store(odd_seq, std::memory_order_release);
@@ -629,6 +645,9 @@ void bb_direct_vk_register_shader_binary(const void* gpu_ucode_addr, uint32_t uc
 
     std::atomic_thread_fence(std::memory_order_release);
     slot.seq.store(odd_seq + 1u, std::memory_order_release);
+    if (overwriting_valid) {
+        Vulkan::DirectShaders::g_invalidation_epoch.fetch_add(1ULL, std::memory_order_release);
+    }
 
     Vulkan::DirectShaders::g_registered_binaries.fetch_add(1, std::memory_order_relaxed);
     if (manifest_idx != Vulkan::DirectShaders::kNoManifestIndex) {

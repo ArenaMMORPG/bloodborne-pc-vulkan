@@ -107,6 +107,11 @@ void ClearCachedPrograms() noexcept;
 /// `[addr, addr + byte_size)` touches no 64 KiB page that ever held shader ucode.
 void InvalidateRange(VAddr addr, u64 byte_size) noexcept;
 
+/// Monotonic generation incremented whenever any registered shader binary slot is invalidated or
+/// overwritten in-place. Allows `FastSelect` to verify all stage `(pgm_base, shader_hash)` pairs
+/// in a single O(1) load when `pgm_base` is already matched in the register signature.
+[[nodiscard]] u64 InvalidationEpoch() noexcept;
+
 [[nodiscard]] Telemetry ReadTelemetry() noexcept;
 
 } // namespace DirectShaders

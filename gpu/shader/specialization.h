@@ -252,9 +252,11 @@ struct StageSpecialization {
 
     /// Zero-allocation exact specialization match against live `cur_info` user data (`*this ==
     /// StageSpecialization(cur_info, cur_rt, profile, cur_start)`), using pre-parsed `cur_fetch`.
-    [[nodiscard]] bool MatchesInPlace(const Info& cur_info, const RuntimeInfo& cur_rt,
-                                      const Profile& profile, Backend::Bindings cur_start,
-                                      const Gcn::FetchShaderData* cur_fetch) const {
+    [[nodiscard]] bool MatchesInPlace(
+        const Info& cur_info, const RuntimeInfo& cur_rt, const Profile& profile,
+        Backend::Bindings cur_start, const Gcn::FetchShaderData* cur_fetch,
+        bool skip_rt_and_fetch_compare = false,
+        boost::container::static_vector<::Gcn::Buffer, NUM_BUFFERS>* out_vsharps = nullptr) const {
         if (!Valid()) {
             return false;
         }
@@ -262,24 +264,36 @@ struct StageSpecialization {
             cur_info.sw_stage == SwStage::TessellationEval) {
             return false;
         }
-        if (runtime_info != cur_rt) {
+        if (!skip_rt_and_fetch_compare && runtime_info != cur_rt) {
             return false;
         }
         if (fetch_shader_data.has_value() != (cur_fetch != nullptr)) {
             return false;
         }
+        const auto* const snap = cur_info.Snapshot();
+        const u32* const flat = snap ? snap->flat : cur_info.flattened_ud_buf.data();
+        const VAddr pgm_base = snap ? snap->pgm_base : cur_info.pgm_base;
+        const std::span<const u32> ud =
+            snap ? std::span<const u32>{snap->user_data, snap->user_data_size} : cur_info.user_data;
+
         if (cur_fetch) {
-            if (!(*fetch_shader_data == *cur_fetch)) {
+            if (!skip_rt_and_fetch_compare && !(*fetch_shader_data == *cur_fetch)) {
                 return false;
             }
             if (cur_info.sw_stage == SwStage::Vertex) {
                 if (vs_attribs.size() != cur_fetch->attributes.size()) {
                     return false;
                 }
+                if (out_vsharps) {
+                    out_vsharps->clear();
+                }
                 for (size_t i = 0; i < cur_fetch->attributes.size(); ++i) {
                     VsAttribSpecialization aspec{};
                     const auto& desc = cur_fetch->attributes[i];
-                    const auto sharp = desc.GetSharp(cur_info);
+                    const auto sharp = desc.GetSharpDirect(ud);
+                    if (out_vsharps && out_vsharps->size() < out_vsharps->capacity()) {
+                        out_vsharps->push_back(sharp);
+                    }
                     if (sharp) {
                         using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
                         if (const auto step_rate = desc.GetStepRate();
@@ -294,6 +308,9 @@ struct StageSpecialization {
                         aspec.dst_select = sharp.DstSelect();
                     }
                     if (vs_attribs[i] != aspec) {
+                        if (out_vsharps) {
+                            out_vsharps->clear();
+                        }
                         return false;
                     }
                 }
@@ -310,7 +327,7 @@ struct StageSpecialization {
         bool cur_any_bit = false;
         for (size_t i = 0; i < cur_info.fmasks.size(); ++i) {
             FMaskSpecialization fspec{};
-            const auto sharp = cur_info.fmasks[i].GetSharp(cur_info);
+            const auto sharp = cur_info.fmasks[i].GetSharpDirect(flat);
             if (sharp) {
                 cur_any_bit = true;
                 fspec.width = sharp.width;
@@ -327,7 +344,7 @@ struct StageSpecialization {
 
         for (size_t i = 0; i < cur_info.buffers.size(); ++i) {
             const auto& desc = cur_info.buffers[i];
-            const auto sharp = desc.GetSharp(cur_info);
+            const auto sharp = desc.GetSharpDirect(flat, pgm_base);
             if (!sharp) {
                 continue;
             }
@@ -358,7 +375,7 @@ struct StageSpecialization {
 
         for (size_t i = 0; i < cur_info.images.size(); ++i) {
             const auto& desc = cur_info.images[i];
-            const auto sharp = desc.GetSharp(cur_info);
+            const auto sharp = desc.GetSharpDirect(flat);
             if (!sharp) {
                 continue;
             }
@@ -377,7 +394,7 @@ struct StageSpecialization {
                 ispec.is_srgb = sharp.GetNumberFmt() == ::Gcn::NumberFormat::Srgb;
             }
             ispec.num_conversion = sharp.GetNumberConversion();
-            ispec.num_bindings = desc.NumBindings(cur_info);
+            ispec.num_bindings = desc.NumBindingsDirect(sharp);
             if (images[i] != ispec) {
                 return false;
             }
@@ -392,7 +409,7 @@ struct StageSpecialization {
         }
         for (size_t i = 0; i < cur_info.samplers.size(); ++i) {
             SamplerSpecialization sspec{};
-            const auto sharp = cur_info.samplers[i].GetSharp(cur_info);
+            const auto sharp = cur_info.samplers[i].GetSharpDirect(flat);
             if (sharp) {
                 sspec.force_unnormalized = sharp.force_unnormalized;
                 sspec.force_degamma = sharp.force_degamma;
