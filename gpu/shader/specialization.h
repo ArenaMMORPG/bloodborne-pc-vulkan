@@ -262,9 +262,14 @@ struct StageSpecialization {
         }
         if (cur_info.sw_stage == SwStage::TessellationControl ||
             cur_info.sw_stage == SwStage::TessellationEval) {
-            return false;
-        }
-        if (!skip_rt_and_fetch_compare && runtime_info != cur_rt) {
+            TessellationDataConstantBuffer tess_constants{};
+            cur_info.ReadTessConstantBuffer(tess_constants);
+            RuntimeInfo rt = cur_rt;
+            rt.InitFromTessConstants(tess_constants);
+            if (runtime_info != rt) {
+                return false;
+            }
+        } else if (!skip_rt_and_fetch_compare && runtime_info != cur_rt) {
             return false;
         }
         if (fetch_shader_data.has_value() != (cur_fetch != nullptr)) {

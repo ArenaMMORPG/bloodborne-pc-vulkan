@@ -67,20 +67,15 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
-        // Block 4 Step 4.2 (BB_DIRECT_RING, default on): with N1 native buffers + transient
-        // cueHeap memoization (`tls_ring_memo`), Stage A copies only ~150 unique `cueHeap`/`Flatbuf`
-        // slices per frame while they are already hot in L1 (~0.10 ms/frame), making a separate
-        // `bb:Resolve0` thread (`~2.5 ms/frame` CPU + atomic slot handoffs) pure overhead.
-        // `BB_RESOLVE_WORKERS=N` or `BB_DIRECT_RING=0` re-enables resolve workers for A/B tests.
+        // Keep 1 constant resolve worker by default (`spin_us = 0` in `vk_draw_pipe.h` so it
+        // never burns idle spin CPU): offloading `XXH3` + Write-Combined ReBAR `memcpy` from
+        // Stage A keeps `ConstRing + Drain` at `0.30 ms/frame` instead of `1.14 ms/frame` on the
+        // serial Stage A critical path (`20261102_085454.log`).
         static const u32 resolvers = [] {
             if (const char* env = std::getenv("BB_RESOLVE_WORKERS")) {
                 return u32(std::clamp(std::atoi(env), 0, 4));
             }
-            if (const char* ring_env = std::getenv("BB_DIRECT_RING");
-                ring_env && ring_env[0] == '0') {
-                return BbThreads::Available() >= 8 ? 1u : 0u;
-            }
-            return 0u;
+            return BbThreads::Available() >= 8 ? 1u : 0u;
         }();
         if (resolvers != 0) {
             for (u32 i = 0; i < resolvers; ++i) {
