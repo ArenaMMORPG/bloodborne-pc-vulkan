@@ -83,7 +83,8 @@ void GpuProfiler::OnFrame() {
     }
     if (!stored_ptr->permanent) {
         const bool trigger_file = (f & 31) == 0 && ::access("/tmp/bb_gpu_profile_trigger", F_OK) == 0;
-        const bool auto_scene = scene_frames == 120 && !captured_scene;
+        const bool auto_scene = (scene_frames == 120 && !captured_scene) ||
+                                (scene_frames >= 120 && (scene_frames % 1200) == 120);
         if (trigger_file || auto_scene) {
             if (trigger_file) {
                 ::unlink("/tmp/bb_gpu_profile_trigger");
@@ -397,6 +398,75 @@ void GpuProfiler::Print(bool to_file) {
     if (f) {
         std::fclose(f);
     }
+
+    // Accumulate into session-wide profile (/tmp/bb_gpu_profile_session.txt) across all visited
+    // locations (Clinic, Central Yharnam, Hunter's Dream, etc.).
+    static std::unordered_map<u64, Total> s_session_totals;
+    static std::unordered_map<u64, std::string> s_session_described;
+    static std::unordered_map<u64, DrawShaderStat> s_session_draws;
+    static u64 s_session_frames = 0;
+    static u64 s_session_draw_frames = 0;
+    s_session_frames += frames;
+    s_session_draw_frames += draw_frames;
+    for (const auto& [k, tot] : totals) {
+        auto& dst = s_session_totals[k];
+        dst.ms += tot.ms;
+        dst.segments += tot.segments;
+        if (s_session_described.find(k) == s_session_described.end()) {
+            s_session_described[k] = described[k];
+        }
+    }
+    for (const auto& [k, st] : draw_stats) {
+        auto& dst = s_session_draws[k];
+        if (dst.draws == 0) {
+            dst = st;
+        } else {
+            dst.draws += st.draws;
+            dst.vtx_instances += st.vtx_instances;
+        }
+    }
+    if (FILE* sf = std::fopen("/tmp/bb_gpu_profile_session.txt", "w")) {
+        std::vector<std::pair<u64, Total>> sess_sorted(s_session_totals.begin(), s_session_totals.end());
+        std::ranges::sort(sess_sorted, [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
+        double sess_sum = 0.0;
+        for (const auto& [_, tot] : sess_sorted) {
+            sess_sum += tot.ms;
+        }
+        std::fprintf(sf, "Session GPU profile: %.2f ms/frame over %llu frames, %zu unique labels\n",
+                     sess_sum / double(s_session_frames),
+                     static_cast<unsigned long long>(s_session_frames), sess_sorted.size());
+        for (size_t i = 0; i < std::min<size_t>(sess_sorted.size(), 80); ++i) {
+            const auto& [key, total] = sess_sorted[i];
+            std::fprintf(sf, "  %6.3f ms/frame %5.1f/frame  %s\n",
+                         total.ms / double(s_session_frames),
+                         double(total.segments) / double(s_session_frames),
+                         s_session_described[key].c_str());
+        }
+        if (!s_session_draws.empty() && s_session_draw_frames > 0) {
+            std::vector<DrawShaderStat> sess_draws;
+            sess_draws.reserve(s_session_draws.size());
+            for (const auto& [_, st] : s_session_draws) {
+                sess_draws.push_back(st);
+            }
+            std::ranges::sort(sess_draws, [](const DrawShaderStat& a, const DrawShaderStat& b) {
+                return (a.draws != b.draws) ? (a.draws > b.draws)
+                                            : (a.vtx_instances > b.vtx_instances);
+            });
+            std::fprintf(sf, "  top session shader pairs by draws/frame (%zu unique across %llu frames):\n",
+                         sess_draws.size(), static_cast<unsigned long long>(s_session_draw_frames));
+            const double inv_sdf = 1.0 / double(s_session_draw_frames);
+            for (size_t i = 0; i < std::min<size_t>(sess_draws.size(), 60); ++i) {
+                const auto& st = sess_draws[i];
+                std::fprintf(sf, "    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",
+                             double(st.draws) * inv_sdf, double(st.vtx_instances) * inv_sdf,
+                             st.width, st.height, st.num_mrts,
+                             static_cast<unsigned long long>(st.vs_hash),
+                             static_cast<unsigned long long>(st.ps_hash));
+            }
+        }
+        std::fclose(sf);
+    }
+
     totals.clear();
     draw_stats.clear();
     frames = 0;

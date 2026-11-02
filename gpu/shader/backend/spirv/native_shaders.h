@@ -12,6 +12,9 @@ namespace Shader::Backend::SPIRV {
 /// native Vulkan 1.3 SPIR-V modules after verifying exact Location & Descriptor interface match;
 /// 0 = always use GCN-translated SPIR-V).
 [[nodiscard]] bool NativeShadersEnabled() noexcept;
+[[nodiscard]] bool NativeShadersCustomRange() noexcept;
+[[nodiscard]] u32 NativeShadersMinIdx() noexcept;
+[[nodiscard]] u32 NativeShadersMaxIdx() noexcept;
 
 /// Looks up `pgm_hash` in the native shader registry, verifies that all Input/Output Locations,
 /// interpolation modes, and DescriptorSet/Binding types match `ref_spv` (post-HwInterp), rebases

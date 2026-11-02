@@ -3,6 +3,7 @@
 // (3-Point-Light + VSM Cube-Array Shadow Deferred PBR Lighting pass).
 #version 460
 #extension GL_EXT_demote_to_helper_invocation : require
+layout(early_fragment_tests) in;
 
 layout(location = 0) in vec4 fs_in_attr0_p;
 layout(location = 1) in vec4 fs_in_attr1_p;

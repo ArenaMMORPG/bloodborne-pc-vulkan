@@ -47,6 +47,65 @@
 #include "bbgpu/shaders/vs_7620368b_gbuf_uv2_vert.h"
 #include "bbgpu/shaders/vs_9da6aacb_gbuf_vert.h"
 #include "bbgpu/shaders/vs_ecbef4c7_gbuf_inst_uv2_vert.h"
+#include "bbgpu/shaders/ps_370174f7_frag.h"
+#include "bbgpu/shaders/ps_d22cbfd1_frag.h"
+#include "bbgpu/shaders/ps_149432ff_frag.h"
+#include "bbgpu/shaders/ps_5de04266_frag.h"
+#include "bbgpu/shaders/ps_3fe9e964_frag.h"
+#include "bbgpu/shaders/ps_2140da2b_frag.h"
+#include "bbgpu/shaders/ps_dda49e89_frag.h"
+#include "bbgpu/shaders/ps_02cd8f9b_frag.h"
+#include "bbgpu/shaders/ps_07d07cf3_frag.h"
+#include "bbgpu/shaders/ps_0b2ace4c_frag.h"
+#include "bbgpu/shaders/ps_186d69d5_frag.h"
+#include "bbgpu/shaders/ps_201cb43d_frag.h"
+#include "bbgpu/shaders/ps_22b357f3_frag.h"
+#include "bbgpu/shaders/ps_3105494c_frag.h"
+#include "bbgpu/shaders/ps_31b90cc5_frag.h"
+#include "bbgpu/shaders/ps_41d3ce4b_frag.h"
+#include "bbgpu/shaders/ps_44a82ffb_frag.h"
+#include "bbgpu/shaders/ps_505ebdbe_frag.h"
+#include "bbgpu/shaders/ps_5d7150da_frag.h"
+#include "bbgpu/shaders/ps_5f76eb3d_frag.h"
+#include "bbgpu/shaders/ps_600f86b0_frag.h"
+#include "bbgpu/shaders/ps_799bfa32_frag.h"
+#include "bbgpu/shaders/ps_88ae6537_frag.h"
+#include "bbgpu/shaders/ps_896e7242_frag.h"
+#include "bbgpu/shaders/ps_898dabb3_frag.h"
+#include "bbgpu/shaders/ps_89f9ee3e_frag.h"
+#include "bbgpu/shaders/ps_8d5387d9_frag.h"
+#include "bbgpu/shaders/ps_8ea5be99_frag.h"
+#include "bbgpu/shaders/ps_9f9ef267_frag.h"
+#include "bbgpu/shaders/ps_b59b4c4e_frag.h"
+#include "bbgpu/shaders/ps_b5b52d63_frag.h"
+#include "bbgpu/shaders/ps_c6edb19a_frag.h"
+#include "bbgpu/shaders/ps_d729c469_frag.h"
+#include "bbgpu/shaders/ps_d75fe2ff_frag.h"
+#include "bbgpu/shaders/ps_f2531727_frag.h"
+#include "bbgpu/shaders/ps_f40da260_frag.h"
+#include "bbgpu/shaders/ps_f81596cd_frag.h"
+#include "bbgpu/shaders/ps_006c079b_frag.h"
+#include "bbgpu/shaders/ps_4fd8db00_frag.h"
+#include "bbgpu/shaders/ps_5e4596f4_frag.h"
+#include "bbgpu/shaders/ps_5e67d866_frag.h"
+#include "bbgpu/shaders/ps_70bb42af_frag.h"
+#include "bbgpu/shaders/ps_749e4f9e_frag.h"
+#include "bbgpu/shaders/ps_765450df_frag.h"
+#include "bbgpu/shaders/ps_8650418f_frag.h"
+#include "bbgpu/shaders/ps_9837d1c8_frag.h"
+#include "bbgpu/shaders/ps_9e1cb278_frag.h"
+#include "bbgpu/shaders/ps_a291c498_frag.h"
+#include "bbgpu/shaders/ps_a89e01e9_frag.h"
+#include "bbgpu/shaders/ps_ab4e5342_frag.h"
+#include "bbgpu/shaders/ps_babda34d_frag.h"
+#include "bbgpu/shaders/ps_bd1d09f0_frag.h"
+#include "bbgpu/shaders/ps_c575bc29_frag.h"
+#include "bbgpu/shaders/ps_ca7226ec_frag.h"
+#include "bbgpu/shaders/ps_ccbf44a6_frag.h"
+#include "bbgpu/shaders/ps_dbeccd9c_frag.h"
+#include "bbgpu/shaders/ps_e21e283a_frag.h"
+#include "bbgpu/shaders/ps_e54449c7_frag.h"
+#include "bbgpu/shaders/ps_fbe7c4b6_frag.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -107,7 +166,7 @@ struct NativeShaderCandidate {
     const char* label;
 };
 
-constexpr std::array<NativeShaderCandidate, 37> kNativeRegistry{{
+constexpr std::array<NativeShaderCandidate, 96> kNativeRegistry{{
     {0x000000000f61fd27ull, PS_0F61FD27_VSM_BLUR_FRAG, "ps_0f61fd27_vsm_blur"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_CLDIST_FRAG, "ps_1ae03d75_vsm_moment_cldist"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_NOCLIP_FRAG, "ps_1ae03d75_vsm_moment_noclip"},
@@ -145,6 +204,65 @@ constexpr std::array<NativeShaderCandidate, 37> kNativeRegistry{{
     {0x00000000637500e0ull, VS_637500E0_VERT, "vs_637500e0_godrays"},
     {0x00000000061fbbf6ull, VS_061FBBF6_VERT, "vs_061fbbf6_post_quad"},
     {0x000000001ea5a07eull, VS_1EA5A07E_VERT, "vs_1ea5a07e_tonemap"},
+    {0x00000000370174f7ull, PS_370174F7_FRAG, "ps_370174f7_pbr_1pt"},
+    {0x00000000d22cbfd1ull, PS_D22CBFD1_FRAG, "ps_d22cbfd1_pbr_3pt"},
+    {0x00000000149432ffull, PS_149432FF_FRAG, "ps_149432ff_pbr_4pt"},
+    {0x000000005de04266ull, PS_5DE04266_FRAG, "ps_5de04266_pbr_5pt"},
+    {0x000000003fe9e964ull, PS_3FE9E964_FRAG, "ps_3fe9e964_ibr"},
+    {0x000000002140da2bull, PS_2140DA2B_FRAG, "ps_2140da2b_gbuf6"},
+    {0x00000000dda49e89ull, PS_DDA49E89_FRAG, "ps_dda49e89_light_vol"},
+    {0x0000000002cd8f9bull, PS_02CD8F9B_FRAG, "ps_02cd8f9b_2mrt"},
+    {0x0000000007d07cf3ull, PS_07D07CF3_FRAG, "ps_07d07cf3_pbr_6pt"},
+    {0x000000000b2ace4cull, PS_0B2ACE4C_FRAG, "ps_0b2ace4c_pbr_9pt"},
+    {0x00000000186d69d5ull, PS_186D69D5_FRAG, "ps_186d69d5_pbr_2pt"},
+    {0x00000000201cb43dull, PS_201CB43D_FRAG, "ps_201cb43d_pbr_10pt"},
+    {0x0000000022b357f3ull, PS_22B357F3_FRAG, "ps_22b357f3_pbr_11pt"},
+    {0x000000003105494cull, PS_3105494C_FRAG, "ps_3105494c_pbr_4pt"},
+    {0x0000000031b90cc5ull, PS_31B90CC5_FRAG, "ps_31b90cc5_2mrt"},
+    {0x0000000041d3ce4bull, PS_41D3CE4B_FRAG, "ps_41d3ce4b_2mrt"},
+    {0x0000000044a82ffbull, PS_44A82FFB_FRAG, "ps_44a82ffb_2mrt"},
+    {0x00000000505ebdbeull, PS_505EBDBE_FRAG, "ps_505ebdbe_pbr_10pt"},
+    {0x000000005d7150daull, PS_5D7150DA_FRAG, "ps_5d7150da_pbr_6pt"},
+    {0x000000005f76eb3dull, PS_5F76EB3D_FRAG, "ps_5f76eb3d_pbr_11pt"},
+    {0x00000000600f86b0ull, PS_600F86B0_FRAG, "ps_600f86b0_pbr_2pt"},
+    {0x00000000799bfa32ull, PS_799BFA32_FRAG, "ps_799bfa32_pbr_12pt"},
+    {0x0000000088ae6537ull, PS_88AE6537_FRAG, "ps_88ae6537_2mrt"},
+    {0x00000000896e7242ull, PS_896E7242_FRAG, "ps_896e7242_2mrt"},
+    {0x00000000898dabb3ull, PS_898DABB3_FRAG, "ps_898dabb3_2mrt"},
+    {0x0000000089f9ee3eull, PS_89F9EE3E_FRAG, "ps_89f9ee3e_pbr_3pt"},
+    {0x000000008d5387d9ull, PS_8D5387D9_FRAG, "ps_8d5387d9_pbr_7pt"},
+    {0x000000008ea5be99ull, PS_8EA5BE99_FRAG, "ps_8ea5be99_2mrt"},
+    {0x000000009f9ef267ull, PS_9F9EF267_FRAG, "ps_9f9ef267_pbr_12pt"},
+    {0x00000000b59b4c4eull, PS_B59B4C4E_FRAG, "ps_b59b4c4e_pbr_9pt"},
+    {0x00000000b5b52d63ull, PS_B5B52D63_FRAG, "ps_b5b52d63_2mrt"},
+    {0x00000000c6edb19aull, PS_C6EDB19A_FRAG, "ps_c6edb19a_pbr_8pt"},
+    {0x00000000d729c469ull, PS_D729C469_FRAG, "ps_d729c469_2mrt"},
+    {0x00000000d75fe2ffull, PS_D75FE2FF_FRAG, "ps_d75fe2ff_pbr_5pt"},
+    {0x00000000f2531727ull, PS_F2531727_FRAG, "ps_f2531727_pbr_7pt"},
+    {0x00000000f40da260ull, PS_F40DA260_FRAG, "ps_f40da260_pbr_1pt"},
+    {0x00000000f81596cdull, PS_F81596CD_FRAG, "ps_f81596cd_pbr_8pt"},
+    {0x00000000006c079bull, PS_006C079B_FRAG, "ps_006c079b_csm"},
+    {0x000000004fd8db00ull, PS_4FD8DB00_FRAG, "ps_4fd8db00_zpre"},
+    {0x000000005e4596f4ull, PS_5E4596F4_FRAG, "ps_5e4596f4_1mrt"},
+    {0x000000005e67d866ull, PS_5E67D866_FRAG, "ps_5e67d866_tonemap_hd"},
+    {0x0000000070bb42afull, PS_70BB42AF_FRAG, "ps_70bb42af_gbuf6"},
+    {0x00000000749e4f9eull, PS_749E4F9E_FRAG, "ps_749e4f9e_half"},
+    {0x00000000765450dfull, PS_765450DF_FRAG, "ps_765450df_fog_vol"},
+    {0x000000008650418full, PS_8650418F_FRAG, "ps_8650418f_post"},
+    {0x000000009837d1c8ull, PS_9837D1C8_FRAG, "ps_9837d1c8_depth"},
+    {0x000000009e1cb278ull, PS_9E1CB278_FRAG, "ps_9e1cb278_dof"},
+    {0x00000000a291c498ull, PS_A291C498_FRAG, "ps_a291c498_screen"},
+    {0x00000000a89e01e9ull, PS_A89E01E9_FRAG, "ps_a89e01e9_gbuf6"},
+    {0x00000000ab4e5342ull, PS_AB4E5342_FRAG, "ps_ab4e5342_2mrt"},
+    {0x00000000babda34dull, PS_BABDA34D_FRAG, "ps_babda34d_1mrt"},
+    {0x00000000bd1d09f0ull, PS_BD1D09F0_FRAG, "ps_bd1d09f0_mist"},
+    {0x00000000c575bc29ull, PS_C575BC29_FRAG, "ps_c575bc29_2mrt"},
+    {0x00000000ca7226ecull, PS_CA7226EC_FRAG, "ps_ca7226ec_gbuf6"},
+    {0x00000000ccbf44a6ull, PS_CCBF44A6_FRAG, "ps_ccbf44a6_post"},
+    {0x00000000dbeccd9cull, PS_DBECCD9C_FRAG, "ps_dbeccd9c_gbuf6"},
+    {0x00000000e21e283aull, PS_E21E283A_FRAG, "ps_e21e283a_gbuf6"},
+    {0x00000000e54449c7ull, PS_E54449C7_FRAG, "ps_e54449c7_gbuf6"},
+    {0x00000000fbe7c4b6ull, PS_FBE7C4B6_FRAG, "ps_fbe7c4b6_bloom"},
 }};
 
 struct DescSlot {
@@ -405,11 +523,36 @@ bool ParseEnvFlag(const char* name, bool default_value) noexcept {
     return !(v[0] == '0' && v[1] == '\0');
 }
 
+u32 ParseEnvU32(const char* name, u32 def) noexcept {
+    const char* v = std::getenv(name);
+    if (!v || !*v) {
+        return def;
+    }
+    char* end = nullptr;
+    const unsigned long val = std::strtoul(v, &end, 10);
+    return (end && end != v) ? static_cast<u32>(val) : def;
+}
+
 } // namespace
 
 bool NativeShadersEnabled() noexcept {
     static const bool enabled = ParseEnvFlag("BB_NATIVE_SHADERS", true);
     return enabled;
+}
+
+u32 NativeShadersMinIdx() noexcept {
+    static const u32 min_idx = ParseEnvU32("BB_NATIVE_SHADER_MIN", 0u);
+    return min_idx;
+}
+
+u32 NativeShadersMaxIdx() noexcept {
+    static const u32 max_idx = ParseEnvU32("BB_NATIVE_SHADER_MAX", 95u);
+    return max_idx;
+}
+
+bool NativeShadersCustomRange() noexcept {
+    return NativeShadersMinIdx() != 0u ||
+           NativeShadersMaxIdx() + 1u < static_cast<u32>(kNativeRegistry.size());
 }
 
 bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
@@ -418,9 +561,16 @@ bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
         return false;
     }
 
+    const size_t min_i = std::min<size_t>(NativeShadersMinIdx(), kNativeRegistry.size());
+    const size_t max_i =
+        std::min<size_t>(static_cast<size_t>(NativeShadersMaxIdx()) + 1u, kNativeRegistry.size());
+    if (min_i >= max_i) {
+        return false;
+    }
+
     bool any_hash_match = false;
-    for (const auto& entry : kNativeRegistry) {
-        if (entry.pgm_hash == pgm_hash) {
+    for (size_t idx = min_i; idx < max_i; ++idx) {
+        if (kNativeRegistry[idx].pgm_hash == pgm_hash) {
             any_hash_match = true;
             break;
         }
@@ -434,7 +584,8 @@ bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
         return false;
     }
 
-    for (const auto& entry : kNativeRegistry) {
+    for (size_t idx = min_i; idx < max_i; ++idx) {
+        const auto& entry = kNativeRegistry[idx];
         if (entry.pgm_hash != pgm_hash) {
             continue;
         }

@@ -2,6 +2,7 @@
 #extension GL_EXT_samplerless_texture_functions : require
 #extension GL_EXT_demote_to_helper_invocation : require
 // Native Vulkan 1.3 GLSL Deferred Spot/Point-Light PBR + Cookie/Shadow PS 0x000000000ef50047 (53 draws/frame)
+layout(early_fragment_tests) in;
 
 layout(location = 0) in vec4 fs_in_attr0_p;
 layout(location = 1) in vec4 fs_in_attr1_p;

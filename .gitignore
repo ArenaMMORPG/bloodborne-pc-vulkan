@@ -39,6 +39,8 @@ vkd3d-proton.cache
 perf.data
 *.orig
 /*.spv
-*.png
-*.mp4
-*.zip
+/*.png
+/*.jpg
+/*.mp4
+/*.zip
+!docs/images/*

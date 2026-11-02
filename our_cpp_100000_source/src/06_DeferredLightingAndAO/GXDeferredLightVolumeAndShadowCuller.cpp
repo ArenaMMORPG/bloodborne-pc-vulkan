@@ -2229,7 +2229,7 @@ void sub_2291c30(void* pSelf, const void* pCameraDesc) {
 
     __m128 hi01 = _mm_unpackhi_ps(invCamCols[0], invCamCols[1]);
     __m128 sh0 = _mm_shuffle_ps(hi01, invCamCols[2], 0x24);
-    __m128 hl = _mm_movehl_ps(invCamCols[3], sh0);
+    __m128 hl = _mm_movehl_ps(sh0, invCamCols[3]);
     __m128 camAxisZ = _mm_shuffle_ps(sh0, hl, 0x24);
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x130), camAxisZ);
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x120), camAxisZ);
