@@ -548,15 +548,24 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     begin_memo.valid = false;
     RenderState state = BeginRenderingFull(pipeline);
     if (memo_on && !attachment_feedback_loop) {
-        // (is_clear of the depth attachment shares its bytes with has_depth.)
-        bool clears = state.depth_stencil_attachment.depth_clear ||
-                      state.depth_stencil_attachment.stencil_clear;
-        for (u32 i = 0; i < state.num_color_attachments; ++i) {
-            clears |= state.color_attachments[i].is_clear != 0;
-        }
-        if (!clears) {
+        const auto& regs = Regs();
+        const bool reg_clear = regs.depth_render_control.depth_clear_enable ||
+                               regs.depth_render_control.stencil_clear_enable;
+        const bool depth_layout_shifted =
+            (state.depth_stencil_attachment.depth_clear && !db_desc.second.view_info.is_storage) ||
+            (state.depth_stencil_attachment.stencil_clear && !db_desc.second.view_info.is_storage &&
+             !regs.WritesStencil());
+        if (!reg_clear && !depth_layout_shifted) {
+            RenderState memo_state = state;
+            for (u32 i = 0; i < memo_state.num_color_attachments; ++i) {
+                memo_state.color_attachments[i].is_clear = 0;
+                memo_state.color_attachments[i].clear_value = {};
+            }
+            memo_state.depth_stencil_attachment.depth_clear = false;
+            memo_state.depth_stencil_attachment.stencil_clear = false;
+            memo_state.depth_stencil_attachment.clear_value = {};
             // Recomputed after the full path: it may have started the scene (scene_started).
-            begin_memo = {true, MakeBeginSignature(pipeline), state, push_data.scene_size,
+            begin_memo = {true, MakeBeginSignature(pipeline), memo_state, push_data.scene_size,
                           target_scale, ui_placement};
         }
     }

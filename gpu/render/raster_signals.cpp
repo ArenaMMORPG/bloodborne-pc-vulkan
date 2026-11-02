@@ -141,6 +141,7 @@ bool Rasterizer::WriteGuestMemory(VAddr address, const void* data, u32 size) {
     if (!VideoCore::GuestInPlace() || size == 0 || (address | size) % 4 != 0) {
         return false;
     }
+    InvalidateGdsMirrorRange(address, size);
     const auto [buffer, offset] = buffer_cache.ObtainBuffer(address, size, true);
     if (!buffer_cache.IsInPlace(address, size)) {
         return false;
@@ -157,6 +158,7 @@ bool Rasterizer::WriteDataOnGpu(VAddr address, const void* data, u32 size) {
     if (!enabled || size == 0 || (address | size) % 4 != 0) {
         return false;
     }
+    InvalidateGdsMirrorRange(address, size);
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (n1_native_bufs && !VideoCore::GuestInPlace() && !VideoCore::BufferCache::LayerActive()) {

@@ -87,6 +87,7 @@ bool Pipelined(Op op) {
     case Op::DrawIndexIndirectCountMulti:
     case Op::DispatchIndirect:
     case Op::WriteData: // in order on the recording thread
+    case Op::CopyData:
     case Op::DmaData:
         return true;
     default:

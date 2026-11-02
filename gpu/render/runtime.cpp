@@ -148,7 +148,9 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size
         pending_writes |= access & WriteAccesses;
     }
     if (access & ReadAccesses) {
-        if (!BbToggle::Disabled(BbToggle::CoarseReadTracking)) {
+        static const bool exact_reads =
+            gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
+        if (!exact_reads && !BbToggle::Disabled(BbToggle::CoarseReadTracking)) {
             first &= ~u64{0xFFF};
             last |= 0xFFF;
         }

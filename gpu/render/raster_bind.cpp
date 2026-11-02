@@ -1118,6 +1118,9 @@ void Rasterizer::BindSpecialBuffer(const Shader::BufferResource& desc, const Sha
                                    u32 slot, u64 alignment) {
     switch (desc.buffer_type) {
     case Shader::BufferType::GdsBuffer: {
+        if (desc.is_written) {
+            InvalidateGdsMirror();
+        }
         const auto* gds = buffer_cache.GetGdsBuffer();
         buffer_infos.emplace_back(gds->Handle(), 0, gds->SizeBytes());
         needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes(), desc.is_written);
@@ -1215,6 +1218,9 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     if (address == 0 || vsharp.GetSize() == 0) {
         buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
         return;
+    }
+    if (desc.is_written) {
+        InvalidateGdsMirrorRange(address, vsharp.GetSize());
     }
     if (Shader::IsPagedBuffer(VideoCore::BufferCache::LayerPagedActive(), vsharp, stage.pgm_hash,
                               Game::BufferCopyShader())) {

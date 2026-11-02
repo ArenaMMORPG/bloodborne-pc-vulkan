@@ -50,6 +50,7 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
     for (const auto& desc : info.buffers) {
         if (!desc.IsSpecial() && desc.is_written &&
             texture_cache.ClearMeta(desc.GetSharp(info).base_address)) {
+            begin_memo.valid = false;
             return true; // all slices taken as cleared
         }
     }

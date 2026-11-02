@@ -2266,6 +2266,7 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
 void Rasterizer::NoteFrameStart() {
     tls_draws_in_frame = 0;
     tls_mid_frame_flushed = false;
+    InvalidateGdsMirror();
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);
     }

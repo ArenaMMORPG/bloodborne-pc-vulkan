@@ -497,6 +497,21 @@ private:
         UiPlacement ui_placement;
     } begin_memo;
     u64 begin_memo_hits = 0, begin_memo_misses = 0;
+    std::array<VAddr, 16> gds_dword_mirror{};
+    void InvalidateGdsMirror() noexcept {
+        gds_dword_mirror.fill(0);
+    }
+    void InvalidateGdsMirrorRange(VAddr addr, u64 size) noexcept {
+        if (!addr || size == 0) {
+            return;
+        }
+        const VAddr end = addr + size;
+        for (VAddr& m : gds_dword_mirror) {
+            if (m != 0 && addr < m + 4 && m < end) {
+                m = 0;
+            }
+        }
+    }
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();

@@ -44,8 +44,17 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
                "FillBuffer address and size must be a multiple of 4 bytes");
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
-    if (!is_gds) {
-        texture_cache.ClearMeta(address);
+    if (is_gds) {
+        const u64 first_dw = address / 4;
+        const u64 end_dw = (address + num_bytes + 3) / 4;
+        for (u64 dw = first_dw; dw < end_dw && dw < gds_dword_mirror.size(); ++dw) {
+            gds_dword_mirror[dw] = 0;
+        }
+    } else {
+        InvalidateGdsMirrorRange(address, num_bytes);
+        if (texture_cache.ClearMeta(address)) {
+            begin_memo.valid = false;
+        }
         if (n1_native_bufs && !VideoCore::GuestInPlace() &&
             !VideoCore::BufferCache::LayerActive()) {
             const auto [nat_buf, nat_off] =
@@ -82,6 +91,29 @@ bool Rasterizer::DmaMayWriteOnCpu(VAddr dst, u32 num_bytes) {
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
     DrainDrawPipe();
+    if (dst_gds && !src_gds) {
+        if (num_bytes == 4 && (dst % 4) == 0 && (dst / 4) < gds_dword_mirror.size() && src != 0) {
+            if (gds_dword_mirror[dst / 4] == src) {
+                return;
+            }
+            gds_dword_mirror[dst / 4] = src;
+        } else {
+            const u64 first_dw = dst / 4;
+            const u64 end_dw = (dst + num_bytes + 3) / 4;
+            for (u64 dw = first_dw; dw < end_dw && dw < gds_dword_mirror.size(); ++dw) {
+                gds_dword_mirror[dw] = 0;
+            }
+        }
+    } else if (!dst_gds && src_gds) {
+        InvalidateGdsMirrorRange(dst, num_bytes);
+        if (num_bytes == 4 && (src % 4) == 0 && (src / 4) < gds_dword_mirror.size() && dst != 0) {
+            gds_dword_mirror[src / 4] = dst;
+        }
+    } else if (!dst_gds && !src_gds) {
+        InvalidateGdsMirrorRange(dst, num_bytes);
+    } else {
+        InvalidateGdsMirror();
+    }
     if (HasPendingHleCopies() &&
         ((!dst_gds && PendingHleCopiesConflict(dst, num_bytes, true)) ||
          (!src_gds && PendingHleCopiesConflict(src, num_bytes, false)))) {
@@ -164,6 +196,11 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
 void Rasterizer::DirectCopyBuffers(std::span<const DirectCopyRegion> regions) {
     if (regions.empty()) {
         return;
+    }
+    for (const auto& reg : regions) {
+        if (reg.byte_size != 0 && reg.dst_va != 0) {
+            InvalidateGdsMirrorRange(reg.dst_va, reg.byte_size);
+        }
     }
     if (HasPendingHleCopies()) {
         for (const auto& reg : regions) {
@@ -623,12 +660,14 @@ void Rasterizer::DirectFillBuffer(VAddr dst, u32 num_bytes, u32 value) {
     if (!dst || num_bytes == 0 || ((dst | num_bytes) % 4) != 0) {
         return;
     }
+    InvalidateGdsMirrorRange(dst, num_bytes);
     if (HasPendingHleCopies() && PendingHleCopiesConflict(dst, num_bytes, true)) {
         FlushPendingHleCopies(*this);
     }
 
     // 1. Metadata (CMASK / HTILE) fast clear: updates tracked state without touching buffers.
     if (texture_cache.ClearMeta(dst)) {
+        begin_memo.valid = false;
         direct_buffers.OnGpuWrite(dst, num_bytes);
         return;
     }
@@ -1396,6 +1435,7 @@ u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {
 
 bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
     DrainDrawPipe();
+    InvalidateGdsMirrorRange(addr, size);
     if (!IsMapped(addr, size)) {
         return false; // the GPU does not use it
     }
@@ -1413,6 +1453,7 @@ void Rasterizer::NoteAssetWrite(VAddr addr, u64 size) {
 }
 
 void Rasterizer::InvalidateAfterWrite(VAddr addr, u64 size) {
+    InvalidateGdsMirrorRange(addr, size);
     if (VideoCore::WriteTracking() || !buffer_cache.IsRegionGpuModified(addr, size)) {
         InvalidateMemory(addr, size);
         return;
@@ -1429,6 +1470,7 @@ void Rasterizer::InvalidateAfterWrite(VAddr addr, u64 size) {
 }
 
 void Rasterizer::NoteCommandWrite(VAddr addr, const void* data, u64 size, bool recording_thread) {
+    InvalidateGdsMirrorRange(addr, size);
     if (VideoCore::WriteTracking() || !IsMapped(addr, size)) {
         return; // tracking catches it, or the GPU does not use it
     }

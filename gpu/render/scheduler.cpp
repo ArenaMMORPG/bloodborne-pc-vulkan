@@ -186,6 +186,13 @@ void Scheduler::BeginRendering(const RenderState& state, u8 color_dont_care_mask
     is_rendering = true;
     ++descriptor_state_epoch;
     render_state = state;
+    for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
+        render_state.color_attachments[i].is_clear = 0;
+        render_state.color_attachments[i].clear_value = {};
+    }
+    render_state.depth_stencil_attachment.depth_clear = false;
+    render_state.depth_stencil_attachment.stencil_clear = false;
+    render_state.depth_stencil_attachment.clear_value = {};
 
     // Owned by the recorded closure (it may run later, on a recording thread).
     struct Pass {
