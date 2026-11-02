@@ -582,7 +582,9 @@ int PointerWanted() {
     static bool was = false;
     if (menu != was) {
         was = menu;
-        std::printf("Menu pointer: %s\n", menu ? "a game menu is open (pointer)" : "menus closed");
+        if (log) {
+            std::printf("Menu pointer: %s\n", menu ? "a game menu is open (pointer)" : "menus closed");
+        }
     }
     return menu ? 1 : 0;
 }

@@ -974,7 +974,11 @@ void CGShaderResourceBinderGnm_SetCsShader_Direct(
         st.dirty_other_mask |= 0x80000000ULL;
         st.dirty_cmd_mask   |= st.other_dep_masks[31];
     }
-    reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x1075840ULL))(gnmx_gfxc, cs_hdr->gnm_shader_object + 8);
+    if (gx_direct_vk::DirectShaderBindEnabled()) {
+        gx_direct_vk::EmitBindCsShader(gnmx_gfxc, cs_hdr->gnm_shader_object + 8, 0u);
+    } else {
+        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x1075840ULL))(gnmx_gfxc, cs_hdr->gnm_shader_object + 8);
+    }
     st.bound_shader_hdr = reinterpret_cast<const CGShaderBindingHeaderGnm*>(-1ULL);
 }
 
@@ -991,7 +995,11 @@ void CGShaderResourceBinderGnm_Reset(CGShaderResourceBinderGnm* self, uint8_t* g
         gnmx_ctx_wrapper[0x38] &= 0xFDu;
         self->active_pipeline_type = 0u;
     }
-    reinterpret_cast<void(*)(void*)>(GX_VMA(0x26bb6c0ULL))(gnmx_ctx);
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::EmitInitDefaultHardwareState(gnmx_ctx, 3u);
+    } else {
+        reinterpret_cast<void(*)(void*)>(GX_VMA(0x26bb6c0ULL))(gnmx_ctx);
+    }
 
     self->index_size_cached      = 0xFFFFFFFFu;
     self->active_pipeline_type   = 0xFFFFFFFFu;
@@ -1142,7 +1150,11 @@ void CGShaderResourceBinderGnm_BindAndFlushComputeStage(
             st.dirty_other_mask |= 0x80000000ULL;
             st.dirty_cmd_mask   |= st.other_dep_masks[31];
         }
-        reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x1075840ULL))(gnmx_ctx, cs_hdr->gnm_shader_object + 8);
+        if (gx_direct_vk::DirectShaderBindEnabled()) {
+            gx_direct_vk::EmitBindCsShader(gnmx_ctx, cs_hdr->gnm_shader_object + 8, 0u);
+        } else {
+            reinterpret_cast<void(*)(void*, void*)>(GX_VMA(0x1075840ULL))(gnmx_ctx, cs_hdr->gnm_shader_object + 8);
+        }
         if (!gx_direct_vk::EnabledV2Sub(gx_direct_vk::kV2Sub_SkipShaderPrefetch)) {
             const uint32_t prefetch_size = (*reinterpret_cast<const uint32_t*>(cs_hdr->gnm_shader_object)) & 0x7FFFFFu;
             reinterpret_cast<void(*)(void*, void*, uint32_t)>(GX_VMA(0x1073f50ULL))(
@@ -1334,11 +1346,20 @@ void CGShaderResourceBinderGnm_PostDrawSyncAndResetStreamout(
     self->pending_cache_sync_flags = 0;
 
     void* gnmx_ctx = gnmx_ctx_wrapper + 0x10;
+    const bool direct_ring = gx_direct_vk::DirectRingEnabled();
     if (self->streamout_buffer_mask != 0xFFu) {
-        reinterpret_cast<void(*)(void*, uint32_t, uint32_t)>(GX_VMA(0x1075960ULL))(gnmx_ctx, 0xFFu, 0u);
+        if (direct_ring) {
+            gx_direct_vk::EmitSetVgtControl(gnmx_ctx, 0xFFu, 0u);
+        } else {
+            reinterpret_cast<void(*)(void*, uint32_t, uint32_t)>(GX_VMA(0x1075960ULL))(gnmx_ctx, 0xFFu, 0u);
+        }
     }
     if (self->bound_streamout_shader != nullptr) {
-        reinterpret_cast<void(*)(void*, uint64_t, uint32_t)>(GX_VMA(0x10756b0ULL))(gnmx_ctx, 0ULL, 0u);
+        if (direct_ring) {
+            gx_direct_vk::EmitSetGsOnChipControl(gnmx_ctx, 0ULL, 0u);
+        } else {
+            reinterpret_cast<void(*)(void*, uint64_t, uint32_t)>(GX_VMA(0x10756b0ULL))(gnmx_ctx, 0ULL, 0u);
+        }
     }
 }
 
@@ -1669,14 +1690,18 @@ inline void ConfigureTessellationStagesAndRings(
     ls_regs[1] = *reinterpret_cast<const uint64_t*>(ls_obj + 0x10);
     reinterpret_cast<void(*)(void*, const void*, uint32_t, uint32_t)>(GX_VMA(0x1087cf0ULL))(
         ls_regs, hs_obj + 0x24, *reinterpret_cast<const uint32_t*>(ls_obj + 0x1c), clamped_patches);
-    reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x10757d0ULL))(
-        gnmx_ctx, ls_regs, ls_modifier);
-
     uint64_t hs_vgt_regs[2] = {0ULL, 0ULL};
     reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1087e30ULL))(
         hs_vgt_regs, hs_obj + 0x24, clamped_patches);
-    reinterpret_cast<void(*)(void*, const void*, const void*)>(GX_VMA(0x10755d0ULL))(
-        gnmx_ctx, hs_obj + 0x08, hs_vgt_regs);
+    if (gx_direct_vk::DirectShaderBindEnabled()) {
+        gx_direct_vk::EmitBindLsShader(gnmx_ctx, ls_regs, ls_modifier);
+        gx_direct_vk::EmitBindHsShader(gnmx_ctx, hs_obj + 0x08, hs_vgt_regs);
+    } else {
+        reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x10757d0ULL))(
+            gnmx_ctx, ls_regs, ls_modifier);
+        reinterpret_cast<void(*)(void*, const void*, const void*)>(GX_VMA(0x10755d0ULL))(
+            gnmx_ctx, hs_obj + 0x08, hs_vgt_regs);
+    }
 }
 
 inline void ConfigureGsStagesAndRings(
@@ -1704,10 +1729,15 @@ inline void ConfigureGsStagesAndRings(
         self->allocated_global_table_gpu = nullptr;
     }
 
-    reinterpret_cast<void(*)(void*, uint32_t)>(GX_VMA(0x1075a90ULL))(
-        gnmx_ctx, *reinterpret_cast<const uint32_t*>(es_obj + 0x1c));
-    reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075af0ULL))(
-        gnmx_ctx, gs_ring_info, gs_ring_mask);
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::EmitSetEsGsAndGsVsRings(
+            gnmx_ctx, *reinterpret_cast<const uint32_t*>(es_obj + 0x1c), gs_ring_info, gs_ring_mask);
+    } else {
+        reinterpret_cast<void(*)(void*, uint32_t)>(GX_VMA(0x1075a90ULL))(
+            gnmx_ctx, *reinterpret_cast<const uint32_t*>(es_obj + 0x1c));
+        reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075af0ULL))(
+            gnmx_ctx, gs_ring_info, gs_ring_mask);
+    }
 
     *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(self) + 0x10) = 0x180003u;
     *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(self) + 0x14) =
@@ -1758,14 +1788,16 @@ inline void ConfigureGsStagesAndRings(
         }
     }
 
-    reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075560ULL))(
-        gnmx_ctx, es_obj + 0x08, es_modifier);
-    reinterpret_cast<void(*)(void*, const void*)>(GX_VMA(0x10759d0ULL))(
-        gnmx_ctx, gs_obj + 0x08);
     const uint32_t gs_reg_count = gs_obj[0x03];
     if (gx_direct_vk::DirectShaderBindEnabled()) {
+        gx_direct_vk::EmitBindEsShader(gnmx_ctx, es_obj + 0x08, es_modifier);
+        gx_direct_vk::EmitBindGsShader(gnmx_ctx, gs_obj + 0x08);
         gx_direct_vk::EmitBindVsShader(gnmx_ctx, gs_obj + gs_reg_count * 4 + 0x40, 0u);
     } else {
+        reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075560ULL))(
+            gnmx_ctx, es_obj + 0x08, es_modifier);
+        reinterpret_cast<void(*)(void*, const void*)>(GX_VMA(0x10759d0ULL))(
+            gnmx_ctx, gs_obj + 0x08);
         reinterpret_cast<void(*)(void*, const void*, uint32_t)>(GX_VMA(0x1075480ULL))(
             gnmx_ctx, gs_obj + gs_reg_count * 4 + 0x40, 0u);
     }
@@ -2162,17 +2194,29 @@ void CGShaderResourceBinderGnm_BindAndFlushGraphicsPipeline(
     }
 
     // Epilogue (0x26cb6ee .. 0x26cb738): VGT control, GS on-chip control, and render target / depth state flush
+    const bool direct_ring = gx_direct_vk::DirectRingEnabled();
     if (self->streamout_buffer_mask != 0xFFu) {
-        reinterpret_cast<void(*)(void*, uint32_t, uint32_t)>(GX_VMA(0x1075960ULL))(
-            gnmx_ctx,
-            reinterpret_cast<const uint8_t*>(self)[0x08],
-            reinterpret_cast<const uint8_t*>(self)[0x09]);
+        if (direct_ring) {
+            gx_direct_vk::EmitSetVgtControl(
+                gnmx_ctx,
+                reinterpret_cast<const uint8_t*>(self)[0x08],
+                reinterpret_cast<const uint8_t*>(self)[0x09]);
+        } else {
+            reinterpret_cast<void(*)(void*, uint32_t, uint32_t)>(GX_VMA(0x1075960ULL))(
+                gnmx_ctx,
+                reinterpret_cast<const uint8_t*>(self)[0x08],
+                reinterpret_cast<const uint8_t*>(self)[0x09]);
+        }
     }
     const uint64_t gs_onchip_qword = *reinterpret_cast<const uint64_t*>(reinterpret_cast<const uint8_t*>(self) + 0x10);
     if (gs_onchip_qword != 0ULL) {
         const uint32_t gs_prims = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(self) + 0x14);
-        reinterpret_cast<void(*)(void*, uint64_t, uint32_t)>(GX_VMA(0x10756b0ULL))(
-            gnmx_ctx, gs_onchip_qword, gs_prims);
+        if (direct_ring) {
+            gx_direct_vk::EmitSetGsOnChipControl(gnmx_ctx, gs_onchip_qword, gs_prims);
+        } else {
+            reinterpret_cast<void(*)(void*, uint64_t, uint32_t)>(GX_VMA(0x10756b0ULL))(
+                gnmx_ctx, gs_onchip_qword, gs_prims);
+        }
     }
     reinterpret_cast<void(*)(void*, void*, const void*)>(GX_VMA(0x26d2790ULL))(
         gnmx_ctx_wrapper + 0xb558, gnmx_ctx_wrapper, pipeline_state);

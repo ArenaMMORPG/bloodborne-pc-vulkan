@@ -1032,6 +1032,7 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
     bool has_nan_or_inf_op = false;
     bool has_dynamic_legacy_mul = false;
     bool has_bitcast_nonfinite_src = false;
+    bool has_inf_bit_mask_const = false;
     bool any_safe_rsq = false;
 
     for (size_t pos = 5; pos < in.size();) {
@@ -1105,6 +1106,9 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
                 } else if (is_int32_type[in[pos + 1]]) {
                     has_int32_const[in[pos + 2]] = 1u;
                     int32_const_val[in[pos + 2]] = in[pos + 3];
+                    if (in[pos + 3] == 0x7f800000u) {
+                        has_inf_bit_mask_const = true;
+                    }
                 }
             }
             break;
@@ -1288,7 +1292,8 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
 
     std::vector<u32> safe_rsq_id(bound, 0u);
     const bool strip_inf_nan =
-        !has_nan_or_inf_op && !has_dynamic_legacy_mul && !has_bitcast_nonfinite_src;
+        !has_nan_or_inf_op && !has_dynamic_legacy_mul &&
+        !(has_bitcast_nonfinite_src && has_inf_bit_mask_const);
 
     out.clear();
     out.reserve(in.size() + 128);

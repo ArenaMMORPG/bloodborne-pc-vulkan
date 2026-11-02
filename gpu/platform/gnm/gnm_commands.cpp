@@ -69,10 +69,33 @@ u32 ApplyModifier(u32 rsrc1, u32 modifier, u32 allowed) {
     return modifier == 0 ? rsrc1 : (rsrc1 & allowed) | modifier;
 }
 
-u32 HwInit(u32* cmdbuf, u32 size, std::span<const u32> state) {
+bool DirectShaderBindEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_DIRECT_SHADER_BIND");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
+bool DirectRingEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_DIRECT_RING");
+        return !(env && env[0] == '0');
+    }();
+    return enabled && DirectShaderBindEnabled();
+}
+
+u32 HwInit(u32* cmdbuf, u32 size, std::span<const u32> state, u32 gen) {
     Observe observe{cmdbuf, std::min(size, InitState::HwInitWords)};
     if (size < InitState::HwInitWords) {
         return 0;
+    }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::InitDefaultHardwareState) | (gen << 16);
+        PadTo(cmdbuf + 3, cmdbuf + InitState::HwInitWords);
+        return InitState::HwInitWords;
     }
     u32* at = std::copy(InitState::ClearAndSync.begin(), InitState::ClearAndSync.end(), cmdbuf);
     at = std::copy(state.begin(), state.end(), at);
@@ -152,6 +175,13 @@ u32 PS4_SYSV_ABI sceGnmDispatchInitDefaultHardwareState(u32* cmdbuf, u32 size) {
     Observe observe{cmdbuf, std::min(size, InitState::HwInitWords)};
     if (size < InitState::HwInitWords) {
         return 0;
+    }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::InitDefaultHardwareState) | (6u << 16);
+        PadTo(cmdbuf + 3, cmdbuf + InitState::HwInitWords);
+        return InitState::HwInitWords;
     }
     u32* at = EmitShCompute(cmdbuf, 0x216, 0xFFFFFFFFu); // COMPUTE_STATIC_THREAD_MGMT_SE0
     at = EmitShCompute(at, 0x217, 0xFFFFFFFFu);          // COMPUTE_STATIC_THREAD_MGMT_SE1
@@ -276,21 +306,28 @@ s32 PS4_SYSV_ABI sceGnmDrawIndirectMulti(u32* cmdbuf, u32 size, u32 data_offset,
 }
 
 u32 PS4_SYSV_ABI sceGnmDrawInitDefaultHardwareState(u32* cmdbuf, u32 size) {
-    return HwInit(cmdbuf, size, InitState::HwBase);
+    return HwInit(cmdbuf, size, InitState::HwBase, 0u);
 }
 u32 PS4_SYSV_ABI sceGnmDrawInitDefaultHardwareState175(u32* cmdbuf, u32 size) {
-    return HwInit(cmdbuf, size, InitState::Hw175);
+    return HwInit(cmdbuf, size, InitState::Hw175, 1u);
 }
 u32 PS4_SYSV_ABI sceGnmDrawInitDefaultHardwareState200(u32* cmdbuf, u32 size) {
-    return HwInit(cmdbuf, size, InitState::Hw200);
+    return HwInit(cmdbuf, size, InitState::Hw200, 2u);
 }
 u32 PS4_SYSV_ABI sceGnmDrawInitDefaultHardwareState350(u32* cmdbuf, u32 size) {
-    return HwInit(cmdbuf, size, InitState::Hw350);
+    return HwInit(cmdbuf, size, InitState::Hw350, 3u);
 }
 
 u32 PS4_SYSV_ABI sceGnmDrawInitToDefaultContextState(u32* cmdbuf, u32 size) {
     if (size != InitState::ContextWords) {
         return 0;
+    }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::InitDefaultHardwareState) | (4u << 16);
+        PadTo(cmdbuf + 3, cmdbuf + InitState::ContextWords);
+        return InitState::ContextWords;
     }
     u32* at = std::copy(InitState::Context.begin(), InitState::Context.end(), cmdbuf);
     PadTo(at, cmdbuf + InitState::ContextWords);
@@ -300,6 +337,13 @@ u32 PS4_SYSV_ABI sceGnmDrawInitToDefaultContextState(u32* cmdbuf, u32 size) {
 u32 PS4_SYSV_ABI sceGnmDrawInitToDefaultContextState400(u32* cmdbuf, u32 size) {
     if (size != InitState::Context400Words) {
         return 0;
+    }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::InitDefaultHardwareState) | (5u << 16);
+        PadTo(cmdbuf + 3, cmdbuf + InitState::Context400Words);
+        return InitState::Context400Words;
     }
     u32* at = std::copy(InitState::Context400.begin(), InitState::Context400.end(), cmdbuf);
     PadTo(at, cmdbuf + InitState::Context400Words);
@@ -380,6 +424,12 @@ s32 PS4_SYSV_ABI sceGnmResetVgtControl(u32* cmdbuf, u32 size) {
     if (!cmdbuf || size != 3) {
         return -1;
     }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::SetVgtControl) | (0xFFu << 16);
+        return BbErr::Ok;
+    }
     EmitCtx(cmdbuf, 0x2AA, 0xFFu); // IA_MULTI_VGT_PARAM
     return BbErr::Ok;
 }
@@ -389,6 +439,14 @@ s32 PS4_SYSV_ABI sceGnmSetVgtControl(u32* cmdbuf, u32 size, u32 prim_group_sz_mi
     if (!cmdbuf || size != 3 || prim_group_sz_minus_one >= 0x100 ||
         (wd_switch_only_on_eop_mode | partial_vs_wave_mode) >= 2) {
         return -1;
+    }
+    if (DirectRingEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 2);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::SetVgtControl) |
+                    ((prim_group_sz_minus_one & 0xFFu) << 16) |
+                    ((partial_vs_wave_mode & 1u) << 24);
+        return BbErr::Ok;
     }
     EmitCtx(cmdbuf, 0x2AA, ((partial_vs_wave_mode & 1) << 16) | (prim_group_sz_minus_one & 0xFFFF));
     return BbErr::Ok;
@@ -408,6 +466,20 @@ s32 PS4_SYSV_ABI sceGnmSetCsShaderWithModifier(u32* cmdbuf, u32 size, const u32*
     if (!cmdbuf || size <= 0x18 || (modifier & 0xFFFFFC3F) != 0 || !CheckRegs(cs_regs)) {
         return -1;
     }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 9);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindCsShader);
+        cmdbuf[3] = cs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = ApplyModifier(cs_regs[2], modifier, 0xFFFFFC3F);
+        cmdbuf[6] = cs_regs[3];
+        cmdbuf[7] = cs_regs[4];
+        cmdbuf[8] = cs_regs[5];
+        cmdbuf[9] = cs_regs[6];
+        PadTo(cmdbuf + 10, cmdbuf + 25);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0x20C, cs_regs[0], 0u); // COMPUTE_PGM_LO/HI
     at = EmitSh(at, 0x212, ApplyModifier(cs_regs[2], modifier, 0xFFFFFC3F),
                 cs_regs[3]);                               // COMPUTE_PGM_RSRC1/2
@@ -421,6 +493,17 @@ s32 PS4_SYSV_ABI sceGnmSetEsShader(u32* cmdbuf, u32 size, const u32* es_regs, u3
     if (!cmdbuf || size < 0x14 || (es_regs && (modifier & 0xFCFFFC3F)) || !CheckRegs(es_regs)) {
         return -1;
     }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 6);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindEsShader);
+        cmdbuf[3] = es_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = ApplyModifier(es_regs[2], modifier, 0xFCFFFC3F);
+        cmdbuf[6] = es_regs[3];
+        PadTo(cmdbuf + 7, cmdbuf + 20);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0xC8, es_regs[0], 0u); // SPI_SHADER_PGM_LO/HI_ES
     at = EmitSh(at, 0xCA, ApplyModifier(es_regs[2], modifier, 0xFCFFFC3F), es_regs[3]);
     EmitPadding(at, 11);
@@ -431,6 +514,20 @@ s32 PS4_SYSV_ABI sceGnmSetGsShader(u32* cmdbuf, u32 size, const u32* gs_regs) {
     Observe observe{cmdbuf, size};
     if (!cmdbuf || size < 0x1D || !CheckRegs(gs_regs)) {
         return -1;
+    }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 9);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindGsShader);
+        cmdbuf[3] = gs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = gs_regs[2];
+        cmdbuf[6] = gs_regs[3];
+        cmdbuf[7] = gs_regs[4];
+        cmdbuf[8] = gs_regs[5];
+        cmdbuf[9] = gs_regs[6];
+        PadTo(cmdbuf + 10, cmdbuf + 29);
+        return BbErr::Ok;
     }
     u32* at = EmitSh(cmdbuf, 0x88, gs_regs[0], 0u); // SPI_SHADER_PGM_LO/HI_GS
     at = EmitSh(at, 0x8A, gs_regs[2], gs_regs[3]);
@@ -446,6 +543,20 @@ s32 PS4_SYSV_ABI sceGnmUpdateGsShader(u32* cmdbuf, u32 size, const u32* gs_regs)
     if (!cmdbuf || size < 0x1D || !CheckRegs(gs_regs)) {
         return -1;
     }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 9);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindGsShader) | (1u << 18);
+        cmdbuf[3] = gs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = gs_regs[2];
+        cmdbuf[6] = gs_regs[3];
+        cmdbuf[7] = gs_regs[4];
+        cmdbuf[8] = gs_regs[5];
+        cmdbuf[9] = gs_regs[6];
+        PadTo(cmdbuf + 10, cmdbuf + 29);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0x88, gs_regs[0], 0u);
     at = EmitSh(at, 0x8A, gs_regs[2], gs_regs[3]);
     at = EmitUpdate(at, 0x2E5, gs_regs[4]);
@@ -460,6 +571,21 @@ s32 PS4_SYSV_ABI sceGnmSetHsShader(u32* cmdbuf, u32 size, const u32* hs_regs, u3
     if (!cmdbuf || size < 0x1E || !CheckRegs(hs_regs)) {
         return -1;
     }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 10);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindHsShader);
+        cmdbuf[3] = hs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = hs_regs[2];
+        cmdbuf[6] = hs_regs[3];
+        cmdbuf[7] = hs_regs[4];
+        cmdbuf[8] = hs_regs[5];
+        cmdbuf[9] = hs_regs[6];
+        cmdbuf[10] = ls_hs_config;
+        PadTo(cmdbuf + 11, cmdbuf + 30);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0x108, hs_regs[0], 0u); // SPI_SHADER_PGM_LO/HI_HS
     at = EmitSh(at, 0x10A, hs_regs[2], hs_regs[3]);
     at = EmitCtx(at, 0x286, hs_regs[5], hs_regs[6]); // VGT_HOS_MAX/MIN_TESS_LEVEL
@@ -472,6 +598,21 @@ s32 PS4_SYSV_ABI sceGnmSetHsShader(u32* cmdbuf, u32 size, const u32* hs_regs, u3
 s32 PS4_SYSV_ABI sceGnmUpdateHsShader(u32* cmdbuf, u32 size, const u32* hs_regs, u32 ls_hs_config) {
     if (!cmdbuf || size <= 0x1C || !CheckRegs(hs_regs)) {
         return -1;
+    }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 10);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindHsShader) | (1u << 18);
+        cmdbuf[3] = hs_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = hs_regs[2];
+        cmdbuf[6] = hs_regs[3];
+        cmdbuf[7] = hs_regs[4];
+        cmdbuf[8] = hs_regs[5];
+        cmdbuf[9] = hs_regs[6];
+        cmdbuf[10] = ls_hs_config;
+        PadTo(cmdbuf + 11, cmdbuf + size);
+        return BbErr::Ok;
     }
     u32* at = EmitSh(cmdbuf, 0x108, hs_regs[0], 0u);
     at = EmitSh(at, 0x10A, hs_regs[2], hs_regs[3]);
@@ -492,6 +633,17 @@ s32 PS4_SYSV_ABI sceGnmSetLsShader(u32* cmdbuf, u32 size, const u32* ls_regs, u3
     if ((ls_regs && (modifier & allowed) != 0) || !CheckRegs(ls_regs)) {
         return -1;
     }
+    if (DirectShaderBindEnabled()) {
+        cmdbuf[0] = Header(Op::Nop, 6);
+        cmdbuf[1] = BbCp::NopPayload::DirectVulkan;
+        cmdbuf[2] = u32(BbCp::DirectVk::Op::BindLsShader);
+        cmdbuf[3] = ls_regs[0];
+        cmdbuf[4] = 0u;
+        cmdbuf[5] = ApplyModifier(ls_regs[2], modifier, allowed);
+        cmdbuf[6] = ls_regs[3];
+        PadTo(cmdbuf + 7, cmdbuf + 23);
+        return BbErr::Ok;
+    }
     u32* at = EmitSh(cmdbuf, 0x148, ls_regs[0], 0u); // SPI_SHADER_PGM_LO/HI_LS
     at = EmitSh(at, 0x14B, ls_regs[3]);              // SPI_SHADER_PGM_RSRC2_LS
     at = EmitSh(at, 0x14A, ApplyModifier(ls_regs[2], modifier, allowed), ls_regs[3]);
@@ -500,14 +652,6 @@ s32 PS4_SYSV_ABI sceGnmSetLsShader(u32* cmdbuf, u32 size, const u32* ls_regs, u3
 }
 
 namespace {
-
-bool DirectShaderBindEnabled() {
-    static const bool enabled = [] {
-        const char* env = std::getenv("BB_DIRECT_SHADER_BIND");
-        return !(env && env[0] == '0');
-    }();
-    return enabled;
-}
 
 /// The pixel shader's registers; `update` writes the context ones as update markers.
 u32* EmitPsRegs(u32* at, const u32* ps_regs, bool update, u32 pgm_hi = 0) {

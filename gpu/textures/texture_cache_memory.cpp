@@ -338,6 +338,7 @@ void TextureCache::GarbageCollectSamplers() {
         --deletions;
         sampler_lru.Free(samplers.at(key).lru_id);
         samplers.erase(key);
+        sampler_evict_gen.fetch_add(1, std::memory_order_relaxed);
         return false;
     };
     configure(false);

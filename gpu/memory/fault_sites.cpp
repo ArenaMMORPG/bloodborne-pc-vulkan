@@ -187,6 +187,16 @@ void Report() {
     if (total == 0) {
         return;
     }
+    static const bool verbose = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (!verbose) {
+        for (auto& site : image_sites) {
+            site.count.store(0, std::memory_order_relaxed);
+        }
+        return;
+    }
     ReportImages();
     std::sort(rows.begin(), rows.begin() + n,
               [](const Row& a, const Row& b) { return a.count > b.count; });

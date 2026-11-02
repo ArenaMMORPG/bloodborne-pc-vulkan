@@ -133,11 +133,12 @@ public:
     /// memory barrier to Compute + Transfer + DrawIndirect and defers graphics stage visibility
     /// until the next graphics pass or submission boundary.
     void FlushBarriers(bool include_graphics = true);
+    void FlushImageBarriers();
     [[nodiscard]] bool HasPendingBarriers() const noexcept {
         return bool(pending_writes) || bool(deferred_gfx_writes) || !image_barriers.empty();
     }
     [[nodiscard]] bool HasPendingComputeBarriers() const noexcept {
-        return bool(pending_writes) || !image_barriers.empty();
+        return !image_barriers.empty();
     }
 
     /// Runs before this thread changes image state (layouts, pending image barriers): the

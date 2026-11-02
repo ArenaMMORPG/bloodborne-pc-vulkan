@@ -166,6 +166,9 @@ public:
     [[nodiscard]] u64 GcTick() const noexcept {
         return gc_tick;
     }
+    [[nodiscard]] u64 SamplerEvictGeneration() const noexcept {
+        return sampler_evict_gen.load(std::memory_order_relaxed);
+    }
     /// N2.1: Marks a GPU-DMA uploaded asset VkImage as DirectImmutable (disarming any page traps,
     /// registering direct_assets_by_addr, and enabling O(1) lock-free IsUpToDate).
     void MarkDirectImmutableAsset(ImageId image_id);
@@ -452,6 +455,7 @@ private:
     u64 trigger_gc_samplers = 0;
     u64 pressure_gc_samplers = 0;
     u64 critical_gc_samplers = 0;
+    std::atomic<u64> sampler_evict_gen{0};
 
     // Write-backs.
     std::mutex download_mutex;

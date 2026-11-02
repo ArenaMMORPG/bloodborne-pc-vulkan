@@ -682,6 +682,14 @@ enum class Op : uint32_t {
     // Block 4 Step 3.2: Single-packet VS & PS shader bind (replaces 6-packet / 29-dw VsShader and 9-packet / 40-dw PsShader)
     BindVsShader             = 25u,
     BindPsShader             = 26u,
+    // Block 6 Step 6.1: Single-packet CS/ES/GS/HS/LS shader bind, HwInit, and VGT control
+    BindCsShader             = 27u,
+    BindEsShader             = 28u,
+    BindGsShader             = 29u,
+    BindHsShader             = 30u,
+    BindLsShader             = 31u,
+    InitDefaultHardwareState = 32u,
+    SetVgtControl            = 33u,
 };
 
 // Tag stored in `CopyRegion::reserved` / `CopyRecord::reserved` when the C++20 engine itself
@@ -1256,10 +1264,30 @@ inline void Vsharp_SetResourceMemoryType(
     v[1] = w1_base | ((kcache_enable != 0u) ? 0x3000u : 0x0u);
 }
 
+inline bool DirectRingEnabled() noexcept {
+    static const bool enabled = []() -> bool {
+        const char* env = std::getenv("BB_DIRECT_RING");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
 // 1-to-1 C++20 replacement for 0x1076030 (DrawCommandBuffer::setActiveShaderStages)
 inline void EmitSetActiveShaderStages(void* dcb_raw, uint32_t stages) noexcept {
     if (stages != 0x00u && stages != 0x45u && stages != 0xADu &&
         stages != 0xB0u && stages != 0x200u) {
+        return;
+    }
+    if (DirectRingEnabled()) {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 5u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(4u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetContextRegsPacked) | (1u << 16);
+        pkt[3] = 0x02D5u | (1u << 16); // VGT_SHADER_STAGES_EN, count=1
+        pkt[4] = stages;
         return;
     }
     uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
@@ -1269,14 +1297,6 @@ inline void EmitSetActiveShaderStages(void* dcb_raw, uint32_t stages) noexcept {
     pkt[0] = 0xC0016900u;
     pkt[1] = 0x000002D5u; // VGT_SHADER_STAGES_EN
     pkt[2] = stages;
-}
-
-inline bool DirectRingEnabled() noexcept {
-    static const bool enabled = []() -> bool {
-        const char* env = std::getenv("BB_DIRECT_RING");
-        return !(env && env[0] == '0');
-    }();
-    return enabled;
 }
 
 // Fused 1-to-1 C++20 replacement for 0x10873a0 (generatePsShaderUsageTable) + 0x1075000 (setPsShaderUsage).
@@ -1291,15 +1311,24 @@ inline void GenerateAndEmitPsShaderUsage(
     if (!dcb_raw || num_ps_inputs == 0u) {
         return;
     }
-    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 2u + num_ps_inputs);
+    const bool direct_ring = DirectRingEnabled();
+    const uint32_t hdr_dwords = direct_ring ? 4u : 2u;
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, hdr_dwords + num_ps_inputs);
     if (!pkt) {
         return;
     }
-    pkt[0] = 0xC0006900u | (num_ps_inputs << 16);
-    pkt[1] = 0x00000191u; // SPI_PS_INPUT_CNTL_0..31
+    if (direct_ring) {
+        pkt[0] = MakeNopHeader(3u + num_ps_inputs);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetContextRegsPacked) | (1u << 16);
+        pkt[3] = 0x0191u | (num_ps_inputs << 16); // SPI_PS_INPUT_CNTL_0..31
+    } else {
+        pkt[0] = 0xC0006900u | (num_ps_inputs << 16);
+        pkt[1] = 0x00000191u; // SPI_PS_INPUT_CNTL_0..31
+    }
 
     if (num_ps_inputs <= 32u) {
-        uint32_t* dst = &pkt[2];
+        uint32_t* dst = &pkt[hdr_dwords];
         const auto* vs_exp = static_cast<const uint8_t*>(vs_exports_raw);
         const auto* ps_in_u16 = static_cast<const uint16_t*>(ps_inputs_raw);
         const auto* ps_in_u8 = static_cast<const uint8_t*>(ps_inputs_raw);
@@ -1568,6 +1597,100 @@ struct ContextRegBatch {
             0x11000100u | ((mode << 1) & 0x2u) | ((rop3 << 4) & 0x70u);
         Write1(dcb_raw, 0x001u, val);
     }
+
+    // 1-to-1 C++20 replacement for 0x1096bd0 (Gnmx::setupScreenAaSampleLocations)
+    inline void SetAaSampleLocations(void* dcb_raw, uint32_t sample_code) noexcept {
+        uint32_t locs[16] = {};
+        uint64_t prio = 0ULL;
+        uint32_t max_dist = 0u;
+        switch (sample_code) {
+            case 1u:
+                for (int i = 0; i < 4; ++i) locs[i * 4] = 0x0000C44Cu;
+                prio = 0x10ULL;
+                max_dist = 4u;
+                break;
+            case 2u:
+                for (int i = 0; i < 4; ++i) locs[i * 4] = 0x22EEA66Au;
+                prio = 0x1032ULL;
+                max_dist = 6u;
+                break;
+            case 3u:
+                for (int i = 0; i < 4; ++i) {
+                    locs[i * 4 + 0] = 0x5BB137D9u;
+                    locs[i * 4 + 1] = 0x1FF5739Du;
+                }
+                prio = 0x54106327ULL;
+                max_dist = 7u;
+                break;
+            case 4u:
+                for (int i = 0; i < 4; ++i) {
+                    locs[i * 4 + 0] = 0x5BB137D9u;
+                    locs[i * 4 + 1] = 0x1FF5739Du;
+                    locs[i * 4 + 2] = 0x6E8224A8u;
+                    locs[i * 4 + 3] = 0x0AC640ECu;
+                }
+                prio = 0xA85410FEB632DC97ULL;
+                max_dist = 8u;
+                break;
+            default:
+                break;
+        }
+        const uint32_t prio_words[2] = {
+            static_cast<uint32_t>(prio),
+            static_cast<uint32_t>(prio >> 32),
+        };
+        const uint32_t aa_cfg =
+            (sample_code & 0x7u) |
+            ((sample_code & 0x7u) << 20) |
+            ((max_dist & 0xFu) << 13);
+        WriteN(dcb_raw, 0x2FEu, locs, 16u);
+        WriteN(dcb_raw, 0x2F5u, prio_words, 2u);
+        Write1(dcb_raw, 0x2F8u, aa_cfg);
+    }
+
+    // 1-to-1 C++20 replacement for 0x1096f60 (Gnmx::setupScreenViewport)
+    inline void SetupScreenViewport(
+        void* dcb_raw,
+        uint32_t left,
+        uint32_t top,
+        uint32_t right,
+        uint32_t bottom,
+        float z_scale,
+        float z_offset) noexcept
+    {
+        const float w = static_cast<float>(static_cast<int32_t>(right - left));
+        const float h = static_cast<float>(static_cast<int32_t>(bottom - top));
+        const float scale[3] = {w * 0.5f, h * -0.5f, z_scale};
+        const float offset[3] = {
+            static_cast<float>(left) + scale[0],
+            static_cast<float>(top) + h * 0.5f,
+            z_offset,
+        };
+        SetViewport(dcb_raw, 0u, 0.0f, 1.0f, scale, offset);
+        SetViewportTransform(dcb_raw, 0x3Fu);
+        SetGenericScissor(
+            dcb_raw,
+            static_cast<int32_t>(left),
+            static_cast<int32_t>(top),
+            static_cast<int32_t>(right),
+            static_cast<int32_t>(bottom));
+        int32_t off_x = static_cast<int32_t>(__builtin_floorf(offset[0] * 0.0625f + 0.5f));
+        int32_t off_y = static_cast<int32_t>(__builtin_floorf(offset[1] * 0.0625f + 0.5f));
+        if (off_x >= 0x200) off_x = 0x1FF;
+        if (off_y >= 0x200) off_y = 0x1FF;
+        SetHardwareScreenOffset(dcb_raw, off_x, off_y);
+        const float abs_sx = __builtin_fabsf(scale[0]);
+        const float abs_sy = __builtin_fabsf(scale[1]);
+        const float hw_x = static_cast<float>(off_x << 4);
+        const float hw_y = static_cast<float>(off_y << 4);
+        const float cx0 = offset[0] - abs_sx - hw_x + 16384.0f;
+        const float cx1 = 16384.0f - abs_sx - offset[0] + hw_x;
+        const float cy0 = offset[1] - abs_sy - hw_y + 16384.0f;
+        const float cy1 = 16384.0f - abs_sy - offset[1] + hw_y;
+        const float clip_x = ((cx1 < cx0) ? cx1 : cx0) / abs_sx;
+        const float clip_y = ((cy1 < cy0) ? cy1 : cy0) / abs_sy;
+        SetGuardBands(dcb_raw, clip_x, clip_y, 1.0f, 1.0f);
+    }
 };
 
 // 1-to-1 single-packet replacement for 0x10738b0 (DrawCommandBuffer::setRenderTarget)
@@ -1696,6 +1819,225 @@ inline void EmitBindPsShader(void* dcb_raw, const void* ps_regs_raw, bool sdk350
     pkt[1] = kNopPayloadTag;
     pkt[2] = static_cast<uint32_t>(Op::BindPsShader) | (1u << 16);
     std::memcpy(pkt + 3u, ps, 12u * sizeof(uint32_t));
+}
+
+// 1-to-1 single-packet replacement for 0x1075840 (GfxContext::setCsShader, 23 dw -> 10 dw)
+inline void EmitBindCsShader(void* dcb_raw, const void* cs_regs_raw, uint32_t modifier = 0u) noexcept {
+    if (!dcb_raw || !cs_regs_raw) {
+        return;
+    }
+    const auto* cs = static_cast<const uint32_t*>(cs_regs_raw);
+    if ((modifier & 0xFFFFFC3Fu) != 0u || cs[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 10u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(9u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindCsShader);
+    pkt[3] = cs[0];
+    pkt[4] = 0u;
+    pkt[5] = (modifier == 0u) ? cs[2] : ((cs[2] & 0xFFFFFC3Fu) | modifier);
+    pkt[6] = cs[3];
+    pkt[7] = cs[4];
+    pkt[8] = cs[5];
+    pkt[9] = cs[6];
+}
+
+// 1-to-1 single-packet replacement for 0x1075560 (GfxContext::setEsShader, 20 dw -> 7 dw)
+inline void EmitBindEsShader(void* dcb_raw, const void* es_regs_raw, uint32_t modifier = 0u) noexcept {
+    if (!dcb_raw || !es_regs_raw) {
+        return;
+    }
+    const auto* es = static_cast<const uint32_t*>(es_regs_raw);
+    if ((modifier & 0xFCFFFC3Fu) != 0u || es[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 7u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(6u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindEsShader);
+    pkt[3] = es[0];
+    pkt[4] = 0u;
+    pkt[5] = (modifier == 0u) ? es[2] : ((es[2] & 0xFCFFFC3Fu) | modifier);
+    pkt[6] = es[3];
+}
+
+// 1-to-1 single-packet replacement for 0x10759d0 (GfxContext::setGsShader, 29 dw -> 10 dw)
+inline void EmitBindGsShader(void* dcb_raw, const void* gs_regs_raw) noexcept {
+    if (!dcb_raw || !gs_regs_raw) {
+        return;
+    }
+    const auto* gs = static_cast<const uint32_t*>(gs_regs_raw);
+    if (gs[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 10u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(9u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindGsShader);
+    pkt[3] = gs[0];
+    pkt[4] = 0u;
+    pkt[5] = gs[2];
+    pkt[6] = gs[3];
+    pkt[7] = gs[4];
+    pkt[8] = gs[5];
+    pkt[9] = gs[6];
+}
+
+// 1-to-1 single-packet replacement for 0x10755d0 (GfxContext::setHsShader, 30 dw -> 11 dw)
+inline void EmitBindHsShader(void* dcb_raw, const void* hs_regs_raw, const void* tess_regs_raw) noexcept {
+    if (!dcb_raw || !hs_regs_raw || !tess_regs_raw) {
+        return;
+    }
+    const auto* hs = static_cast<const uint32_t*>(hs_regs_raw);
+    const auto* ts = static_cast<const uint32_t*>(tess_regs_raw);
+    if (hs[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 11u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(10u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindHsShader);
+    pkt[3] = hs[0];
+    pkt[4] = 0u;
+    pkt[5] = hs[2];
+    pkt[6] = hs[3];
+    pkt[7] = hs[4];
+    pkt[8] = hs[5];
+    pkt[9] = hs[6];
+    pkt[10] = ts[0];
+}
+
+// 1-to-1 single-packet replacement for 0x10757d0 (GfxContext::setLsShader, 23 dw -> 7 dw)
+inline void EmitBindLsShader(void* dcb_raw, const void* ls_regs_raw, uint32_t modifier = 0u) noexcept {
+    if (!dcb_raw || !ls_regs_raw) {
+        return;
+    }
+    const auto* ls = static_cast<const uint32_t*>(ls_regs_raw);
+    const uint32_t allowed = (modifier & 0xFFFFFC3Fu) == 0u ? 0xFFFFFC3Fu : 0xFCFFFC3Fu;
+    if ((modifier & allowed) != 0u || ls[1] != 0u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 7u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(6u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::BindLsShader);
+    pkt[3] = ls[0];
+    pkt[4] = 0u;
+    pkt[5] = (modifier == 0u) ? ls[2] : ((ls[2] & allowed) | modifier);
+    pkt[6] = ls[3];
+}
+
+// 1-to-1 single-packet replacement for 0x26bb6c0 -> 0x1072870 (DrawCommandBuffer::initializeDefaultHardwareState, 256 dw -> 3 dw)
+inline void EmitInitDefaultHardwareState(void* dcb_raw, uint32_t gen = 3u) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(2u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::InitDefaultHardwareState) | ((gen & 0xFFu) << 16);
+}
+
+// 1-to-1 single-packet replacement for 0x1075960 (DrawCommandBuffer::setVgtControl, 9 dw -> 3 dw)
+inline void EmitSetVgtControl(void* dcb_raw, uint32_t prim_group_size_minus_one, uint32_t partial_vs_wave_mode) noexcept {
+    if (!dcb_raw || prim_group_size_minus_one >= 0x100u || partial_vs_wave_mode >= 2u) {
+        return;
+    }
+    uint32_t* pkt = ReserveDcbDwords(dcb_raw, 3u);
+    if (!pkt) {
+        return;
+    }
+    pkt[0] = MakeNopHeader(2u);
+    pkt[1] = kNopPayloadTag;
+    pkt[2] = static_cast<uint32_t>(Op::SetVgtControl) |
+             ((prim_group_size_minus_one & 0xFFu) << 16) |
+             ((partial_vs_wave_mode & 0x1u) << 24);
+}
+
+// 1-to-1 single-packet replacement for 0x10756b0 (DrawCommandBuffer::setGsOnChipControl)
+inline void EmitSetGsOnChipControl(void* dcb_raw, uint64_t gs_onchip_qword, uint32_t gs_prims) noexcept {
+    if (!dcb_raw) {
+        return;
+    }
+    const uint32_t lo = static_cast<uint32_t>(gs_onchip_qword);
+    const uint32_t vgt_gs_mode = (lo & 0xFFFFFFCFu) | ((gs_prims << 4) & 0x30u);
+    if (lo != 0u) {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 5u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(4u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetContextRegsPacked) | (1u << 16);
+        pkt[3] = 0x0290u | (1u << 16); // VGT_GS_MODE
+        pkt[4] = vgt_gs_mode;
+    } else {
+        uint32_t* pkt = ReserveDcbDwords(dcb_raw, 7u);
+        if (!pkt) {
+            return;
+        }
+        pkt[0] = MakeNopHeader(6u);
+        pkt[1] = kNopPayloadTag;
+        pkt[2] = static_cast<uint32_t>(Op::SetContextRegsPacked) | (2u << 16);
+        pkt[3] = 0x0290u | (1u << 16); // VGT_GS_MODE
+        pkt[4] = vgt_gs_mode;
+        pkt[5] = 0x02E5u | (1u << 16); // VGT_GS_ONCHIP_CNTL
+        pkt[6] = 0u;
+    }
+}
+
+// 1-to-1 coalesced replacement for 0x1075a90 (setEsGsRing) + 0x1075af0 (setGsVsRing)
+inline void EmitSetEsGsAndGsVsRings(
+    void* dcb_raw,
+    uint32_t es_stride,
+    const void* gs_ring_info_raw,
+    uint32_t gs_ring_mask) noexcept
+{
+    if (!dcb_raw || !gs_ring_info_raw) {
+        return;
+    }
+    const auto* info = static_cast<const uint32_t*>(gs_ring_info_raw);
+    ContextRegBatch batch{};
+    batch.Write1(dcb_raw, 0x02ABu, es_stride & 0x7FFFu); // VGT_ESGS_RING_ITEMSIZE
+    const uint32_t item_sizes[4] = {
+        static_cast<uint32_t>(info[0]) & 0x3FFu,
+        static_cast<uint32_t>(info[1]) & 0x3FFu,
+        static_cast<uint32_t>(info[2]) & 0x3FFu,
+        static_cast<uint32_t>(info[3]) & 0x3FFu,
+    };
+    batch.WriteN(dcb_raw, 0x02D7u, item_sizes, 4u); // VGT_GSVS_RING_ITEMSIZE_0..3
+    const uint32_t s0 = info[0];
+    const uint32_t s1 = s0 + info[1];
+    const uint32_t s2 = s1 + info[2];
+    const uint32_t s3 = s2 + info[3];
+    const uint32_t offsets[3] = {
+        (s0 * gs_ring_mask) & 0x7FFFu,
+        (s1 * gs_ring_mask) & 0x7FFFu,
+        (s2 * gs_ring_mask) & 0x7FFFu,
+    };
+    batch.WriteN(dcb_raw, 0x0298u, offsets, 3u); // VGT_GSVS_RING_OFFSET_1..3
+    batch.Write1(dcb_raw, 0x02CEu, gs_ring_mask & 0x7FFu); // VGT_GS_MAX_VERT_OUT
+    batch.Write1(dcb_raw, 0x02ACu, (s3 * gs_ring_mask) & 0x7FFFu); // VGT_GSVS_RING_ITEMSIZE
+    batch.Flush(dcb_raw);
 }
 
 // ============================================================================

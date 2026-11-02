@@ -16,6 +16,270 @@ namespace Vulkan {
 namespace {
 thread_local u32 tls_draws_in_frame = 0;
 thread_local bool tls_mid_frame_flushed = false;
+
+/// Block 10: Hardware Temporal Scene Occlusion Culler + Micro-Shadow Clutter Culler (Stage B).
+/// Tracks static/instanced opaque 6-MRT G-Buffer world meshes via non-precise hardware
+/// VkQueryPool(eOcclusion) queries and skips 100%-occluded draws (samples_passed == 0) before
+/// resource binding, descriptor set updates, vertex/index buffer emission, and vkCmdDrawIndexed.
+struct SceneOcclusionCuller {
+    static constexpr u32 NumSlices = 8;
+    static constexpr u32 SliceQueries = 512;
+    static constexpr u32 TableBuckets = 1024;
+    static constexpr u32 BucketWays = 4;
+    static constexpr u32 TotalEntries = TableBuckets * BucketWays;
+    static constexpr u32 OccSlots = 512;
+
+    struct Entry {
+        u64 key = 0;
+        u32 last_seen_frame = 0;
+        u32 skip_until_frame = 0;
+        u16 zero_streak = 0;
+        bool probe_in_flight = false;
+    };
+
+    struct OccSlot {
+        u64 mesh_sig = 0;
+        u32 frame = 0;
+        u32 count = 0;
+    };
+
+    vk::UniqueQueryPool pool;
+    bool initialized = false;
+    bool enabled = true;
+    bool micro_shadow_cull = true;
+    u32 cur_frame = 1;
+    u32 cur_slice = 0;
+    u32 gbuf_draws_in_frame = 0;
+    VAddr last_shadow_cb_addr = 0;
+    VAddr last_shadow_db_addr = 0;
+    u32 shadow_face_draw_idx = 0;
+    bool camera_moving = false;
+    bool fast_camera_turn = false;
+    bool has_prev_cam = false;
+    std::array<float, 3> prev_cam_pos{};
+    std::array<float, 3> prev_cam_fwd{};
+
+    std::array<u32, NumSlices> slice_used{};
+    std::array<u64, NumSlices> slice_last_tick{};
+    std::array<bool, NumSlices> slice_sealed{};
+    std::array<std::array<u16, SliceQueries>, NumSlices> slice_entry_idx{};
+
+    std::array<Entry, TotalEntries> entries{};
+    std::array<OccSlot, OccSlots> occ_table{};
+
+    u64 stat_gbuf_candidates = 0;
+    u64 stat_gbuf_skipped = 0;
+    u64 stat_gbuf_probed = 0;
+    u64 stat_shadow_skipped = 0;
+    u64 stat_light_candidates = 0;
+    u64 stat_light_skipped = 0;
+
+    void EnsureInit(const Instance& instance) {
+        if (initialized) {
+            return;
+        }
+        initialized = true;
+        if (const char* e = std::getenv("BB_HW_OCCLUSION_CULL")) {
+            enabled = (e[0] != '0');
+        }
+        if (const char* e = std::getenv("BB_MICRO_SHADOW_CULL")) {
+            micro_shadow_cull = (e[0] != '0');
+        }
+        if (!enabled) {
+            return;
+        }
+        const auto device = instance.GetDevice();
+        const vk::QueryPoolCreateInfo info{
+            .queryType = vk::QueryType::eOcclusion,
+            .queryCount = NumSlices * SliceQueries,
+        };
+        auto res = device.createQueryPoolUnique(info);
+        if (res.result == vk::Result::eSuccess) {
+            pool = std::move(res.value);
+            device.resetQueryPool(*pool, 0, NumSlices * SliceQueries);
+        } else {
+            enabled = false;
+        }
+    }
+
+    void SealCurrentSlice(u64 tick) noexcept {
+        if (!pool) {
+            return;
+        }
+        const u32 s = cur_slice;
+        if (slice_used[s] > 0 && !slice_sealed[s]) {
+            slice_last_tick[s] = tick;
+            slice_sealed[s] = true;
+            cur_slice = (s + 1) % NumSlices;
+        }
+    }
+
+    void CollectRetiredSlices(vk::Device device, Scheduler& scheduler) noexcept {
+        if (!pool) {
+            return;
+        }
+        std::array<u64, SliceQueries> samples{};
+        for (u32 s = 0; s < NumSlices; ++s) {
+            if (!slice_sealed[s] || !scheduler.IsFree(slice_last_tick[s])) {
+                continue;
+            }
+            const u32 count = slice_used[s];
+            if (count > 0) {
+                const auto res = device.getQueryPoolResults(
+                    *pool, s * SliceQueries, count, count * sizeof(u64), samples.data(),
+                    sizeof(u64), vk::QueryResultFlagBits::e64);
+                if (res == vk::Result::eSuccess) {
+                    for (u32 i = 0; i < count; ++i) {
+                        const u16 idx = slice_entry_idx[s][i];
+                        Entry& e = entries[idx];
+                        e.probe_in_flight = false;
+                        if (samples[i] == 0) {
+                            if (e.zero_streak < 32) {
+                                ++e.zero_streak;
+                            }
+                            if (e.zero_streak >= 2 && !fast_camera_turn) {
+                                const u32 stagger = static_cast<u32>(idx & 7u);
+                                const u32 skip_len =
+                                    camera_moving ? (1u + (stagger & 1u))
+                                                  : (e.zero_streak >= 3 ? (12u + stagger)
+                                                                        : (3u + (stagger & 3u)));
+                                e.skip_until_frame = cur_frame + skip_len;
+                            }
+                        } else {
+                            e.zero_streak = 0;
+                            e.skip_until_frame = 0;
+                        }
+                    }
+                } else {
+                    for (u32 i = 0; i < count; ++i) {
+                        entries[slice_entry_idx[s][i]].probe_in_flight = false;
+                    }
+                }
+                device.resetQueryPool(*pool, s * SliceQueries, count);
+            }
+            slice_used[s] = 0;
+            slice_sealed[s] = false;
+        }
+    }
+
+    void OnFrameStart(const Instance& instance, Scheduler& scheduler,
+                      const CameraMotion* cam) noexcept {
+        EnsureInit(instance);
+        gbuf_draws_in_frame = 0;
+        last_shadow_cb_addr = 0;
+        last_shadow_db_addr = 0;
+        shadow_face_draw_idx = 0;
+        if (!pool) {
+            return;
+        }
+        SealCurrentSlice(scheduler.CurrentTick());
+        ++cur_frame;
+
+        camera_moving = false;
+        fast_camera_turn = false;
+        if (cam && cam->Ready()) {
+            float pos[3]{}, up[3]{}, right[3]{}, fwd[3]{};
+            cam->CameraVectors(pos, up, right, fwd);
+            if (has_prev_cam) {
+                const float cos_ang = fwd[0] * prev_cam_fwd[0] + fwd[1] * prev_cam_fwd[1] +
+                                      fwd[2] * prev_cam_fwd[2];
+                const float dx = pos[0] - prev_cam_pos[0];
+                const float dy = pos[1] - prev_cam_pos[1];
+                const float dz = pos[2] - prev_cam_pos[2];
+                const float dist_sq = dx * dx + dy * dy + dz * dz;
+                if (cos_ang < 0.9985f || dist_sq > 0.20f) {
+                    fast_camera_turn = true;
+                } else if (cos_ang < 0.99985f || dist_sq > 0.004f) {
+                    camera_moving = true;
+                }
+            }
+            prev_cam_pos = {pos[0], pos[1], pos[2]};
+            prev_cam_fwd = {fwd[0], fwd[1], fwd[2]};
+            has_prev_cam = true;
+        }
+
+        CollectRetiredSlices(instance.GetDevice(), scheduler);
+
+        if (fast_camera_turn) {
+            for (auto& e : entries) {
+                e.skip_until_frame = 0;
+            }
+        }
+
+        if ((cur_frame % 600) == 0 &&
+            (stat_gbuf_candidates > 0 || stat_shadow_skipped > 0 || stat_light_candidates > 0)) {
+            std::printf("[BB-CULL] 600f: GBuf occluded skipped %llu/%llu (%.1f%%, probed %llu), "
+                        "Lights skipped %llu/%llu, MicroShadow skipped %llu\n",
+                        static_cast<unsigned long long>(stat_gbuf_skipped),
+                        static_cast<unsigned long long>(stat_gbuf_candidates),
+                        stat_gbuf_candidates
+                            ? (100.0 * double(stat_gbuf_skipped) / double(stat_gbuf_candidates))
+                            : 0.0,
+                        static_cast<unsigned long long>(stat_gbuf_probed),
+                        static_cast<unsigned long long>(stat_light_skipped),
+                        static_cast<unsigned long long>(stat_light_candidates),
+                        static_cast<unsigned long long>(stat_shadow_skipped));
+            stat_gbuf_candidates = 0;
+            stat_gbuf_skipped = 0;
+            stat_gbuf_probed = 0;
+            stat_light_candidates = 0;
+            stat_light_skipped = 0;
+            stat_shadow_skipped = 0;
+        }
+    }
+
+    u32 NextMeshOccurrence(u64 mesh_sig) noexcept {
+        const u32 slot_idx = static_cast<u32>((mesh_sig ^ (mesh_sig >> 32)) & (OccSlots - 1));
+        OccSlot& slot = occ_table[slot_idx];
+        if (slot.frame != cur_frame || slot.mesh_sig != mesh_sig) {
+            slot.mesh_sig = mesh_sig;
+            slot.frame = cur_frame;
+            slot.count = 0;
+            return 0;
+        }
+        return ++slot.count;
+    }
+
+    u16 FindOrInsertEntry(u64 key) noexcept {
+        const u32 bucket = static_cast<u32>((key ^ (key >> 33)) & (TableBuckets - 1));
+        const u16 base = static_cast<u16>(bucket * BucketWays);
+        for (u16 w = 0; w < BucketWays; ++w) {
+            if (entries[base + w].key == key) {
+                return base + w;
+            }
+        }
+        for (u16 w = 0; w < BucketWays; ++w) {
+            if (!entries[base + w].probe_in_flight &&
+                (entries[base + w].key == 0 ||
+                 entries[base + w].last_seen_frame + 4 < cur_frame)) {
+                entries[base + w] = Entry{.key = key, .last_seen_frame = cur_frame};
+                return base + w;
+            }
+        }
+        return 0xFFFFu;
+    }
+
+    s32 AllocateQuery(u16 entry_idx) noexcept {
+        const u32 s = cur_slice;
+        if (slice_sealed[s] || slice_used[s] >= SliceQueries) {
+            return -1;
+        }
+        const u32 q = slice_used[s]++;
+        slice_entry_idx[s][q] = entry_idx;
+        entries[entry_idx].probe_in_flight = true;
+        ++stat_gbuf_probed;
+        return static_cast<s32>(s * SliceQueries + q);
+    }
+};
+
+thread_local std::unique_ptr<SceneOcclusionCuller> tls_scene_culler_ptr;
+
+inline SceneOcclusionCuller& GetSceneCuller() {
+    if (!tls_scene_culler_ptr) [[unlikely]] {
+        tls_scene_culler_ptr = std::make_unique<SceneOcclusionCuller>();
+    }
+    return *tls_scene_culler_ptr;
+}
 } // namespace
 
 Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime& runtime_,
@@ -455,6 +719,160 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (is_attachmentless_noop) {
         return;
     }
+
+    // Block 10: Smart Unified Scene Occlusion & Micro-Shadow Culling.
+    s32 hw_occ_query_slot = -1;
+    {
+        auto& culler = GetSceneCuller();
+        culler.EnsureInit(instance);
+        const u64 vs_hash = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+        const u32 num_indices = regs.num_indices;
+        const u32 num_instances = regs.num_instances.NumInstances();
+
+        // 1. Micro-Shadow Clutter Culling (32x32 and 64x64 blurred VSM cubemap shadow faces):
+        // vs 0x167daba6 bakes instance IDs into vs_in_attr1.w and submits 1..4 merged draws per
+        // cubemap face. Always keep Draw #0 (room shell + depth clear) of each face, and skip
+        // secondary clutter batches in 32x32 (draw >= 1) and 64x64 (draw >= 2) before VSM blur.
+        if (is_indexed && culler.micro_shadow_cull && vs_hash == 0x167daba6ull) {
+            const float vp_w = std::abs(regs.viewports[0].xscale) * 2.0f;
+            const float vp_h = std::abs(regs.viewports[0].yscale) * 2.0f;
+            const s32 sc_w =
+                s32(regs.screen_scissor.bottom_right_x) - s32(regs.screen_scissor.top_left_x);
+            const s32 sc_h =
+                s32(regs.screen_scissor.bottom_right_y) - s32(regs.screen_scissor.top_left_y);
+            const bool is_32 = (vp_w > 0.0f && vp_w <= 33.0f && vp_h > 0.0f && vp_h <= 33.0f) ||
+                               (sc_w > 0 && sc_w <= 32 && sc_h > 0 && sc_h <= 32);
+            const bool is_64 = !is_32 &&
+                               ((vp_w > 0.0f && vp_w <= 65.0f && vp_h > 0.0f && vp_h <= 65.0f) ||
+                                (sc_w > 0 && sc_w <= 64 && sc_h > 0 && sc_h <= 64));
+            if (is_32 || is_64) {
+                const VAddr cb_addr = regs.color_buffers[0] ? regs.color_buffers[0].Address() : 0;
+                const VAddr db_addr = regs.depth_buffer.DepthAddress();
+                if (regs.depth_render_control.depth_clear_enable ||
+                    cb_addr != culler.last_shadow_cb_addr ||
+                    db_addr != culler.last_shadow_db_addr) {
+                    culler.last_shadow_cb_addr = cb_addr;
+                    culler.last_shadow_db_addr = db_addr;
+                    culler.shadow_face_draw_idx = 0;
+                } else {
+                    ++culler.shadow_face_draw_idx;
+                    if ((is_32 && culler.shadow_face_draw_idx >= 1) ||
+                        (is_64 && culler.shadow_face_draw_idx >= 2)) {
+                        ++culler.stat_shadow_skipped;
+                        BbStats::draws.fetch_sub(1, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 2. Hardware Temporal Occlusion Culling for All 6-MRT Opaque G-Buffer World Batches
+        //    and 2-MRT Deferred Point/Spot-Light Tile Quads (vs 0x8747a367):
+        const u32 mrt_mask = pipeline->GetGraphicsKey().mrt_mask;
+        const bool is_gbuf_cull_cand =
+            is_indexed && mrt_mask == 0x3f && begin_memo.state.num_color_attachments == 6 &&
+            !regs.blend_control[0].enable && regs.depth_control.depth_enable &&
+            regs.depth_control.depth_write_enable && num_indices >= 36;
+        const bool is_light_cull_cand =
+            !is_gbuf_cull_cand && vs_hash == 0x8747a367ull && mrt_mask == 0x03 &&
+            regs.blend_control[0].enable && num_indices <= 6 && !culler.fast_camera_turn;
+        if (culler.enabled && culler.pool && scheduler.IsRendering() && begin_memo.valid &&
+            !regs.depth_render_control.depth_clear_enable &&
+            !regs.depth_render_control.stencil_clear_enable &&
+            (!occlusion || occlusion->Events() == 0) &&
+            (is_gbuf_cull_cand || is_light_cull_cand)) {
+            if (is_gbuf_cull_cand) {
+                const u32 gbuf_ord = ++culler.gbuf_draws_in_frame;
+                if (gbuf_ord == 1) {
+                    culler.CollectRetiredSlices(instance.GetDevice(), scheduler);
+                }
+                if (gbuf_ord > 10) {
+                    ++culler.stat_gbuf_candidates;
+                    const u32 index_size =
+                        regs.index_buffer_type.index_type == Gcn::IndexType::Index16 ? 2u : 4u;
+                    const VAddr index_address =
+                        regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
+                    const u64 mesh_sig = index_address ^ (u64(num_indices) << 32) ^
+                                         (u64(num_instances) << 48) ^ vs_hash;
+                    const u32 occ = culler.NextMeshOccurrence(mesh_sig);
+                    u64 draw_key = index_address ^ (vs_hash * 0x9E3779B97F4A7C15ull) ^
+                                   (u64(num_indices) * 0xBF58476D1CE4E5B9ull) ^
+                                   (u64(num_instances) * 0x94D049BB133111EBull) ^
+                                   (u64(occ) * 0xD6E8FEB86659FD93ull);
+                    if (draw_key == 0) {
+                        draw_key = 1;
+                    }
+                    const u16 e_idx = culler.FindOrInsertEntry(draw_key);
+                    if (e_idx != 0xFFFFu) {
+                        auto& e = culler.entries[e_idx];
+                        if (e.last_seen_frame + 24 < culler.cur_frame) {
+                            e.zero_streak = 0;
+                            e.skip_until_frame = 0;
+                        }
+                        e.last_seen_frame = culler.cur_frame;
+                        if (e.zero_streak >= 2 &&
+                            (e.probe_in_flight || culler.cur_frame < e.skip_until_frame)) {
+                            ++culler.stat_gbuf_skipped;
+                            BbStats::draws.fetch_sub(1, std::memory_order_relaxed);
+                            return;
+                        }
+                        const u32 probe_mask = culler.camera_moving ? 3u : 7u;
+                        if (!e.probe_in_flight && !Breadcrumbs::Enabled() && !DynCheck::Enabled() &&
+                            (e.zero_streak > 0 ||
+                             ((culler.cur_frame + u32(e_idx)) & probe_mask) == 0u)) {
+                            hw_occ_query_slot = culler.AllocateQuery(e_idx);
+                        }
+                    }
+                }
+            } else {
+                const auto* ps_stage = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+                const u64 ps_hash = ps_stage ? ps_stage->pgm_hash : 0ull;
+                if (ps_hash == 0x7cc2c044ull || ps_hash == 0xe96447c3ull ||
+                    ps_hash == 0xbae5454eull || ps_hash == 0xa22c7f71ull ||
+                    ps_hash == 0x0ef50047ull || ps_hash == 0x6b42fc89ull) {
+                    ++culler.stat_light_candidates;
+                    u64 quad_sig = 0;
+                    if (!packet_vsharps.empty() && packet_vsharps[0].base_address != 0 &&
+                        packet_vsharps[0].GetSize() >= 48 &&
+                        memory->ClampRangeSize(packet_vsharps[0].base_address, 48) == 48) {
+                        const auto* q =
+                            reinterpret_cast<const u64*>(packet_vsharps[0].base_address);
+                        quad_sig = q[0] ^ (q[4] * 0x9E3779B97F4A7C15ull);
+                    }
+                    const u64 mesh_sig = ps_hash ^ (quad_sig * 0xBF58476D1CE4E5B9ull) ^ 0x4C49474854ull;
+                    const u32 occ = culler.NextMeshOccurrence(mesh_sig);
+                    u64 draw_key = (ps_hash * 0x9E3779B97F4A7C15ull) ^
+                                   (quad_sig * 0xBF58476D1CE4E5B9ull) ^
+                                   (u64(occ) * 0xD6E8FEB86659FD93ull) ^ 0x4C49474854ull;
+                    if (draw_key == 0) {
+                        draw_key = 2;
+                    }
+                    const u16 e_idx = culler.FindOrInsertEntry(draw_key);
+                    if (e_idx != 0xFFFFu) {
+                        auto& e = culler.entries[e_idx];
+                        if (e.last_seen_frame + 24 < culler.cur_frame) {
+                            e.zero_streak = 0;
+                            e.skip_until_frame = 0;
+                        }
+                        e.last_seen_frame = culler.cur_frame;
+                        if (e.zero_streak >= 2 &&
+                            (e.probe_in_flight || culler.cur_frame < e.skip_until_frame)) {
+                            ++culler.stat_light_skipped;
+                            BbStats::draws.fetch_sub(1, std::memory_order_relaxed);
+                            return;
+                        }
+                        const u32 probe_mask = culler.camera_moving ? 3u : 7u;
+                        if (!e.probe_in_flight && !Breadcrumbs::Enabled() && !DynCheck::Enabled() &&
+                            (e.zero_streak > 0 ||
+                             ((culler.cur_frame + u32(e_idx)) & probe_mask) == 0u)) {
+                            hw_occ_query_slot = culler.AllocateQuery(e_idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
     motion_geometry = 0;
@@ -555,16 +973,16 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (!HonestLabels() && mid_flush_draws != 0 && !tls_mid_frame_flushed &&
         tls_draws_in_frame >= mid_flush_draws && scheduler.WillBeginRendering(state)) {
         tls_mid_frame_flushed = true;
+        GetSceneCuller().SealCurrentSlice(scheduler.CurrentTick());
         SubmitInfo info{};
         scheduler.Flush(info);
+    }
+    if (needs_barrier || (scheduler.WillBeginRendering(state) && runtime.HasPendingBarriers())) {
+        runtime.FlushBarriers();
     }
     EmitVertexBuffers();
     if (is_indexed) {
         EmitIndexBuffer();
-    }
-
-    if (needs_barrier || (scheduler.WillBeginRendering(state) && runtime.HasPendingBarriers())) {
-        runtime.FlushBarriers();
     }
 
     ScaleToTarget(pipeline);
@@ -739,7 +1157,21 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         bound_graphics_pipeline = handle;
         bound_graphics_epoch = cur_epoch;
         if (is_indexed) {
-            if (need_bind_pipeline) {
+            if (hw_occ_query_slot >= 0) {
+                const vk::QueryPool occ_pool = *GetSceneCuller().pool;
+                const u32 q_slot = static_cast<u32>(hw_occ_query_slot);
+                scheduler.Record([handle, need_bind_pipeline, occ_pool, q_slot, num_indices,
+                                  num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    if (need_bind_pipeline) {
+                        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                    }
+                    cmdbuf.beginQuery(occ_pool, q_slot, {});
+                    cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex),
+                                       first_instance);
+                    cmdbuf.endQuery(occ_pool, q_slot);
+                });
+            } else if (need_bind_pipeline) {
                 scheduler.Record([handle, num_indices, num_instances, first_vertex,
                                   first_instance](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
@@ -754,7 +1186,20 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 });
             }
         } else {
-            if (need_bind_pipeline) {
+            if (hw_occ_query_slot >= 0) {
+                const vk::QueryPool occ_pool = *GetSceneCuller().pool;
+                const u32 q_slot = static_cast<u32>(hw_occ_query_slot);
+                scheduler.Record([handle, need_bind_pipeline, occ_pool, q_slot, num_indices,
+                                  num_instances, first_vertex,
+                                  first_instance](vk::CommandBuffer cmdbuf) {
+                    if (need_bind_pipeline) {
+                        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+                    }
+                    cmdbuf.beginQuery(occ_pool, q_slot, {});
+                    cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
+                    cmdbuf.endQuery(occ_pool, q_slot);
+                });
+            } else if (need_bind_pipeline) {
                 scheduler.Record([handle, num_indices, num_instances, first_vertex,
                                   first_instance](vk::CommandBuffer cmdbuf) {
                     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
@@ -2267,6 +2712,7 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
 void Rasterizer::NoteFrameStart() {
     tls_draws_in_frame = 0;
     tls_mid_frame_flushed = false;
+    GetSceneCuller().OnFrameStart(instance, scheduler, camera_motion.get());
     InvalidateGdsMirror();
     if (HasPendingHleCopies()) {
         FlushPendingHleCopies(*this);

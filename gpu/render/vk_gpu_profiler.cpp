@@ -18,7 +18,7 @@ void GpuProfiler::Init(const Instance& instance, Scheduler& scheduler) {
     }
     stored_ptr = new GpuProfiler(instance, scheduler);
     const char* env = std::getenv("BB_GPU_PROFILE");
-    if (env && env[0] == '1') {
+    if (env && env[0] == '2') {
         stored_ptr->permanent = true;
         instance_ptr = stored_ptr;
     }
@@ -74,7 +74,7 @@ void GpuProfiler::OnFrame() {
     const u64 f = ++stored_ptr->seen_frames;
     if (instance_ptr) {
         instance_ptr->BeginFrame();
-        if (!stored_ptr->permanent && stored_ptr->frames >= 60) {
+        if (!stored_ptr->permanent && stored_ptr->frames >= 120) {
             stored_ptr->Print(true);
             stored_ptr->StopCapture();
             captured_scene = true;
@@ -83,7 +83,7 @@ void GpuProfiler::OnFrame() {
     }
     if (!stored_ptr->permanent) {
         const bool trigger_file = (f & 31) == 0 && ::access("/tmp/bb_gpu_profile_trigger", F_OK) == 0;
-        const bool auto_scene = scene_frames == 60 && !captured_scene;
+        const bool auto_scene = scene_frames == 120 && !captured_scene;
         if (trigger_file || auto_scene) {
             if (trigger_file) {
                 ::unlink("/tmp/bb_gpu_profile_trigger");
@@ -134,21 +134,30 @@ bool GpuProfiler::TryCollectHudSlice(u32 s) {
         if (res == vk::Result::eSuccess) {
             double busy_ns = 0.0;
             double gap_ns = 0.0;
-            if (hud_has_prev_end && stamps[0] > hud_prev_end_stamp) {
-                const double cross_ns = double(stamps[0] - hud_prev_end_stamp) * period_ns;
-                if (cross_ns < 2e8) {
-                    gap_ns += cross_ns;
+            u64 cursor = stamps[0];
+            if (hud_has_prev_end) {
+                if (stamps[0] > hud_prev_end_stamp) {
+                    const double cross_ns = double(stamps[0] - hud_prev_end_stamp) * period_ns;
+                    if (cross_ns < 2e8) {
+                        gap_ns += cross_ns;
+                    }
+                } else {
+                    cursor = hud_prev_end_stamp;
                 }
             }
             for (u32 i = 0; i + 1 < count; i += 2) {
-                if (stamps[i + 1] > stamps[i]) {
-                    busy_ns += double(stamps[i + 1] - stamps[i]) * period_ns;
+                const u64 s0 = stamps[i];
+                const u64 s1 = stamps[i + 1];
+                if (s0 > cursor) {
+                    gap_ns += double(s0 - cursor) * period_ns;
+                    cursor = s0;
                 }
-                if (i + 2 < count && stamps[i + 2] > stamps[i + 1]) {
-                    gap_ns += double(stamps[i + 2] - stamps[i + 1]) * period_ns;
+                if (s1 > cursor) {
+                    busy_ns += double(s1 - cursor) * period_ns;
+                    cursor = s1;
                 }
             }
-            hud_prev_end_stamp = stamps[count - 1];
+            hud_prev_end_stamp = cursor;
             hud_has_prev_end = true;
             BbStats::hw_gpu_busy_ns.fetch_add(static_cast<u64>(busy_ns), std::memory_order_relaxed);
             BbStats::hw_gpu_gap_ns.fetch_add(static_cast<u64>(gap_ns), std::memory_order_relaxed);
@@ -305,17 +314,23 @@ void GpuProfiler::Print(bool to_file) {
     for (const auto& [key, total] : sorted) {
         sum += total.ms;
     }
+    static const bool verbose = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
     FILE* f = std::fopen("/tmp/bb_gpu_profile.txt", "w");
-    std::printf("GPU profile: %.2f ms/frame over %llu frames, %zu labels\n", sum / frames,
-                static_cast<unsigned long long>(frames), sorted.size());
+    std::printf("GPU profile: %.2f ms/frame over %llu frames, %zu labels (details in /tmp/bb_gpu_profile.txt)\n",
+                sum / frames, static_cast<unsigned long long>(frames), sorted.size());
     if (f) {
         std::fprintf(f, "GPU profile: %.2f ms/frame over %llu frames, %zu labels\n", sum / frames,
                      static_cast<unsigned long long>(frames), sorted.size());
     }
     for (size_t i = 0; i < std::min<size_t>(sorted.size(), 40); ++i) {
         const auto& [key, total] = sorted[i];
-        std::printf("  %6.3f ms/frame %5.1f/frame  %s\n", total.ms / frames,
-                    double(total.segments) / frames, described[key].c_str());
+        if (verbose) {
+            std::printf("  %6.3f ms/frame %5.1f/frame  %s\n", total.ms / frames,
+                        double(total.segments) / frames, described[key].c_str());
+        }
         if (f) {
             std::fprintf(f, "  %6.3f ms/frame %5.1f/frame  %s\n", total.ms / frames,
                          double(total.segments) / frames, described[key].c_str());
@@ -330,9 +345,11 @@ void GpuProfiler::Print(bool to_file) {
         for (const double gap : gaps) {
             over += gap >= 0.25 ? gap : 0;
         }
-        std::printf("  submission gaps: %zu, median %.3f ms, p90 %.3f, max %.3f; %.3f ms/frame "
-                    "in gaps of 0.25 ms or more\n",
-                    gaps.size(), at(0.5), at(0.9), gaps.back(), over / frames);
+        if (verbose) {
+            std::printf("  submission gaps: %zu, median %.3f ms, p90 %.3f, max %.3f; %.3f ms/frame "
+                        "in gaps of 0.25 ms or more\n",
+                        gaps.size(), at(0.5), at(0.9), gaps.back(), over / frames);
+        }
         if (f) {
             std::fprintf(f,
                          "  submission gaps: %zu, median %.3f ms, p90 %.3f, max %.3f; %.3f ms/frame "
@@ -351,8 +368,10 @@ void GpuProfiler::Print(bool to_file) {
             return (a.draws != b.draws) ? (a.draws > b.draws)
                                         : (a.vtx_instances > b.vtx_instances);
         });
-        std::printf("  top shader pairs by draws/frame (%zu unique across %llu frames):\n",
-                    sorted_draws.size(), static_cast<unsigned long long>(draw_frames));
+        if (verbose) {
+            std::printf("  top shader pairs by draws/frame (%zu unique across %llu frames):\n",
+                        sorted_draws.size(), static_cast<unsigned long long>(draw_frames));
+        }
         if (f) {
             std::fprintf(f, "  top shader pairs by draws/frame (%zu unique across %llu frames):\n",
                          sorted_draws.size(), static_cast<unsigned long long>(draw_frames));
@@ -360,10 +379,12 @@ void GpuProfiler::Print(bool to_file) {
         const double inv_df = 1.0 / double(draw_frames);
         for (size_t i = 0; i < std::min<size_t>(sorted_draws.size(), 25); ++i) {
             const auto& st = sorted_draws[i];
-            std::printf("    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",
-                        double(st.draws) * inv_df, double(st.vtx_instances) * inv_df, st.width,
-                        st.height, st.num_mrts, static_cast<unsigned long long>(st.vs_hash),
-                        static_cast<unsigned long long>(st.ps_hash));
+            if (verbose) {
+                std::printf("    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",
+                            double(st.draws) * inv_df, double(st.vtx_instances) * inv_df, st.width,
+                            st.height, st.num_mrts, static_cast<unsigned long long>(st.vs_hash),
+                            static_cast<unsigned long long>(st.ps_hash));
+            }
             if (f) {
                 std::fprintf(
                     f, "    %6.1f draws/f %9.1f idx/f  %4ux%-4u [%u MRT] vs %016llx ps %016llx\n",

@@ -10,16 +10,43 @@
 #include <span>
 #include <vector>
 
+#include "bbgpu/shaders/cs_a954e79d_indirect_prep_comp.h"
+#include "bbgpu/shaders/ps_0ef50047_pbr_frag.h"
 #include "bbgpu/shaders/ps_0f61fd27_vsm_blur_frag.h"
+#include "bbgpu/shaders/ps_111fce32_frag.h"
+#include "bbgpu/shaders/ps_11ffdfb5_frag.h"
 #include "bbgpu/shaders/ps_1ae03d75_vsm_moment_cldist_frag.h"
 #include "bbgpu/shaders/ps_1ae03d75_vsm_moment_noclip_frag.h"
+#include "bbgpu/shaders/ps_1c3953c6_gbuf_frag.h"
+#include "bbgpu/shaders/ps_2390c887_gbuf7_frag.h"
 #include "bbgpu/shaders/ps_32e47788_atmos_fog_frag.h"
+#include "bbgpu/shaders/ps_38d65b32_frag.h"
+#include "bbgpu/shaders/ps_5c02eaf8_frag.h"
 #include "bbgpu/shaders/ps_5e224cb6_vfx_fog_frag.h"
+#include "bbgpu/shaders/ps_6b42fc89_frag.h"
 #include "bbgpu/shaders/ps_71c96598_vfx_fog_frag.h"
+#include "bbgpu/shaders/ps_7cc2c044_pbr_frag.h"
+#include "bbgpu/shaders/ps_8aba0ecd_gbuf_frag.h"
 #include "bbgpu/shaders/ps_8c08444c_blur13_frag.h"
+#include "bbgpu/shaders/ps_a22c7f71_pbr_frag.h"
+#include "bbgpu/shaders/ps_bae5454e_pbr_frag.h"
+#include "bbgpu/shaders/ps_bb10e440_gbuf_frag.h"
+#include "bbgpu/shaders/ps_cbbca5dc_frag.h"
+#include "bbgpu/shaders/ps_d92266b9_pbr_frag.h"
+#include "bbgpu/shaders/ps_e0305cef_post_frag.h"
+#include "bbgpu/shaders/ps_e55e45eb_frag.h"
+#include "bbgpu/shaders/ps_e96447c3_pbr_frag.h"
 #include "bbgpu/shaders/ps_ed4c7668_lut3d_frag.h"
+#include "bbgpu/shaders/ps_f55643de_frag.h"
 #include "bbgpu/shaders/ps_f7229091_bgra_blit_frag.h"
+#include "bbgpu/shaders/vs_061fbbf6_vert.h"
 #include "bbgpu/shaders/vs_167daba6_vsm_shadow_vert.h"
+#include "bbgpu/shaders/vs_1ea5a07e_vert.h"
+#include "bbgpu/shaders/vs_637500e0_vert.h"
+#include "bbgpu/shaders/vs_6a833138_gbuf_inst_vert.h"
+#include "bbgpu/shaders/vs_7620368b_gbuf_uv2_vert.h"
+#include "bbgpu/shaders/vs_9da6aacb_gbuf_vert.h"
+#include "bbgpu/shaders/vs_ecbef4c7_gbuf_inst_uv2_vert.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -38,8 +65,15 @@ constexpr u32 kOpTypeSampledImage = 27u;
 constexpr u32 kOpTypeStruct = 30u;
 constexpr u32 kOpTypePointer = 32u;
 constexpr u32 kOpFunction = 54u;
+constexpr u32 kOpFunctionCall = 57u;
 constexpr u32 kOpVariable = 59u;
+constexpr u32 kOpLoad = 61u;
+constexpr u32 kOpStore = 62u;
+constexpr u32 kOpAccessChain = 65u;
+constexpr u32 kOpInBoundsAccessChain = 66u;
+constexpr u32 kOpImageTexelPointer = 67u;
 constexpr u32 kOpDecorate = 71u;
+constexpr u32 kOpCopyObject = 83u;
 
 // Storage classes
 constexpr u32 kStorageClassUniformConstant = 0u;
@@ -73,7 +107,7 @@ struct NativeShaderCandidate {
     const char* label;
 };
 
-constexpr std::array<NativeShaderCandidate, 10> kNativeRegistry{{
+constexpr std::array<NativeShaderCandidate, 37> kNativeRegistry{{
     {0x000000000f61fd27ull, PS_0F61FD27_VSM_BLUR_FRAG, "ps_0f61fd27_vsm_blur"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_CLDIST_FRAG, "ps_1ae03d75_vsm_moment_cldist"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_NOCLIP_FRAG, "ps_1ae03d75_vsm_moment_noclip"},
@@ -84,6 +118,33 @@ constexpr std::array<NativeShaderCandidate, 10> kNativeRegistry{{
     {0x0000000032e47788ull, PS_32E47788_ATMOS_FOG_FRAG, "ps_32e47788_atmos_fog"},
     {0x000000005e224cb6ull, PS_5E224CB6_VFX_FOG_FRAG, "ps_5e224cb6_vfx_fog"},
     {0x0000000071c96598ull, PS_71C96598_VFX_FOG_FRAG, "ps_71c96598_vfx_fog"},
+    {0x000000009da6aacbull, VS_9DA6AACB_GBUF_VERT, "vs_9da6aacb_gbuf"},
+    {0x000000006a833138ull, VS_6A833138_GBUF_INST_VERT, "vs_6a833138_gbuf_inst"},
+    {0x000000007620368bull, VS_7620368B_GBUF_UV2_VERT, "vs_7620368b_gbuf_uv2"},
+    {0x00000000ecbef4c7ull, VS_ECBEF4C7_GBUF_INST_UV2_VERT, "vs_ecbef4c7_gbuf_inst_uv2"},
+    {0x00000000bb10e440ull, PS_BB10E440_GBUF_FRAG, "ps_bb10e440_gbuf"},
+    {0x000000008aba0ecdull, PS_8ABA0ECD_GBUF_FRAG, "ps_8aba0ecd_gbuf"},
+    {0x000000001c3953c6ull, PS_1C3953C6_GBUF_FRAG, "ps_1c3953c6_gbuf"},
+    {0x00000000a22c7f71ull, PS_A22C7F71_PBR_FRAG, "ps_a22c7f71_pbr"},
+    {0x00000000d92266b9ull, PS_D92266B9_PBR_FRAG, "ps_d92266b9_pbr"},
+    {0x000000007cc2c044ull, PS_7CC2C044_PBR_FRAG, "ps_7cc2c044_pbr"},
+    {0x00000000e96447c3ull, PS_E96447C3_PBR_FRAG, "ps_e96447c3_pbr"},
+    {0x00000000bae5454eull, PS_BAE5454E_PBR_FRAG, "ps_bae5454e_pbr"},
+    {0x000000000ef50047ull, PS_0EF50047_PBR_FRAG, "ps_0ef50047_pbr"},
+    {0x00000000e0305cefull, PS_E0305CEF_POST_FRAG, "ps_e0305cef_post"},
+    {0x000000002390c887ull, PS_2390C887_GBUF7_FRAG, "ps_2390c887_gbuf7"},
+    {0x00000000a954e79dull, CS_A954E79D_INDIRECT_PREP_COMP, "cs_a954e79d_indirect_prep"},
+    {0x00000000e55e45ebull, PS_E55E45EB_FRAG, "ps_e55e45eb_godrays"},
+    {0x000000005c02eaf8ull, PS_5C02EAF8_FRAG, "ps_5c02eaf8_tonemap"},
+    {0x0000000011ffdfb5ull, PS_11FFDFB5_FRAG, "ps_11ffdfb5_bilateral"},
+    {0x00000000111fce32ull, PS_111FCE32_FRAG, "ps_111fce32_dof_lerp"},
+    {0x00000000cbbca5dcull, PS_CBBCA5DC_FRAG, "ps_cbbca5dc_ssao"},
+    {0x00000000f55643deull, PS_F55643DE_FRAG, "ps_f55643de_csm_pcf"},
+    {0x0000000038d65b32ull, PS_38D65B32_FRAG, "ps_38d65b32_gamma_lut1d"},
+    {0x000000006b42fc89ull, PS_6B42FC89_FRAG, "ps_6b42fc89_pbr_3pt_vsm"},
+    {0x00000000637500e0ull, VS_637500E0_VERT, "vs_637500e0_godrays"},
+    {0x00000000061fbbf6ull, VS_061FBBF6_VERT, "vs_061fbbf6_post_quad"},
+    {0x000000001ea5a07eull, VS_1EA5A07E_VERT, "vs_1ea5a07e_tonemap"},
 }};
 
 struct DescSlot {
@@ -126,6 +187,7 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
     std::vector<u8> var_has_binding(bound, 0u);
     std::vector<u32> var_binding(bound, 0u);
     std::vector<u32> var_set(bound, 0u);
+    std::vector<u8> var_used(bound, 0u);
 
     struct VarRec {
         u32 id;
@@ -133,6 +195,7 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
         u32 sc;
     };
     std::vector<VarRec> global_vars;
+    bool in_func = false;
 
     for (size_t pos = 5; pos < spv.size();) {
         const u32 wc = spv[pos] >> 16;
@@ -142,7 +205,38 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
         }
         const u32* w = &spv[pos];
         if (op == kOpFunction) {
-            break; // All entry points, decorations, types, and global variables precede OpFunction.
+            in_func = true;
+        }
+        if (in_func) {
+            // Track which global descriptor variables are actually referenced inside functions
+            // (so unreferenced pre-spirv-opt declarations like %clip_planes are ignored).
+            switch (op) {
+            case kOpLoad:
+            case kOpAccessChain:
+            case kOpInBoundsAccessChain:
+            case kOpImageTexelPointer:
+            case kOpCopyObject:
+                if (wc >= 4 && w[3] < bound) {
+                    var_used[w[3]] = 1u;
+                }
+                break;
+            case kOpStore:
+                if (wc >= 3 && w[1] < bound) {
+                    var_used[w[1]] = 1u;
+                }
+                break;
+            case kOpFunctionCall:
+                for (u32 i = 3; i < wc; ++i) {
+                    if (w[i] < bound) {
+                        var_used[w[i]] = 1u;
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+            pos += wc;
+            continue;
         }
 
         switch (op) {
@@ -268,7 +362,7 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
             const u32 loc = var_loc[v.id];
             sig.out_loc_mask |= (1ull << loc);
             sig.out_comps[loc] = (pointee < bound) ? type_comps[pointee] : 0u;
-        } else if (var_has_binding[v.id]) {
+        } else if (var_has_binding[v.id] && var_used[v.id]) {
             u32 kind_tag = 0;
             if (v.sc == kStorageClassStorageBuffer) {
                 kind_tag = 0x5001u; // SSBO
@@ -381,8 +475,7 @@ bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
         if (!cand_sig.descs.empty()) {
             if (cand_sig.descs[0].binding == ref_sig.descs[0].binding) {
                 base_binding = 0;
-            } else if (cand_sig.descs[0].binding == 0 && cand_sig.exec_model != 0 &&
-                       ref_sig.descs[0].binding > 0) {
+            } else if (cand_sig.descs[0].binding == 0 && ref_sig.descs[0].binding > 0) {
                 base_binding = ref_sig.descs[0].binding;
             } else {
                 continue;

@@ -256,7 +256,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         runtime.AccessGlobal(vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eShaderWrite);
         needs_barrier = true;
     }
-    {
+    if (pipeline->IsCompute()) [[unlikely]] {
         // bbport BB_HLE_STATS=1 (diagnostics): how often the compute shader substitutions fire.
         static const bool hle_stats = std::getenv("BB_HLE_STATS") != nullptr;
         // BB_HLE_OFF=mask (experiment): 1 image copy, 2 metadata clear, 4 image clear run as the
@@ -313,7 +313,10 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
 
     bool uses_dma = false;
 
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
+    static const bool stats = [] {
+        const char* env = std::getenv("BB_VERBOSE_STATS");
+        return env && env[0] == '1';
+    }();
     if (stats && ((helper_full + helper_partial + helper_serial) & 1023) == 0) {
         static auto window = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();
@@ -337,17 +340,30 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     push_data = MakeUserData(Regs());
     if (!HelperEligible(pipeline)) {
         ++helper_serial;
+        size_t total_descriptors = 0;
+        for (const auto* stage : pipeline->GetStages()) {
+            if (stage) {
+                total_descriptors +=
+                    stage->buffers.size() + stage->images.size() + stage->samplers.size();
+            }
+        }
+        set_writes.resize(total_descriptors);
         for (const auto* stage : pipeline->GetStages()) {
             if (!stage) {
                 continue;
             }
-            set_writes.resize(set_writes.size() + stage->buffers.size() + stage->images.size() +
-                              stage->samplers.size());
             stage->PushUd(binding, push_data);
             const PreparedStage* prepared = FindPreparedStage(*stage);
-            BindBuffers(*stage, prepared, binding, push_data, set_write_index);
-            BindTextures(*stage, prepared, binding, set_write_index, needs_barrier);
+            if (!stage->buffers.empty()) {
+                BindBuffers(*stage, prepared, binding, push_data, set_write_index);
+            }
+            if (!stage->images.empty() || !stage->samplers.empty()) {
+                BindTextures(*stage, prepared, binding, set_write_index, needs_barrier);
+            }
             uses_dma |= stage->uses_dma;
+        }
+        if (set_write_index != set_writes.size()) [[unlikely]] {
+            set_writes.resize(set_write_index);
         }
     } else {
         // bbport: textures on the helper, buffers here. Without mip arrays every stage's
@@ -418,6 +434,38 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     return true;
 }
 
+namespace {
+struct StageBVtxIdxDedup {
+    const Scheduler* sched = nullptr;
+    u64 vtx_epoch = 0;
+    VertexInputs<vk::VertexInputBindingDescription2EXT> bindings;
+    VertexInputs<vk::VertexInputAttributeDescription2EXT> attributes;
+    VertexInputs<vk::Buffer> buffers;
+    VertexInputs<vk::DeviceSize> offsets;
+
+    u64 ib_emit_epoch = 0;
+    vk::Buffer ib_handle = VK_NULL_HANDLE;
+    vk::DeviceSize ib_offset = 0;
+    vk::IndexType ib_type = vk::IndexType::eUint16;
+
+    u64 ib_resolve_epoch = 0;
+    VAddr ib_guest_addr = 0;
+    u32 ib_guest_size = 0;
+    bool ib_guest_index16 = false;
+    vk::Buffer ib_resolved_handle = VK_NULL_HANDLE;
+    vk::DeviceSize ib_resolved_offset = 0;
+};
+
+thread_local std::unique_ptr<StageBVtxIdxDedup> tls_vtx_idx_dedup;
+
+StageBVtxIdxDedup& GetVtxIdxDedup() {
+    if (!tls_vtx_idx_dedup) [[unlikely]] {
+        tls_vtx_idx_dedup = std::make_unique<StageBVtxIdxDedup>();
+    }
+    return *tls_vtx_idx_dedup;
+}
+} // namespace
+
 void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline, const PreparedDraw* prepared) {
     ResolveVertexBuffers(pipeline, prepared);
     EmitVertexBuffers();
@@ -430,6 +478,53 @@ void Rasterizer::EmitVertexBuffers() {
     auto& v = vertex_binds;
     const bool dynamic_input = instance.IsVertexInputDynamicState();
     const u32 num_buffers = v.num_buffers;
+    if (dynamic_input && StageBFastBind()) {
+        auto& d = GetVtxIdxDedup();
+        const u64 cur_epoch = scheduler.DescriptorStateEpoch();
+        const bool same_epoch = (d.sched == &scheduler && d.vtx_epoch == cur_epoch);
+        const bool same_layout =
+            same_epoch && d.bindings.size() == v.bindings.size() &&
+            d.attributes.size() == v.attributes.size() &&
+            (v.bindings.empty() ||
+             std::memcmp(d.bindings.data(), v.bindings.data(),
+                         v.bindings.size() * sizeof(v.bindings[0])) == 0) &&
+            (v.attributes.empty() ||
+             std::memcmp(d.attributes.data(), v.attributes.data(),
+                         v.attributes.size() * sizeof(v.attributes[0])) == 0);
+        const bool same_buffers =
+            same_epoch && d.buffers.size() == num_buffers &&
+            (num_buffers == 0 ||
+             (std::memcmp(d.buffers.data(), v.host_buffers.data(),
+                          num_buffers * sizeof(vk::Buffer)) == 0 &&
+              std::memcmp(d.offsets.data(), v.host_offsets.data(),
+                          num_buffers * sizeof(vk::DeviceSize)) == 0));
+        if (same_layout && same_buffers) {
+            return;
+        }
+        d.sched = &scheduler;
+        d.vtx_epoch = cur_epoch;
+        if (!same_buffers) {
+            d.buffers.assign(v.host_buffers.begin(), v.host_buffers.begin() + num_buffers);
+            d.offsets.assign(v.host_offsets.begin(), v.host_offsets.begin() + num_buffers);
+        }
+        if (same_layout) {
+            if (num_buffers == 0) {
+                return;
+            }
+            scheduler.ReserveRecordData(
+                num_buffers * (sizeof(vk::Buffer) + sizeof(vk::DeviceSize)) + 64);
+            const auto buffers = scheduler.RecordData(
+                std::span<const vk::Buffer>{v.host_buffers.data(), num_buffers});
+            const auto offsets = scheduler.RecordData(
+                std::span<const vk::DeviceSize>{v.host_offsets.data(), num_buffers});
+            scheduler.Record([num_buffers, buffers, offsets](vk::CommandBuffer cmdbuf) {
+                cmdbuf.bindVertexBuffers(0, num_buffers, buffers.data(), offsets.data());
+            });
+            return;
+        }
+        d.bindings.assign(v.bindings.begin(), v.bindings.end());
+        d.attributes.assign(v.attributes.begin(), v.attributes.end());
+    }
     scheduler.ReserveRecordData(
         v.bindings.size() * sizeof(v.bindings[0]) + v.attributes.size() * sizeof(v.attributes[0]) +
         num_buffers * (sizeof(vk::Buffer) + 3 * sizeof(vk::DeviceSize)) + 128);
@@ -837,10 +932,14 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         const u64 raw_range_size = range.end - range.begin;
         u64 size = raw_range_size;
         bool is_direct_buf = false;
+        const bool is_transient_ring =
+            VideoCore::DirectBuffers::IsTransientCpuRingAddress(range.begin);
         if (!HasPendingHleCopies()) {
             u64 direct_size = raw_range_size;
-            std::tie(range.buffer, range.offset) =
-                direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            if (!is_transient_ring) {
+                std::tie(range.buffer, range.offset) =
+                    direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            }
             if (range.buffer && direct_size >= min_stream_span) {
                 size = direct_size;
                 is_direct_buf = true;
@@ -860,8 +959,10 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                 FlushPendingHleCopies(*this);
             }
             u64 direct_size = size;
-            std::tie(range.buffer, range.offset) =
-                direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            if (!is_transient_ring) {
+                std::tie(range.buffer, range.offset) =
+                    direct_buffers.TryResolveReadClamped(range.begin, direct_size);
+            }
             if (range.buffer && direct_size >= min_stream_span) {
                 size = direct_size;
                 is_direct_buf = true;
@@ -968,6 +1069,20 @@ void Rasterizer::BindIndexBuffer(u32 index_offset) {
 }
 
 void Rasterizer::EmitIndexBuffer() {
+    if (StageBFastBind()) {
+        auto& d = GetVtxIdxDedup();
+        const u64 cur_epoch = scheduler.DescriptorStateEpoch();
+        if (d.sched == &scheduler && d.ib_emit_epoch == cur_epoch &&
+            d.ib_handle == index_bind.handle && d.ib_offset == index_bind.offset &&
+            d.ib_type == index_bind.type) {
+            return;
+        }
+        d.sched = &scheduler;
+        d.ib_emit_epoch = cur_epoch;
+        d.ib_handle = index_bind.handle;
+        d.ib_offset = index_bind.offset;
+        d.ib_type = index_bind.type;
+    }
     scheduler.Record([handle = index_bind.handle, offset = index_bind.offset,
                       type = index_bind.type](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindIndexBuffer(handle, offset, type);
@@ -986,6 +1101,19 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const u32 size = regs.num_indices * index_size;
     if (HasPendingHleCopies() && PendingHleCopiesConflict(address, size, false)) {
         FlushPendingHleCopies(*this);
+    }
+    if (StageBFastBind() && !VideoCore::BufferCache::LayerPagedActive() &&
+        !InPlaceReads::Enabled()) {
+        auto& d = GetVtxIdxDedup();
+        const u64 cur_epoch = scheduler.DescriptorStateEpoch();
+        if (d.sched == &scheduler && d.ib_resolve_epoch == cur_epoch &&
+            d.ib_guest_addr == address && d.ib_guest_size == size &&
+            d.ib_guest_index16 == index16 && d.ib_resolved_handle) {
+            BbStats::native_buf_hits.fetch_add(1, std::memory_order_relaxed);
+            index_bind = {d.ib_resolved_handle, d.ib_resolved_offset,
+                          index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32};
+            return;
+        }
     }
     bool is_direct_buf = false;
     u64 idx_size = size;
@@ -1007,6 +1135,15 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
         (is_direct_buf && buffer->uav_written)) {
         needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
         bound_buffers.emplace_back(buffer, offset, size, false);
+    } else if (is_direct_buf) {
+        auto& d = GetVtxIdxDedup();
+        d.sched = &scheduler;
+        d.ib_resolve_epoch = scheduler.DescriptorStateEpoch();
+        d.ib_guest_addr = address;
+        d.ib_guest_size = size;
+        d.ib_guest_index16 = index16;
+        d.ib_resolved_handle = buffer->Handle();
+        d.ib_resolved_offset = offset;
     }
     index_bind = {buffer->Handle(), offset, index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32};
 }
@@ -1121,10 +1258,12 @@ void Rasterizer::BindSpecialBuffer(const Shader::BufferResource& desc, const Sha
         if (desc.is_written) {
             InvalidateGdsMirror();
         }
+        gds_slice_used_by_cs = true;
         const auto* gds = buffer_cache.GetGdsBuffer();
-        buffer_infos.emplace_back(gds->Handle(), 0, gds->SizeBytes());
-        needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes(), desc.is_written);
-        bound_buffers.emplace_back(gds, 0, gds->SizeBytes(), desc.is_written);
+        const u64 slice_size = std::min<u64>(kGdsSliceBytes, gds->SizeBytes() - gds_slice_offset);
+        buffer_infos.emplace_back(gds->Handle(), gds_slice_offset, slice_size);
+        needs_barrier |= runtime.IsBufferAccessed(gds, gds_slice_offset, slice_size, desc.is_written);
+        bound_buffers.emplace_back(gds, gds_slice_offset, slice_size, desc.is_written);
         break;
     }
     case Shader::BufferType::Flatbuf: {
@@ -1262,7 +1401,8 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     const bool can_try_direct_read =
-        !desc.is_written && (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address)));
+        !desc.is_written && !VideoCore::DirectBuffers::IsTransientCpuRingAddress(address) &&
+        (!desc.is_formatted || (n1_native_bufs && !texture_cache.IsMeta(address)));
     bool is_direct_buf = false;
     const VideoCore::Buffer* buffer = nullptr;
     u64 offset = 0;

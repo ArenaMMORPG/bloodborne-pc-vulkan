@@ -676,20 +676,26 @@ void Instance::ReadFormats() {
     });
     block_texel_view = block_view.result == vk::Result::eSuccess;
 
-    for (const auto& format : GcnToVk::SurfaceFormats()) {
-        if (!IsFormatSupported(format.vk_format, format.flags)) {
-            LOG_WARNING(Render_Vulkan, "Format {} (data {}, number {}) lacks {}",
-                        vk::to_string(format.vk_format), u32(format.data_format),
-                        u32(format.number_format),
-                        vk::to_string(format.flags & ~FormatFeatures(format.vk_format)));
+    static const bool verbose_formats = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (verbose_formats) {
+        for (const auto& format : GcnToVk::SurfaceFormats()) {
+            if (!IsFormatSupported(format.vk_format, format.flags)) {
+                LOG_WARNING(Render_Vulkan, "Format {} (data {}, number {}) lacks {}",
+                            vk::to_string(format.vk_format), u32(format.data_format),
+                            u32(format.number_format),
+                            vk::to_string(format.flags & ~FormatFeatures(format.vk_format)));
+            }
         }
-    }
-    for (const auto& format : GcnToVk::DepthFormats()) {
-        if (!IsFormatSupported(format.vk_format, format.flags)) {
-            LOG_WARNING(Render_Vulkan, "Depth format {} (z {}, stencil {}) lacks {}",
-                        vk::to_string(format.vk_format), u32(format.z_format),
-                        u32(format.stencil_format),
-                        vk::to_string(format.flags & ~FormatFeatures(format.vk_format)));
+        for (const auto& format : GcnToVk::DepthFormats()) {
+            if (!IsFormatSupported(format.vk_format, format.flags)) {
+                LOG_WARNING(Render_Vulkan, "Depth format {} (z {}, stencil {}) lacks {}",
+                            vk::to_string(format.vk_format), u32(format.z_format),
+                            u32(format.stencil_format),
+                            vk::to_string(format.flags & ~FormatFeatures(format.vk_format)));
+            }
         }
     }
 }

@@ -453,6 +453,13 @@ enum class Op : u32 {
     TimestampQuery = 24u,
     BindVsShader = 25u,
     BindPsShader = 26u,
+    BindCsShader = 27u,
+    BindEsShader = 28u,
+    BindGsShader = 29u,
+    BindHsShader = 30u,
+    BindLsShader = 31u,
+    InitDefaultHardwareState = 32u,
+    SetVgtControl = 33u,
 };
 struct CopyRegion {
     u64 dst_va;

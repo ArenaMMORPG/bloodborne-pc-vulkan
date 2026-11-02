@@ -266,6 +266,21 @@ void Runtime::FlushBarriers(bool include_graphics) {
     }
 }
 
+void Runtime::FlushImageBarriers() {
+    if (image_barriers.empty()) {
+        return;
+    }
+    scheduler.EndRendering();
+    scheduler.Record([images = scheduler.RecordData(std::span<const vk::ImageMemoryBarrier2>(
+                          image_barriers.data(), image_barriers.size()))](vk::CommandBuffer cmdbuf) {
+        cmdbuf.pipelineBarrier2({
+            .imageMemoryBarrierCount = u32(images.size()),
+            .pImageMemoryBarriers = images.data(),
+        });
+    });
+    image_barriers.clear();
+}
+
 bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
                       vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access,
                       std::optional<VideoCore::SubresourceRange> range,
@@ -328,6 +343,9 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
         needs_flush = IsBufferAccessed(src, src_min, src_max - src_min) ||
                       IsBufferAccessed(dst, dst_min, dst_max - dst_min, true);
     }
+    if (needs_flush) {
+        FlushBarriers(false);
+    }
     // BB_GPU_PROFILE: buffer copies get a mark of their own (by size class), as image transfers.
     GpuProfiler* profiler = GpuProfiler::Get();
     u64 resume = 0;
@@ -341,9 +359,6 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
         profiler->Mark(0xB0FC'0000ull + log2, [log2] {
             return fmt::format("buffer copy, {} KiB class", (1ull << log2) >> 10);
         });
-    }
-    if (needs_flush) {
-        FlushBarriers(false);
     }
     scheduler.Record([src = src->Handle(), dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -491,8 +506,10 @@ void Runtime::PrepareTransfer(VideoCore::Image* src, VideoCore::Image* dst,
     scheduler.EndRendering();
     bool needs_flush = Transit(src, Layout::eTransferSrcOptimal, stage, AccessBit::eTransferRead);
     needs_flush |= Transit(dst, Layout::eTransferDstOptimal, stage, AccessBit::eTransferWrite);
-    if (needs_flush || extra_flush) {
+    if (extra_flush) {
         FlushBarriers();
+    } else if (needs_flush) {
+        FlushImageBarriers();
     }
 }
 
@@ -619,7 +636,7 @@ void Runtime::CopyImageSubresource(VideoCore::Image* src, VideoCore::Image* dst,
         src_range.base.layer == dst_range.base.layer) {
         if (Transit(src, Layout::eGeneral, Stage::eCopy,
                     AccessBit::eTransferRead | AccessBit::eTransferWrite, src_range)) {
-            FlushBarriers();
+            FlushImageBarriers();
         }
         scheduler.Record([img = src->GetImage(), region](vk::CommandBuffer cmdbuf) {
             cmdbuf.copyImage(img, Layout::eGeneral, img, Layout::eGeneral, 1, &region);
@@ -632,7 +649,7 @@ void Runtime::CopyImageSubresource(VideoCore::Image* src, VideoCore::Image* dst,
             Transit(dst, Layout::eTransferDstOptimal, Stage::eCopy, AccessBit::eTransferWrite,
                     dst_range);
         if (needs_flush) {
-            FlushBarriers();
+            FlushImageBarriers();
         }
         CopyImageRegions(src, dst, std::span{&region, 1});
     }
@@ -664,7 +681,7 @@ void Runtime::CopyImageSubresources(VideoCore::Image* src, VideoCore::Image* dst
                     dst_ranges[i]);
     }
     if (needs_flush) {
-        FlushBarriers();
+        FlushImageBarriers();
     }
     CopyImageRegions(src, dst, regions);
     MarkCopied(dst, VideoCore::ImageFlagBits::GpuModified);
@@ -754,7 +771,7 @@ void Runtime::ClearImage(VideoCore::Image* dst, const VideoCore::SubresourceRang
     }
     if (Transit(dst, Layout::eTransferDstOptimal, Stage::eClear, AccessBit::eTransferWrite,
                 range)) {
-        FlushBarriers();
+        FlushImageBarriers();
     }
     const vk::ImageSubresourceRange vk_range{vk::ImageAspectFlagBits::eColor, range.base.level,
                                              range.extent.levels, range.base.layer,
@@ -780,7 +797,7 @@ void Runtime::ClearDepthStencilImage(VideoCore::Image* dst,
     scheduler.EndRendering();
     if (Transit(dst, Layout::eTransferDstOptimal, Stage::eClear, AccessBit::eTransferWrite,
                 range)) {
-        FlushBarriers();
+        FlushImageBarriers();
     }
     const vk::ImageSubresourceRange vk_range{aspect, range.base.level, range.extent.levels,
                                              range.base.layer, range.extent.layers};

@@ -1104,15 +1104,21 @@ void CGGpuBlitAndClearPassesGnm_ResolveMsaaColorTarget(
 
     const uint32_t w = *reinterpret_cast<const uint16_t*>(dst_resolved_tex + 0x2c);
     const uint32_t h = *reinterpret_cast<const uint16_t*>(dst_resolved_tex + 0x2e);
-    GX_CALL(void, 0x1096f60ULL,
-            (void*, uint32_t, uint32_t, uint32_t, uint32_t, float, float),
-            gnmx_ctx, 0u, 0u, w, h, 1.0f, 0.0f);
-
     const uint32_t num_samples = CGGpuBlitAndClearPassesGnm_GetNumSamples(
         *reinterpret_cast<const uint16_t*>(dst_resolved_tex + 0x34),
         *reinterpret_cast<const uint16_t*>(dst_resolved_tex + 0x36),
         (*reinterpret_cast<const uint32_t*>(dst_resolved_tex + 0x24) >> 10) & 1u);
-    GX_CALL(void, 0x1077150ULL, (void*, uint32_t, uint32_t), gnmx_ctx, num_samples != 0u ? 1u : 0u, 0u);
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::ContextRegBatch vp_batch{};
+        vp_batch.SetupScreenViewport(gnmx_ctx, 0u, 0u, w, h, 1.0f, 0.0f);
+        vp_batch.SetAaScissorEnable(gnmx_ctx, num_samples != 0u ? 1u : 0u, 0u);
+        vp_batch.Flush(gnmx_ctx);
+    } else {
+        GX_CALL(void, 0x1096f60ULL,
+                (void*, uint32_t, uint32_t, uint32_t, uint32_t, float, float),
+                gnmx_ctx, 0u, 0u, w, h, 1.0f, 0.0f);
+        GX_CALL(void, 0x1077150ULL, (void*, uint32_t, uint32_t), gnmx_ctx, num_samples != 0u ? 1u : 0u, 0u);
+    }
 
     uint64_t smp[2] = {};
     GX_CALL(void, 0x1086dd0ULL, (void*), smp);
@@ -1176,28 +1182,44 @@ void CGGpuBlitAndClearPassesGnm_ResolveMsaaColorTarget(
     GX_CALL(void, 0x1084ea0ULL, (uint32_t*), &blend_ctl);
     GX_CALL(void, 0x1085380ULL, (uint32_t*), &ds_ctl);
     GX_CALL(void, 0x10854b0ULL, (uint32_t*), &prim_ctl);
-    GX_CALL(void, 0x1073090ULL, (void*, uint32_t, uint32_t), gnmx_ctx, 0u, blend_ctl);
-    *reinterpret_cast<uint32_t*>(gnmx_ctx_wrapper + 0xb568) = blend_ctl;
     const uint64_t ffff_50 = *reinterpret_cast<const uint64_t*>(GX_VMA(0x4870350ULL));
-    *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb6e8) = ffff_50;
-    GX_CALL(void, 0x1072fd0ULL, (void*, uint32_t), gnmx_ctx, 0xFu);
+    const uint64_t ffff_58 = *reinterpret_cast<const uint64_t*>(GX_VMA(0x4870358ULL));
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::ContextRegBatch om_batch{};
+        om_batch.SetBlendControl(gnmx_ctx, 0u, blend_ctl);
+        om_batch.SetRenderTargetMask(gnmx_ctx, 0xFu);
+        om_batch.SetDepthControl(gnmx_ctx, ds_ctl);
+        om_batch.SetStencil(gnmx_ctx, prim_ctl);
+        om_batch.Flush(gnmx_ctx);
+    } else {
+        GX_CALL(void, 0x1073090ULL, (void*, uint32_t, uint32_t), gnmx_ctx, 0u, blend_ctl);
+        GX_CALL(void, 0x1072fd0ULL, (void*, uint32_t), gnmx_ctx, 0xFu);
+        GX_CALL(void, 0x10733a0ULL, (void*, uint32_t), gnmx_ctx, ds_ctl);
+        GX_CALL(void, 0x1073400ULL, (void*, uint32_t), gnmx_ctx, prim_ctl);
+    }
+    *reinterpret_cast<uint32_t*>(gnmx_ctx_wrapper + 0xb568) = blend_ctl;
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb560) = 0xFULL;
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb6e8) = ffff_50;
-    GX_CALL(void, 0x10733a0ULL, (void*, uint32_t), gnmx_ctx, ds_ctl);
     *reinterpret_cast<uint32_t*>(gnmx_ctx_wrapper + 0xb5a0) = ds_ctl;
-    const uint64_t ffff_58 = *reinterpret_cast<const uint64_t*>(GX_VMA(0x4870358ULL));
-    *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb6f0) = ffff_58;
-    GX_CALL(void, 0x1073400ULL, (void*, uint32_t), gnmx_ctx, prim_ctl);
     *reinterpret_cast<uint32_t*>(gnmx_ctx_wrapper + 0xb5a4) = prim_ctl;
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb6f0) = ffff_58;
 
     const void* vs_hdr = reinterpret_cast<const void*>(GX_VMA(0x546c530ULL));
     const void* ps_hdr = reinterpret_cast<const void*>(GX_VMA(0x546c778ULL));
     GX_CALL(void, 0x26ce1e0ULL, (void*, void*, const void*, const void*), binder, gnmx_ctx, vs_hdr, ps_hdr);
-    GX_CALL(void, 0x1073fe0ULL, (void*, uint32_t), gnmx_ctx, 0x11u);
+    if (gx_direct_vk::DirectRingEnabled()) {
+        const gx_direct_vk::SetIndexStateArgs idx_args{0ULL, 0x11u, gx_direct_vk::kIndexFlag_SetPrim};
+        gx_direct_vk::EmitSetIndexState(gnmx_ctx, idx_args);
+    } else {
+        GX_CALL(void, 0x1073fe0ULL, (void*, uint32_t), gnmx_ctx, 0x11u);
+    }
     GX_CALL(void, 0x26ce5e0ULL, (void*, void*, const void*, const void*), binder, gnmx_ctx, vs_hdr, ps_hdr);
-    GX_CALL(void, 0x1075370ULL, (void*, uint32_t), gnmx_ctx, 1u);
-    GX_CALL(void, 0x10741b0ULL, (void*, uint32_t), gnmx_ctx, 3u);
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::EmitDrawAuto(gnmx_ctx, 3u, 1u, 0);
+    } else {
+        GX_CALL(void, 0x1075370ULL, (void*, uint32_t), gnmx_ctx, 1u);
+        GX_CALL(void, 0x10741b0ULL, (void*, uint32_t), gnmx_ctx, 3u);
+    }
     GX_CALL(void, 0x26cfc20ULL, (void*, void*), binder, gnmx_ctx);
 
     *reinterpret_cast<uint64_t*>(gnmx_ctx_wrapper + 0xb548) = ~0ULL;

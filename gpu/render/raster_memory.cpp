@@ -45,6 +45,12 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     static const bool n1_native_bufs =
         gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN1_NativeBuffers);
     if (is_gds) {
+        if (gds_slice_used_by_cs && address + num_bytes <= kGdsSliceBytes) {
+            const u64 gds_total = buffer_cache.GetGdsBuffer()->SizeBytes();
+            gds_slice_offset = (gds_slice_offset + kGdsSliceBytes) & (gds_total - kGdsSliceBytes);
+            gds_slice_used_by_cs = false;
+            InvalidateGdsMirror();
+        }
         const u64 first_dw = address / 4;
         const u64 end_dw = (address + num_bytes + 3) / 4;
         for (u64 dw = first_dw; dw < end_dw && dw < gds_dword_mirror.size(); ++dw) {
@@ -79,7 +85,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
         }
     }
     const auto [buffer, offset] =
-        is_gds ? BufferSlice{buffer_cache.GetGdsBuffer(), address}
+        is_gds ? BufferSlice{buffer_cache.GetGdsBuffer(), gds_slice_offset + address}
                : buffer_cache.ObtainBuffer(address, num_bytes, true, false, GpuBarrierCoalesce());
     runtime.FillBuffer(buffer, offset, num_bytes, value);
 }
@@ -94,10 +100,23 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
     if (dst_gds && !src_gds) {
         if (num_bytes == 4 && (dst % 4) == 0 && (dst / 4) < gds_dword_mirror.size() && src != 0) {
             if (gds_dword_mirror[dst / 4] == src) {
+                gds_slice_used_by_cs = false;
                 return;
+            }
+            if (gds_slice_used_by_cs && dst + num_bytes <= kGdsSliceBytes) {
+                const u64 gds_total = buffer_cache.GetGdsBuffer()->SizeBytes();
+                gds_slice_offset = (gds_slice_offset + kGdsSliceBytes) & (gds_total - kGdsSliceBytes);
+                gds_slice_used_by_cs = false;
+                InvalidateGdsMirror();
             }
             gds_dword_mirror[dst / 4] = src;
         } else {
+            if (gds_slice_used_by_cs && dst + num_bytes <= kGdsSliceBytes) {
+                const u64 gds_total = buffer_cache.GetGdsBuffer()->SizeBytes();
+                gds_slice_offset = (gds_slice_offset + kGdsSliceBytes) & (gds_total - kGdsSliceBytes);
+                gds_slice_used_by_cs = false;
+                InvalidateGdsMirror();
+            }
             const u64 first_dw = dst / 4;
             const u64 end_dw = (dst + num_bytes + 3) / 4;
             for (u64 dw = first_dw; dw < end_dw && dw < gds_dword_mirror.size(); ++dw) {
@@ -105,6 +124,10 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             }
         }
     } else if (!dst_gds && src_gds) {
+        if (num_bytes == 4 && (src % 4) == 0 && (src / 4) < gds_dword_mirror.size() && dst != 0 &&
+            gds_dword_mirror[src / 4] == dst) {
+            return;
+        }
         InvalidateGdsMirrorRange(dst, num_bytes);
         if (num_bytes == 4 && (src % 4) == 0 && (src / 4) < gds_dword_mirror.size() && dst != 0) {
             gds_dword_mirror[src / 4] = dst;
@@ -135,7 +158,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             u64 src_offset = 0;
             if (src_gds) {
                 src_buffer = buffer_cache.GetGdsBuffer();
-                src_offset = src;
+                src_offset = gds_slice_offset + src;
             } else {
                 u64 src_sz = num_bytes;
                 std::tie(src_buffer, src_offset) =
@@ -175,7 +198,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
     u64 src_offset = 0;
     if (src_gds) {
         src_buffer = gds;
-        src_offset = src;
+        src_offset = gds_slice_offset + src;
     } else if (n1_native_bufs) {
         u64 src_sz = num_bytes;
         std::tie(src_buffer, src_offset) = direct_buffers.TryResolveReadClamped(src, src_sz);
@@ -187,7 +210,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         std::tie(src_buffer, src_offset) = buffer_cache.ObtainBuffer(src, num_bytes, false, true);
     }
     const auto [dst_buffer, dst_offset] =
-        dst_gds ? BufferSlice{gds, dst}
+        dst_gds ? BufferSlice{gds, gds_slice_offset + dst}
                 : buffer_cache.ObtainBuffer(dst, num_bytes, true, true, GpuBarrierCoalesce());
     const vk::BufferCopy copy{.srcOffset = src_offset, .dstOffset = dst_offset, .size = num_bytes};
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
@@ -1428,7 +1451,8 @@ void Rasterizer::DirectClearDepthStencil(const DirectClearDepthStencilArgs& args
 u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {
     DrainDrawPipe();
     u32 value;
-    std::memcpy(&value, buffer_cache.GetGdsBuffer()->mapped_data.data() + gds_offset,
+    std::memcpy(&value,
+                buffer_cache.GetGdsBuffer()->mapped_data.data() + gds_slice_offset + gds_offset,
                 sizeof(value));
     return value;
 }

@@ -761,12 +761,16 @@ void CGOutputMergerCacheGnm_BindRenderTargetsAndDepth(
         }
     }
 
+    gx_direct_vk::ContextRegBatch tail_batch{};
     if (wh_packed != self->width_height_packed) {
-        sub_1096bd0_setScreenScissor(gfxc, wh_packed);
+        if (direct_bds && gx_direct_vk::DirectRingEnabled()) {
+            tail_batch.SetAaSampleLocations(gfxc, wh_packed);
+        } else {
+            sub_1096bd0_setScreenScissor(gfxc, wh_packed);
+        }
         self->width_height_packed = wh_packed;
     }
 
-    gx_direct_vk::ContextRegBatch tail_batch{};
     if (aa_samples != self->aa_sample_count) {
         uint32_t log2_samples = sub_26b7a90_mapSampleCount(aa_samples);
         if (direct_bds) {

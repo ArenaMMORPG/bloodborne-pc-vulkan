@@ -1013,9 +1013,15 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                 untracked_reads_packet = draw_pipe->NextPacket(); // bindings not listed
             }
             ++num_stages;
+            const bool shared_ud_flat =
+                !Shader::flat_buf_replay &&
+                stage->flattened_ud_buf.size() >= stage->user_data.size();
+            const u32 stage_words =
+                shared_ud_flat
+                    ? u32(stage->flattened_ud_buf.size())
+                    : u32(stage->user_data.size() + stage->flattened_ud_buf.size());
             size += sizeof(PacketStage) +
-                    AlignPacket(u32(stage->user_data.size() + stage->flattened_ud_buf.size()) *
-                                sizeof(u32)) +
+                    AlignPacket(stage_words * sizeof(u32)) +
                     u32(ring.size() * sizeof(RingBinding));
         }
     }
@@ -1062,6 +1068,8 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         n1_native_post && FastNonCeRamSkip() && !BbCeStats::Enabled();
     thread_local boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS> vsharps;
     vsharps.clear();
+    const boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS>* active_vsharps =
+        &vsharps;
     if (pipeline && !pipeline->IsCompute()) {
         const auto* graphics = static_cast<const GraphicsPipeline*>(pipeline);
         if (const auto& fetch = graphics->GetFetchShader();
@@ -1086,11 +1094,10 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                     }
                 }
             } else {
-                const bool got_fast_vsharps =
-                    pipeline_cache.ConsumeFastVsharps(graphics, vsharps) &&
-                    vsharps.size() == fetch->attributes.size();
-                if (!got_fast_vsharps) {
-                    vsharps.clear();
+                const auto* fast_vs = pipeline_cache.PeekFastVsharps(graphics);
+                if (fast_vs && fast_vs->size() == fetch->attributes.size()) {
+                    active_vsharps = fast_vs;
+                } else {
                     const auto& vs = graphics->GetStage(Shader::SwStage::Vertex);
                     const auto vs_ud = vs.UserData();
                     for (const auto& attrib : fetch->attributes) {
@@ -1098,7 +1105,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
                     }
                 }
                 if (!fast_native_post_skip || has_any_constram || BbCeStats::Enabled()) {
-                    for (const auto& buffer : vsharps) {
+                    for (const auto& buffer : *active_vsharps) {
                         if (buffer.base_address != 0 && buffer.GetSize() > 0) {
                             if (fast_native_post_skip &&
                                 VideoCore::DirectBuffers::IsNativeOwnedAddress(
@@ -1132,7 +1139,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             }
         }
     }
-    size += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));
+    size += AlignPacket(u32(active_vsharps->size() * sizeof(Gcn::Buffer)));
     if (verify) {
         size += sizeof(Gcn::Regs);
     }
@@ -1161,7 +1168,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     packet.db_uid = liverpool->last_db_uid;
     packet.uid_pad = 0;
     packet.ring_end = constant_ring ? constant_ring->Position() : 0;
-    packet.num_vsharps = static_cast<u32>(vsharps.size());
+    packet.num_vsharps = static_cast<u32>(active_vsharps->size());
     packet.worker = ~0u;
     packet.worker_ring_end = 0;
     out += sizeof(DrawPacket);
@@ -1200,21 +1207,30 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             continue;
         }
         const auto& ring = rings[stage_index++];
+        const bool shared_ud_flat =
+            !Shader::flat_buf_replay &&
+            stage->flattened_ud_buf.size() >= stage->user_data.size();
         auto& header = *reinterpret_cast<PacketStage*>(out);
         header = {stage,
                   stage->pgm_base,
                   static_cast<u32>(stage->user_data.size()),
                   static_cast<u32>(stage->flattened_ud_buf.size()),
                   static_cast<u32>(ring.size()),
-                  0};
+                  shared_ud_flat ? 1u : 0u};
         out += sizeof(PacketStage);
         std::memcpy(out, ring.data(), ring.size() * sizeof(RingBinding));
         out += ring.size() * sizeof(RingBinding);
-        std::memcpy(out, stage->user_data.data(), stage->user_data.size_bytes());
-        std::memcpy(out + stage->user_data.size_bytes(), stage->flattened_ud_buf.data(),
-                    stage->flattened_ud_buf.size() * sizeof(u32));
-        out += AlignPacket(u32(stage->user_data.size() + stage->flattened_ud_buf.size()) *
-                           sizeof(u32));
+        if (shared_ud_flat) {
+            std::memcpy(out, stage->flattened_ud_buf.data(),
+                        stage->flattened_ud_buf.size() * sizeof(u32));
+            out += AlignPacket(u32(stage->flattened_ud_buf.size()) * sizeof(u32));
+        } else {
+            std::memcpy(out, stage->user_data.data(), stage->user_data.size_bytes());
+            std::memcpy(out + stage->user_data.size_bytes(), stage->flattened_ud_buf.data(),
+                        stage->flattened_ud_buf.size() * sizeof(u32));
+            out += AlignPacket(u32(stage->user_data.size() + stage->flattened_ud_buf.size()) *
+                               sizeof(u32));
+        }
     }
     if (cs) {
         std::memcpy(out, cs, sizeof(Gcn::ComputeProgram));
@@ -1224,8 +1240,8 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         std::memcpy(out, indirect, sizeof(IndirectDraw));
         out += AlignPacket(sizeof(IndirectDraw));
     }
-    std::memcpy(out, vsharps.data(), vsharps.size() * sizeof(Gcn::Buffer));
-    out += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));
+    std::memcpy(out, active_vsharps->data(), active_vsharps->size() * sizeof(Gcn::Buffer));
+    out += AlignPacket(u32(active_vsharps->size() * sizeof(Gcn::Buffer)));
     if (verify) {
         std::memcpy(out, &liverpool->regs, sizeof(Gcn::Regs));
         out += sizeof(Gcn::Regs);
@@ -1379,9 +1395,11 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
                                stage.num_ring};
         in += stage.num_ring * sizeof(RingBinding);
         const auto* words = reinterpret_cast<const u32*>(in);
-        Shader::Info::ud_snapshots[i] = {stage.info, words, stage.ud_size, words + stage.ud_size,
+        const u32 words_count = stage.pad ? stage.flat_size : (stage.ud_size + stage.flat_size);
+        Shader::Info::ud_snapshots[i] = {stage.info, words, stage.ud_size,
+                                         words + (stage.pad ? 0u : stage.ud_size),
                                          stage.flat_size, stage.pgm_base};
-        in += AlignPacket((stage.ud_size + stage.flat_size) * sizeof(u32));
+        in += AlignPacket(words_count * sizeof(u32));
     }
     Shader::Info::num_ud_snapshots = packet.num_stages;
     self.num_ring_stages = packet.num_stages;
@@ -1581,8 +1599,10 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
         in += sizeof(PacketStage);
         auto* bindings = reinterpret_cast<RingBinding*>(in);
         in += stage.num_ring * sizeof(RingBinding);
-        const u32* const stage_flat = reinterpret_cast<const u32*>(in) + stage.ud_size;
-        in += AlignPacket((stage.ud_size + stage.flat_size) * sizeof(u32));
+        const u32* const stage_flat =
+            reinterpret_cast<const u32*>(in) + (stage.pad ? 0u : stage.ud_size);
+        const u32 words_count = stage.pad ? stage.flat_size : (stage.ud_size + stage.flat_size);
+        in += AlignPacket(words_count * sizeof(u32));
         for (u32 j = 0; j < stage.num_ring; ++j) {
             auto& binding = bindings[j];
             if (binding.offset != RingPending) {
@@ -1661,8 +1681,11 @@ void Rasterizer::ResolvePacket(void* context, u8* data, u32, u64 number, u32 wor
 }
 
 void Rasterizer::PrintPipeStats() {
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
-    if (!stats || (draw_pipe->packets & 1023) != 0) {
+    static const bool verbose = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (!verbose || (draw_pipe->packets & 1023) != 0) {
         return;
     }
     static auto window = std::chrono::steady_clock::now();

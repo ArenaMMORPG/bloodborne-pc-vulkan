@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -58,7 +59,7 @@ public:
     }
 
     vk::PipelineLayout GetLayout() const noexcept {
-        return *pipeline_layout;
+        return pipeline_layout;
     }
 
     /// The stages present (the compute slot, or the graphics ones), null where absent.
@@ -96,13 +97,19 @@ protected:
     /// The stages' shader names, for debug object names.
     [[nodiscard]] std::string GetDebugString() const;
 
+    struct SharedLayout {
+        vk::UniqueDescriptorSetLayout desc_layout;
+        vk::UniquePipelineLayout pipeline_layout;
+    };
+
     const Instance& instance;
     Scheduler& scheduler;
     DescriptorHeap& desc_heap;
     const Shader::Profile& profile;
     vk::UniquePipeline pipeline;
-    vk::UniquePipelineLayout pipeline_layout;
-    vk::UniqueDescriptorSetLayout desc_layout;
+    std::shared_ptr<SharedLayout> shared_layout;
+    vk::PipelineLayout pipeline_layout{};
+    vk::DescriptorSetLayout desc_layout{};
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;

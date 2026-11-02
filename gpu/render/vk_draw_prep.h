@@ -50,15 +50,17 @@ struct PreparedStage {
 
 /// Key of Rasterizer's texture description cache for a T# bound through `res`.
 inline u64 ImageDescHash(const Gcn::Image& sharp, const Shader::ImageResource& res) {
-    std::array<u64, 4> key;
-    std::memcpy(key.data(), &sharp, sizeof(key));
-    key[3] &= 0x00000000FFFFFFFFULL; // Ignore N2.1 in-band native SRV tag in dword 7
-    const u32 flags = u32(res.is_written) | u32(res.is_depth) << 1 | u32(res.is_array) << 2;
+    const auto* words = reinterpret_cast<const u64*>(&sharp);
+    const u32 flags = u32(res.is_written) | (u32(res.is_depth) << 1) | (u32(res.is_array) << 2);
     u64 hash = flags * 0x9E3779B97F4A7C15ull;
-    for (const u64 word : key) {
-        hash = (hash ^ word) * 0xFF51AFD7ED558CCDull;
-        hash ^= hash >> 32;
-    }
+    hash = (hash ^ words[0]) * 0xFF51AFD7ED558CCDull;
+    hash ^= hash >> 32;
+    hash = (hash ^ words[1]) * 0xFF51AFD7ED558CCDull;
+    hash ^= hash >> 32;
+    hash = (hash ^ words[2]) * 0xFF51AFD7ED558CCDull;
+    hash ^= hash >> 32;
+    hash = (hash ^ (words[3] & 0x00000000FFFFFFFFULL)) * 0xFF51AFD7ED558CCDull;
+    hash ^= hash >> 32;
     return hash;
 }
 

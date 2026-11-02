@@ -360,7 +360,7 @@ void CGCommandBufferGnm_WriteEndOfPipeImmediate(
 }
 
 // VMA: 0x26bb6c0 (5 B)
-// Tail-jump wrapper to `Gnmx::GfxContext::waitOnAddress` (`0x1072870`).
+// Tail-jump wrapper to `DrawCommandBuffer::initializeDefaultHardwareState` (`0x1072870`).
 void CGCommandBufferGnm_WaitOnAddress(
     void* gnmx_ctx,
     void* gpu_addr,
@@ -368,6 +368,10 @@ void CGCommandBufferGnm_WaitOnAddress(
     uint32_t cmp_func,
     uint32_t ref_val)
 {
+    if (gx_direct_vk::DirectRingEnabled()) {
+        gx_direct_vk::EmitInitDefaultHardwareState(gnmx_ctx, 3u);
+        return;
+    }
     sub_1072870_waitOnAddress(gnmx_ctx, gpu_addr, mask, cmp_func, ref_val);
 }
 

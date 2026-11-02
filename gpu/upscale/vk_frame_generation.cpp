@@ -63,7 +63,7 @@ namespace {
 std::atomic<u64> stat_captured{0}, stat_interpolated{0}, stat_ready{0}, stat_taken{0}, stat_missed{0};
 void Stats() {
     static std::atomic<u64> calls{0};
-    if (++calls % 2000 == 0) {
+    if (++calls % 2000 == 0 && stat_captured.load(std::memory_order_relaxed) != 0) {
         std::printf("Frame generation stats: captured %llu interpolated %llu ready %llu taken %llu "
                     "missed %llu\n", (unsigned long long)stat_captured.load(),
                     (unsigned long long)stat_interpolated.load(), (unsigned long long)stat_ready.load(),

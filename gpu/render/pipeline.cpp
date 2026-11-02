@@ -3,7 +3,9 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -60,7 +62,6 @@ vk::UniquePipeline CheckPipeline(Result result, bool preloading, const char* kin
 constexpr u32 kMaxTrackedBindings = 64;
 
 struct TrackedDescSlot {
-    bool valid{false};
     bool is_image{false};
     vk::DescriptorType type{};
     VkSampler sampler{VK_NULL_HANDLE};
@@ -75,23 +76,56 @@ struct GfxPushStateTracker {
     const Scheduler* scheduler{nullptr};
     u64 epoch{0};
     vk::PipelineLayout layout{};
+    u64 valid_mask{0};
     bool has_push_data{false};
     Shader::PushData push_data{};
     std::array<TrackedDescSlot, kMaxTrackedBindings> slots{};
 
-    [[nodiscard]] bool Matches(const Scheduler* sched, u64 ep,
-                               vk::PipelineLayout lay) const noexcept {
-        return scheduler == sched && epoch == ep && layout == lay;
+    void OnDraw(const Scheduler* sched, u64 ep, vk::PipelineLayout lay) noexcept {
+        if (scheduler != sched || epoch != ep) {
+            scheduler = sched;
+            epoch = ep;
+            layout = lay;
+            valid_mask = 0;
+            has_push_data = false;
+            return;
+        }
+        if (layout != lay) {
+            layout = lay;
+            valid_mask = 0;
+        }
     }
 
-    void Reset(const Scheduler* sched, u64 ep, vk::PipelineLayout lay) noexcept {
-        scheduler = sched;
-        epoch = ep;
-        layout = lay;
+    void InvalidateAll() noexcept {
+        scheduler = nullptr;
+        epoch = 0;
+        layout = vk::PipelineLayout{};
+        valid_mask = 0;
         has_push_data = false;
-        for (auto& slot : slots) {
-            slot.valid = false;
+    }
+};
+
+struct SharedLayoutKey {
+    VkDevice device{};
+    vk::ShaderStageFlags push_stages{};
+    bool uses_push_descriptors{};
+    std::vector<vk::DescriptorSetLayoutBinding> bindings;
+
+    bool operator==(const SharedLayoutKey& o) const noexcept {
+        if (device != o.device || push_stages != o.push_stages ||
+            uses_push_descriptors != o.uses_push_descriptors ||
+            bindings.size() != o.bindings.size()) {
+            return false;
         }
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const auto& a = bindings[i];
+            const auto& b = o.bindings[i];
+            if (a.binding != b.binding || a.descriptorType != b.descriptorType ||
+                a.descriptorCount != b.descriptorCount || a.stageFlags != b.stageFlags) {
+                return false;
+            }
+        }
+        return true;
     }
 };
 
@@ -138,6 +172,29 @@ void Pipeline::CreateLayouts(vk::ShaderStageFlags push_stages, const char* kind,
     }
     uses_push_descriptors = binding < instance.MaxPushDescriptors();
     const auto device = instance.GetDevice();
+
+    SharedLayoutKey key{
+        .device = static_cast<VkDevice>(device),
+        .push_stages = push_stages,
+        .uses_push_descriptors = uses_push_descriptors,
+        .bindings = {bindings.begin(), bindings.end()},
+    };
+    static std::mutex layout_cache_mutex;
+    static std::vector<std::pair<SharedLayoutKey, std::weak_ptr<SharedLayout>>> layout_cache;
+    {
+        std::scoped_lock lk{layout_cache_mutex};
+        for (auto& [k, wp] : layout_cache) {
+            if (k == key) {
+                if (auto sp = wp.lock()) {
+                    shared_layout = std::move(sp);
+                    desc_layout = *shared_layout->desc_layout;
+                    pipeline_layout = *shared_layout->pipeline_layout;
+                    return;
+                }
+            }
+        }
+    }
+
     auto [set_result, set_layout] = device.createDescriptorSetLayoutUnique({
         .flags = uses_push_descriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                                        : vk::DescriptorSetLayoutCreateFlagBits{},
@@ -146,14 +203,13 @@ void Pipeline::CreateLayouts(vk::ShaderStageFlags push_stages, const char* kind,
     });
     ASSERT_MSG(set_result == vk::Result::eSuccess, "Failed to create {} descriptor set layout: {}",
                kind, vk::to_string(set_result));
-    desc_layout = std::move(set_layout);
 
     const vk::PushConstantRange push_constants{
         .stageFlags = push_stages,
         .offset = 0,
         .size = sizeof(Shader::PushData),
     };
-    const vk::DescriptorSetLayout set = *desc_layout;
+    const vk::DescriptorSetLayout set = *set_layout;
     auto [layout_result, layout] = device.createPipelineLayoutUnique({
         .setLayoutCount = 1U,
         .pSetLayouts = &set,
@@ -162,8 +218,33 @@ void Pipeline::CreateLayouts(vk::ShaderStageFlags push_stages, const char* kind,
     });
     ASSERT_MSG(layout_result == vk::Result::eSuccess, "Failed to create {} pipeline layout: {}",
                kind, vk::to_string(layout_result));
-    pipeline_layout = std::move(layout);
-    SetObjectName(device, *pipeline_layout, "{} PipelineLayout {}", kind, debug_name);
+    SetObjectName(device, *layout, "{} PipelineLayout {}", kind, debug_name);
+
+    auto created = std::make_shared<SharedLayout>();
+    created->desc_layout = std::move(set_layout);
+    created->pipeline_layout = std::move(layout);
+    {
+        std::scoped_lock lk{layout_cache_mutex};
+        for (auto& [k, wp] : layout_cache) {
+            if (k == key) {
+                if (auto sp = wp.lock()) {
+                    shared_layout = std::move(sp);
+                    desc_layout = *shared_layout->desc_layout;
+                    pipeline_layout = *shared_layout->pipeline_layout;
+                    return;
+                }
+                wp = created;
+                shared_layout = std::move(created);
+                desc_layout = *shared_layout->desc_layout;
+                pipeline_layout = *shared_layout->pipeline_layout;
+                return;
+            }
+        }
+        layout_cache.emplace_back(std::move(key), created);
+    }
+    shared_layout = std::move(created);
+    desc_layout = *shared_layout->desc_layout;
+    pipeline_layout = *shared_layout->pipeline_layout;
 }
 
 void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,
@@ -173,7 +254,7 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
     const auto bind_point =
         IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
     const auto stage_flags = IsCompute() ? vk::ShaderStageFlagBits::eCompute : AllGraphicsStageBits;
-    const vk::PipelineLayout layout = *pipeline_layout;
+    const vk::PipelineLayout layout = pipeline_layout;
     static const bool fast_bind =
         gx_direct_vk::EnabledV6Sub(gx_direct_vk::kV6Sub_StageBFastBind);
     static const bool n2_delta_desc =
@@ -199,9 +280,7 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
         }
         auto& tracker = tls_scratch->tracker;
         const u64 epoch = scheduler.DescriptorStateEpoch();
-        if (!tracker.Matches(&scheduler, epoch, layout)) {
-            tracker.Reset(&scheduler, epoch, layout);
-        }
+        tracker.OnDraw(&scheduler, epoch, layout);
         const bool need_push_constants =
             !tracker.has_push_data ||
             (std::memcmp(&tracker.push_data, &push_data, sizeof(push_data)) != 0);
@@ -246,18 +325,20 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                 if (write.descriptorCount == 1 && write.dstArrayElement == 0 &&
                     !write.pTexelBufferView && write.dstBinding < kMaxTrackedBindings &&
                     (single_img || single_buf)) {
+                    const u64 slot_bit = 1ULL << write.dstBinding;
+                    const bool slot_valid = (tracker.valid_mask & slot_bit) != 0;
                     auto& slot = tracker.slots[write.dstBinding];
                     if (single_img) {
                         const auto& img = *write.pImageInfo;
                         const VkSampler s_h = static_cast<VkSampler>(img.sampler);
                         const VkImageView v_h = static_cast<VkImageView>(img.imageView);
-                        if (slot.valid && slot.is_image && slot.type == write.descriptorType &&
+                        if (slot_valid && slot.is_image && slot.type == write.descriptorType &&
                             slot.sampler == s_h && slot.image_view == v_h &&
                             slot.image_layout == img.imageLayout) {
                             ++saved_slots;
                             continue;
                         }
-                        slot.valid = true;
+                        tracker.valid_mask |= slot_bit;
                         slot.is_image = true;
                         slot.type = write.descriptorType;
                         slot.sampler = s_h;
@@ -270,13 +351,13 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                     } else {
                         const auto& buf = *write.pBufferInfo;
                         const VkBuffer b_h = static_cast<VkBuffer>(buf.buffer);
-                        if (slot.valid && !slot.is_image && slot.type == write.descriptorType &&
+                        if (slot_valid && !slot.is_image && slot.type == write.descriptorType &&
                             slot.buffer == b_h && slot.offset == buf.offset &&
                             slot.range == buf.range) {
                             ++saved_slots;
                             continue;
                         }
-                        slot.valid = true;
+                        tracker.valid_mask |= slot_bit;
                         slot.is_image = false;
                         slot.type = write.descriptorType;
                         slot.buffer = b_h;
@@ -291,7 +372,7 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                     for (u32 b = 0; b < write.descriptorCount; ++b) {
                         const u32 bind_idx = write.dstBinding + b;
                         if (bind_idx < kMaxTrackedBindings) {
-                            tracker.slots[bind_idx].valid = false;
+                            tracker.valid_mask &= ~(1ULL << bind_idx);
                         }
                     }
                     if (write.pImageInfo) {
@@ -310,10 +391,14 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
                 }
             }
             if (total_slots != 0) {
-                BbStats::desc_push_total.fetch_add(total_slots, std::memory_order_relaxed);
+                BbStats::desc_push_total.store(
+                    BbStats::desc_push_total.load(std::memory_order_relaxed) + total_slots,
+                    std::memory_order_relaxed);
             }
             if (saved_slots != 0) {
-                BbStats::desc_push_saved.fetch_add(saved_slots, std::memory_order_relaxed);
+                BbStats::desc_push_saved.store(
+                    BbStats::desc_push_saved.load(std::memory_order_relaxed) + saved_slots,
+                    std::memory_order_relaxed);
             }
             if (delta_writes.empty()) {
                 if (need_push_constants) {
@@ -360,7 +445,7 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
             }
             return;
         }
-        tracker.Reset(nullptr, 0, vk::PipelineLayout{});
+        tracker.InvalidateAll();
     }
 
     scheduler.BumpDescriptorStateEpoch();
@@ -372,7 +457,7 @@ void Pipeline::BindResources(DescriptorWrites& set_writes, const Shader::PushDat
     }
     if (!uses_push_descriptors) {
         // Descriptor set updates are device calls: they stay on this thread.
-        const auto desc_set = desc_heap.Commit(*desc_layout);
+        const auto desc_set = desc_heap.Commit(desc_layout);
         for (auto& write : set_writes) {
             write.dstSet = desc_set;
         }
@@ -507,7 +592,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
                 .module = module,
                 .pName = "main",
             },
-        .layout = *pipeline_layout,
+        .layout = pipeline_layout,
     };
     pipeline = CheckPipeline(instance.GetDevice().createComputePipelineUnique(pipeline_cache,
                                                                               pipeline_ci),
@@ -836,7 +921,7 @@ GraphicsPipeline::GraphicsPipeline(
             !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,
         .pDynamicState = &dynamic_info,
-        .layout = *pipeline_layout,
+        .layout = pipeline_layout,
     };
     pipeline = CheckPipeline(device.createGraphicsPipelineUnique(pipeline_cache, pipeline_ci),
                              preloading, "graphics");

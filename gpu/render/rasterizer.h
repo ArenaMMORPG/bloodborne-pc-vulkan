@@ -497,7 +497,10 @@ private:
         UiPlacement ui_placement;
     } begin_memo;
     u64 begin_memo_hits = 0, begin_memo_misses = 0;
+    static constexpr u64 kGdsSliceBytes = 256;
     std::array<VAddr, 16> gds_dword_mirror{};
+    u64 gds_slice_offset = 0;
+    bool gds_slice_used_by_cs = false;
     void InvalidateGdsMirror() noexcept {
         gds_dword_mirror.fill(0);
     }
@@ -769,6 +772,7 @@ private:
     std::unique_ptr<ImageDescCacheEntry[]> native_srv_cache;
     /// N2.1: Direct O(1) 4,096-slot Stage-B VkSampler cache indexed by S#.dw[3] uid12 (0 mutex/XXH3).
     struct NativeSamplerStageBEntry {
+        Gcn::Sampler tagged_sharp{};
         Gcn::Sampler clean_sharp{};
         u32 bias_bits = 0;
         Gcn::BorderColorBuffer bc_base{};

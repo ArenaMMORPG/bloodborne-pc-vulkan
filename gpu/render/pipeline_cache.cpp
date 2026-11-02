@@ -384,6 +384,15 @@ bool PipelineCache::ConsumeFastVsharps(
     return true;
 }
 
+const boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS>*
+PipelineCache::PeekFastVsharps(const GraphicsPipeline* pipeline) noexcept {
+    if (!fast || !pipeline || fast->last_vsharps_pipeline != pipeline) {
+        return nullptr;
+    }
+    fast->last_vsharps_pipeline = nullptr;
+    return &fast->last_vsharps;
+}
+
 PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
                              BbCp::CommandProcessor* liverpool_, u32 sparse_page_shift)
     : instance{instance_}, scheduler{scheduler_}, liverpool{liverpool_},
@@ -1308,8 +1317,11 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
 
 void PipelineCache::PrintFastSelectStats() {
     auto& f = *fast;
-    static const bool stats = std::getenv("BB_FRAME_STATS") != nullptr;
-    if (!stats || (++f.calls & 1023) != 0) {
+    static const bool verbose = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (!verbose || (++f.calls & 1023) != 0) {
         return;
     }
     const auto now = std::chrono::steady_clock::now();

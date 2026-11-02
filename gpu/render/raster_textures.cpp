@@ -124,30 +124,43 @@ bool Rasterizer::TransitSampled(VideoCore::Image& image,
 void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* prepared,
                               Shader::Backend::Bindings& binding, u32& write_index,
                               bool& barrier, bool on_helper) {
+    if (stage.images.empty()) {
+        if (!stage.samplers.empty()) {
+            BB_SECTION(BindTextures);
+            BindSamplers(stage, prepared, binding, write_index);
+        }
+        return;
+    }
     BB_SECTION(BindTextures);
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
     u64 set_key = 0;
-    std::array<Gcn::Image, TextureSet::MaxImages> local_image_sharps{};
-    std::array<u64, TextureSet::MaxImages> local_image_hashes{};
+    std::array<Gcn::Image, TextureSet::MaxImages> local_image_sharps;
+    std::array<u64, TextureSet::MaxImages> local_image_hashes;
     bool have_local_sharps = false;
+    u64 local_set_key = 0;
     const u32* const stage_flat = stage.FlatUserData().data();
-    if (!on_helper && !prepared && !stage.images.empty() &&
+    if (!on_helper && !prepared &&
         stage.images.size() <= TextureSet::MaxImages &&
         !BbToggle::Disabled(BbToggle::TextureSetMemo) && !FrameCapture::Active()) {
         const u32 cnt = static_cast<u32>(stage.images.size());
+        u64 key_acc = reinterpret_cast<u64>(&stage) * 0x9E3779B97F4A7C15ULL;
         for (u32 i = 0; i < cnt; ++i) {
             const auto& res = stage.images[i];
             local_image_sharps[i] = res.GetSharpDirect(stage_flat);
-            local_image_hashes[i] = ImageDescHash(local_image_sharps[i], res);
+            const u64 h = ImageDescHash(local_image_sharps[i], res);
+            local_image_hashes[i] = h;
+            key_acc = (key_acc ^ h) * 0xFF51AFD7ED558CCDULL;
+            key_acc ^= key_acc >> 32;
         }
+        local_set_key = key_acc | 1ULL;
         have_local_sharps = true;
     }
     const Gcn::Image* const eff_image_sharps =
         prepared ? prepared->image_sharps : (have_local_sharps ? local_image_sharps.data() : nullptr);
     const u64* const eff_image_hashes =
         prepared ? prepared->image_hashes : (have_local_sharps ? local_image_hashes.data() : nullptr);
-    const u64 eff_precomputed_key = prepared ? prepared->image_set_key : 0;
+    const u64 eff_precomputed_key = prepared ? prepared->image_set_key : local_set_key;
     if (!on_helper &&
         BindTexturesFromSet(stage, eff_image_hashes, eff_precomputed_key, first_image_idx, barrier,
                             set_slot, set_key)) {
@@ -537,7 +550,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             if (set_ok && binding_index < resolved.size()) {
                 const bool imm_ro =
                     !is_storage && !image.info.props.is_depth && !image.scene_proxy &&
-                    !image.MaybePromptIcon() && !image.prompt_atlas &&
+                    !image.MaybePromptIcon() && !image.prompt_icon && !image.prompt_atlas &&
                     !VideoCore::True(image.flags & VideoCore::ImageFlagBits::GpuModified) &&
                     texture_cache.IsRegisteredImmutable(image_id, image.image_uid);
                 resolved[binding_index] = {image_id, false, imm_ro, *image_view.image_view,
@@ -598,7 +611,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             set_slot->entries[k] = resolved[k];
             if (resolved[k].id) {
                 ++valid_cnt;
-                if (resolved[k].proxy ||
+                if (!resolved[k].immutable_ro ||
                     !texture_cache.IsRegisteredImmutable(resolved[k].id, resolved[k].image_uid)) {
                     all_imm = false;
                 }
@@ -646,7 +659,11 @@ void Rasterizer::ForceAnisotropy(Gcn::Sampler& sharp, bool is_depth) const {
         const char* value = std::getenv("BB_ANISO");
         return value ? std::atoi(value) : 16;
     }();
-    if (!is_depth && !pipeline_is_compute) {
+    static const bool verbose_sampler = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (verbose_sampler && !is_depth && !pipeline_is_compute) {
         // The game's filters, once per kind: min filter, mip filter, ratio.
         static std::atomic<u64> seen{0};
         const u32 kind = u32(sharp.xy_min_filter) * 3 * 5 + u32(sharp.mip_filter) * 5 +
@@ -685,7 +702,7 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
     const auto bc_base = Regs().ta_bc_base;
     const u32 color_bias_bits = std::bit_cast<u32>(sampler_lod_bias);
     const bool aniso_off = BbToggle::Disabled(BbToggle::ForcedAniso);
-    const u64 cur_gc_tick = texture_cache.GcTick();
+    const u64 cur_evict_gen = texture_cache.SamplerEvictGeneration();
     u64 local_native_hits = 0;
     u64 local_native_misses = 0;
 
@@ -694,11 +711,39 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
         const auto& sampler = stage.samplers[sampler_index];
         auto ssharp = prepared ? prepared->sampler_sharps[sampler_index]
                                : sampler.GetSharpDirect(stage_flat);
+        const u32 variant = sampler.is_depth ? 2u : (pipeline_is_compute ? 1u : 0u);
+        const u32 dw3 = reinterpret_cast<const u32*>(&ssharp)[3];
+        if (((dw3 >> 24) & 0x3Fu) == VideoCore::DirectTextures::kSamplerTagMagic &&
+            native_sampler_cache) [[likely]] {
+            const u32 cand_uid = (dw3 >> 12) & 0xFFFu;
+            if (cand_uid != 0 && cand_uid < VideoCore::DirectTextures::kMaxNativeSamplers)
+                [[likely]] {
+                auto& sc = native_sampler_cache[cand_uid];
+                if (sc.handles[variant] && sc.tagged_sharp == ssharp &&
+                    sc.touched_ticks[variant] == cur_evict_gen &&
+                    sc.forced_aniso_off == aniso_off &&
+                    (variant == 2u || sc.bias_bits == color_bias_bits) &&
+                    sc.bc_base.base_addr == bc_base.base_addr) [[likely]] {
+                    ++local_native_hits;
+                    image_infos.emplace_back(sc.handles[variant], VK_NULL_HANDLE,
+                                             vk::ImageLayout::eGeneral);
+                    set_writes[write_index++] = vk::WriteDescriptorSet{
+                        .dstBinding = binding.unified++,
+                        .descriptorCount = 1,
+                        .descriptorType = vk::DescriptorType::eSampler,
+                        .pImageInfo = &image_infos.back(),
+                    };
+                    continue;
+                }
+            }
+        }
+        auto tagged_ssharp = ssharp;
         u16 smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
         static const bool n2_native_tex =
             gx_direct_vk::EnabledNativeVk(gx_direct_vk::kN2_NativeTextures);
         if (smp_uid == 0 && n2_native_tex) {
             if (VideoCore::DirectTextures::RegisterNativeSampler(&ssharp) != 0) {
+                tagged_ssharp = ssharp;
                 smp_uid = VideoCore::DirectTextures::UnpackAndCleanSampler(ssharp);
             }
         }
@@ -706,9 +751,9 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
         if (smp_uid != 0 && native_sampler_cache) {
             ++local_native_hits;
             auto& sc = native_sampler_cache[smp_uid];
-            const u32 variant = sampler.is_depth ? 2u : (pipeline_is_compute ? 1u : 0u);
             if (!(sc.clean_sharp == ssharp) || sc.forced_aniso_off != aniso_off ||
-                std::memcmp(&sc.bc_base, &bc_base, sizeof(bc_base)) != 0) {
+                sc.bc_base.base_addr != bc_base.base_addr) {
+                sc.tagged_sharp = tagged_ssharp;
                 sc.clean_sharp = ssharp;
                 sc.bias_bits = color_bias_bits;
                 sc.bc_base = bc_base;
@@ -722,9 +767,8 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
                 sc.handles[0] = VK_NULL_HANDLE;
                 sc.handles[1] = VK_NULL_HANDLE;
             }
-            const u64 last_tick = sc.touched_ticks[variant];
-            if (sc.handles[variant] && last_tick <= cur_gc_tick && (cur_gc_tick - last_tick) < 8)
-                [[likely]] {
+            if (sc.handles[variant] && sc.touched_ticks[variant] == cur_evict_gen) [[likely]] {
+                sc.tagged_sharp = tagged_ssharp;
                 vk_sampler = sc.handles[variant];
             } else {
                 auto eff_sharp = ssharp;
@@ -732,8 +776,9 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
                 vk_sampler = texture_cache.GetSampler(
                     eff_sharp, bc_base, sampler.is_depth,
                     sampler.is_depth ? 0.0f : sampler_lod_bias);
+                sc.tagged_sharp = tagged_ssharp;
                 sc.handles[variant] = vk_sampler;
-                sc.touched_ticks[variant] = cur_gc_tick;
+                sc.touched_ticks[variant] = cur_evict_gen;
             }
         } else {
             ++local_native_misses;
@@ -742,13 +787,12 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
                 ssharp, bc_base, sampler.is_depth, sampler.is_depth ? 0.0f : sampler_lod_bias);
         }
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
-        auto& set_write = set_writes[write_index++];
-        set_write.dstSet = VK_NULL_HANDLE;
-        set_write.dstBinding = binding.unified++;
-        set_write.dstArrayElement = 0;
-        set_write.descriptorCount = 1;
-        set_write.descriptorType = vk::DescriptorType::eSampler;
-        set_write.pImageInfo = &image_infos.back();
+        set_writes[write_index++] = vk::WriteDescriptorSet{
+            .dstBinding = binding.unified++,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eSampler,
+            .pImageInfo = &image_infos.back(),
+        };
     }
 
     if (!bind_helper.Available()) {
@@ -884,7 +928,9 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image
     // N3.2: Single-pass zero-write fast path when every non-null texture in the set is a settled
     // read-only DirectImmutable asset in ShaderReadOnlyOptimal (no LRU churn, no bound_images
     // write+clear, no Image cache-line dirtying, and no Runtime::Transit / GetBarriers calls).
-    if (set.all_direct_immutable && !prompts_on && !upscaler_on) {
+    // Safe even when prompts_on is true because entry.immutable_ro already excludes MaybePromptIcon,
+    // prompt_icon, and prompt_atlas.
+    if (set.all_direct_immutable && !upscaler_on) {
         bool fast_ok = true;
         for (u32 i = 0; i < count; ++i) {
             const auto& entry = set.entries[i];
@@ -956,7 +1002,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image
             continue;
         }
         auto& image = texture_cache.GetImageUntouched(entry.id);
-        if (entry.immutable_ro && !prompts_on && !upscaler_on &&
+        if (entry.immutable_ro && !upscaler_on &&
             image.backing->subresource_states.empty() &&
             image.backing->state.layout == vk::ImageLayout::eShaderReadOnlyOptimal &&
             image.backing->state.access_mask == vk::AccessFlagBits2::eShaderRead) {

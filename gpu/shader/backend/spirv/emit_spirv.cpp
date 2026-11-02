@@ -480,7 +480,13 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
 // where the host supports them per width.
 
 void WarnOnce(std::once_flag& flag, const char* message) {
-    std::call_once(flag, [message] { LOG_WARNING(Render_Vulkan, "{}", message); });
+    static const bool verbose = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
+    if (verbose) {
+        std::call_once(flag, [message] { LOG_WARNING(Render_Vulkan, "{}", message); });
+    }
 }
 
 /// The mode for `width` if supported (with its capability), else a warning once.

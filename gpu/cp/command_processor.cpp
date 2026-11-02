@@ -393,6 +393,130 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
             }
             return;
         }
+        if (vk_op == DirectVk::Op::BindEsShader && body_words == 6u) {
+            std::memcpy(&regs.reg_array[Bank::Sh + 0xC8u], body + 2u, 4u * sizeof(u32));
+            mark_sh(Bank::Sh + 0xC8u, 4u);
+            break;
+        }
+        if (vk_op == DirectVk::Op::BindGsShader && body_words == 9u) {
+            const bool only_sh = ((body[1] >> 18) & 1u) != 0u;
+            std::memcpy(&regs.reg_array[Bank::Sh + 0x88u], body + 2u, 4u * sizeof(u32));
+            mark_sh(Bank::Sh + 0x88u, 4u);
+            if (!only_sh) {
+                write(Bank::Context + 0x2E5u, body[6]);
+                write(Bank::Context + 0x29Bu, body[7]);
+                write(Bank::Context + 0x2E4u, body[8]);
+            }
+            break;
+        }
+        if (vk_op == DirectVk::Op::BindHsShader && body_words == 10u) {
+            const bool only_sh = ((body[1] >> 18) & 1u) != 0u;
+            std::memcpy(&regs.reg_array[Bank::Sh + 0x108u], body + 2u, 4u * sizeof(u32));
+            mark_sh(Bank::Sh + 0x108u, 4u);
+            if (!only_sh) {
+                write(Bank::Context + 0x286u, body[7]);
+                write(Bank::Context + 0x287u, body[8]);
+                write(Bank::Context + 0x2DBu, body[6]);
+                write(Bank::Context + 0x2D6u, body[9]);
+            }
+            break;
+        }
+        if (vk_op == DirectVk::Op::BindLsShader && body_words == 6u) {
+            std::memcpy(&regs.reg_array[Bank::Sh + 0x148u], body + 2u, 4u * sizeof(u32));
+            mark_sh(Bank::Sh + 0x148u, 4u);
+            break;
+        }
+        if (vk_op == DirectVk::Op::SetVgtControl && body_words == 2u) {
+            const u32 prim_group_sz_minus_1 = (body[1] >> 16) & 0xFFu;
+            const u32 partial_vs_wave_mode = (body[1] >> 24) & 1u;
+            write(Bank::Context + 0x2AAu, (partial_vs_wave_mode << 16) | prim_group_sz_minus_1);
+            break;
+        }
+        if (vk_op == DirectVk::Op::InitDefaultHardwareState && body_words == 2u) {
+            const u32 gen = (body[1] >> 16) & 0xFFu;
+            if (gen > 5u) {
+                return;
+            }
+            regs.SetDefaults();
+            if (dirty) {
+                dirty->Clear();
+                dirty->reset = true;
+            }
+            if (gen == 4u) {
+                write(Reg::VgtNumInstances, 1u);
+                write(Bank::Context + 0x102u, 0u);
+                write(Bank::Context + 0x202u, 0xCC0010u);
+                break;
+            }
+            write(Bank::Context + 0x2F9u, 0x2Du);
+            write(Bank::Context + 0x282u, 8u);
+            write(Bank::Context + 0x280u, 0x80008u);
+            write(Bank::Context + 0x281u, 0xFFFF0000u);
+            write(Bank::Context + 0x204u, 0u);
+            write(Bank::Context + 0x206u, 0x43Fu);
+            write(Bank::Context + 0x083u, 0xFFFFu);
+            write(Bank::Context + 0x317u, 0x10u);
+            write(Bank::Context + 0x2FAu, 0x3F800000u);
+            write(Bank::Context + 0x2FCu, 0x3F800000u);
+            write(Bank::Context + 0x2FBu, 0x3F800000u);
+            write(Bank::Context + 0x2FDu, 0x3F800000u);
+            write(Bank::Context + 0x202u, 0xCC0010u);
+            write(Bank::Context + 0x30Eu, 0xFFFFFFFFu);
+            write(Bank::Context + 0x30Fu, 0xFFFFFFFFu);
+            write(Reg::VgtNumInstances, 1u);
+            if (gen <= 1u) {
+                regs.reg_array[Bank::Sh + 0x007u] = 0x1FFu;
+                regs.reg_array[Bank::Sh + 0x046u] = 0x1FFu;
+                regs.reg_array[Bank::Sh + 0x087u] = 0x1FFu;
+                regs.reg_array[Bank::Sh + 0x0C7u] = 0x1FFu;
+                regs.reg_array[Bank::Sh + 0x107u] = 0u;
+                regs.reg_array[Bank::Sh + 0x147u] = 0x1FFu;
+                mark_sh(Bank::Sh + 0x007u, 1u);
+                mark_sh(Bank::Sh + 0x046u, 1u);
+                mark_sh(Bank::Sh + 0x087u, 1u);
+                mark_sh(Bank::Sh + 0x0C7u, 1u);
+                mark_sh(Bank::Sh + 0x107u, 1u);
+                mark_sh(Bank::Sh + 0x147u, 1u);
+            } else if (gen <= 3u) {
+                regs.reg_array[Bank::Sh + 0x007u] = 0x1701FFu;
+                regs.reg_array[Bank::Sh + 0x046u] = 0x1701FDu;
+                regs.reg_array[Bank::Sh + 0x087u] = 0x1701FFu;
+                regs.reg_array[Bank::Sh + 0x0C7u] = 0x1701FDu;
+                regs.reg_array[Bank::Sh + 0x107u] = 0x17u;
+                regs.reg_array[Bank::Sh + 0x147u] = 0x1701FDu;
+                regs.reg_array[Bank::Sh + 0x047u] = 0x1Cu;
+                mark_sh(Bank::Sh + 0x007u, 1u);
+                mark_sh(Bank::Sh + 0x046u, 2u);
+                mark_sh(Bank::Sh + 0x087u, 1u);
+                mark_sh(Bank::Sh + 0x0C7u, 1u);
+                mark_sh(Bank::Sh + 0x107u, 1u);
+                mark_sh(Bank::Sh + 0x147u, 1u);
+            }
+            write(Bank::Context + 0x1B1u, 2u);
+            write(Bank::Context + 0x101u, 0u);
+            write(Bank::Context + 0x100u, 0xFFFFFFFFu);
+            write(Bank::Context + 0x103u, 0u);
+            write(Bank::Context + 0x284u, 0u);
+            write(Bank::Context + 0x290u, 0u);
+            write(Bank::Context + 0x2AEu, 0u);
+            if (gen == 3u || gen == 5u) {
+                write(Bank::Context + 0x102u, 0u);
+            }
+            write(Bank::Context + 0x292u, 0u);
+            write(Bank::Context + 0x293u, (gen == 0u) ? 0x6000000u : 0x6020000u);
+            write(Bank::Context + 0x2F8u, 0u);
+            write(Bank::Context + 0x2DEu, 0x1E9u);
+            write(Bank::Context + 0x295u, 0x100u);
+            write(Bank::Context + 0x296u, 0x100u);
+            write(Bank::Context + 0x297u, 4u);
+            if (gen <= 3u) {
+                write(Bank::Uconfig + 0x200u, 0xE0000000u);
+            }
+            if (gen == 3u || gen == 5u) {
+                write(Bank::Context + 0x2AAu, 0xFFu);
+            }
+            break;
+        }
         return;
     }
     default:

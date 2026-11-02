@@ -169,6 +169,8 @@ public:
     bool ConsumeFastVsharps(
         const GraphicsPipeline* pipeline,
         boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS>& out) noexcept;
+    const boost::container::static_vector<Gcn::Buffer, Shader::NUM_BUFFERS>* PeekFastVsharps(
+        const GraphicsPipeline* pipeline) noexcept;
 
     const ComputePipeline* GetComputePipeline();
 

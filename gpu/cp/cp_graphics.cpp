@@ -199,6 +199,10 @@ CommandProcessor::Status CommandProcessor::RunGraphics(Work& work) {
     if (!work.started) {
         BeginGraphics(work);
     }
+    static const bool direct_ring = [] {
+        const char* env = std::getenv("BB_DIRECT_RING");
+        return !(env && env[0] == '0');
+    }();
     Walk& walk = work.walk;
     while (!walk.Done()) {
         if (num_commands.load(std::memory_order_relaxed) != 0) [[unlikely]] {
@@ -212,6 +216,26 @@ CommandProcessor::Status CommandProcessor::RunGraphics(Work& work) {
                 Diagnostics::ScanDcb({level.at, level.end}, level.depth);
             }
             cblock.Reset();
+        }
+        if (direct_ring && !work.waiting_at) {
+            while (level.at < level.end) {
+                const u32 hdr = *level.at;
+                if ((hdr & 0xC000FF00u) != 0xC0001000u) {
+                    break;
+                }
+                const u32 bw = Header{hdr}.BodyWords();
+                if (level.at + 1u + bw > level.end) [[unlikely]] {
+                    break;
+                }
+                level.prev_at = level.at;
+                level.prev_header = hdr;
+                const Step step = Graphics(work, level, level.at, bw);
+                if (step == Step::Next) [[likely]] {
+                    level.at += 1u + bw;
+                } else if (step == Step::Wait) {
+                    return Status::Wait;
+                }
+            }
         }
         if (level.at >= level.end) {
             --walk.top;
@@ -305,8 +329,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
         const bool need_checksum = rasterizer && rasterizer->GetDrawPreparation().Enabled();
         ApplyGraphicsRegisterPacket(regs, packet, gfx_reg_checksum, &pipe_dirty, need_checksum);
         // Not before earlier fences either: these may write guest memory.
-        if (rasterizer && !Pipelined(op) &&
-            !(op == Op::DmaData && DmaData::From(body).DstLow() == 0x3022C)) {
+        if (op != Op::Nop && rasterizer && !Pipelined(op) &&
+            !(op == Op::DmaData && DmaData::From(body).DstLow() == 0x3022C)) [[unlikely]] {
             rasterizer->DrainDrawPipe(u32(op));
             rasterizer->WaitDeferredSignals();
         }
@@ -353,10 +377,11 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
             }
             break;
         case NopPayload::DirectVulkan:
-            if (body_words >= 2) {
+            if (body_words >= 2u) {
                 const u32 op_word = body[1];
                 const auto vk_op = DirectVk::Op(op_word & 0xFFFFu);
-                if (vk_op == DirectVk::Op::SetStageUserData) {
+                switch (vk_op) {
+                case DirectVk::Op::SetStageUserData: {
                     // Graphics stages applied in ApplyGraphicsRegisterPacket; CS stage updates cs_state.
                     if (body_words >= 3u) {
                         const u32 sh_offset = body[2] & 0xFFFFu;
@@ -385,14 +410,47 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     }
                     break;
                 }
-                if (vk_op == DirectVk::Op::SetContextRegsPacked ||
-                    vk_op == DirectVk::Op::SetIndexState ||
-                    vk_op == DirectVk::Op::BindVsShader ||
-                    vk_op == DirectVk::Op::BindPsShader) {
-                    // Applied in ApplyGraphicsRegisterPacket (including DrawPreparation).
+                case DirectVk::Op::BindCsShader: {
+                    if (body_words == 9u) {
+                        auto* state = reinterpret_cast<u32*>(&queues[GfxQueueId].cs_state);
+                        state[0x20Cu - ComputeShOffset] = body[2];
+                        state[0x20Du - ComputeShOffset] = body[3];
+                        state[0x212u - ComputeShOffset] = body[4];
+                        state[0x213u - ComputeShOffset] = body[5];
+                        state[0x207u - ComputeShOffset] = body[6];
+                        state[0x208u - ComputeShOffset] = body[7];
+                        state[0x209u - ComputeShOffset] = body[8];
+                    }
                     break;
                 }
-                if (vk_op == DirectVk::Op::SetRenderTarget) {
+                case DirectVk::Op::InitDefaultHardwareState: {
+                    if (body_words == 2u) {
+                        const u32 gen = (op_word >> 16) & 0xFFu;
+                        if (gen <= 5u) {
+                            last_cb_uid.fill(0u);
+                            last_db_uid = 0u;
+                        }
+                        if (gen <= 3u || gen == 6u) {
+                            auto* state = reinterpret_cast<u32*>(&queues[GfxQueueId].cs_state);
+                            state[0x216u - ComputeShOffset] = 0xFFFFFFFFu;
+                            state[0x217u - ComputeShOffset] = 0xFFFFFFFFu;
+                            state[0x215u - ComputeShOffset] = (gen == 6u) ? 0x170u : 0u;
+                        }
+                    }
+                    break;
+                }
+                case DirectVk::Op::SetContextRegsPacked:
+                case DirectVk::Op::SetIndexState:
+                case DirectVk::Op::BindVsShader:
+                case DirectVk::Op::BindPsShader:
+                case DirectVk::Op::BindEsShader:
+                case DirectVk::Op::BindGsShader:
+                case DirectVk::Op::BindHsShader:
+                case DirectVk::Op::BindLsShader:
+                case DirectVk::Op::SetVgtControl:
+                    // Applied in ApplyGraphicsRegisterPacket (including DrawPreparation).
+                    break;
+                case DirectVk::Op::SetRenderTarget: {
                     const u32 slot = (op_word >> 16) & 0x7u;
                     const bool valid = ((op_word >> 19) & 1u) != 0u;
                     if (valid && body_words == 14u) {
@@ -403,7 +461,7 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     }
                     break;
                 }
-                if (vk_op == DirectVk::Op::SetDepthRenderTarget) {
+                case DirectVk::Op::SetDepthRenderTarget: {
                     const bool valid = ((op_word >> 16) & 1u) != 0u;
                     if (valid && body_words == 15u) {
                         last_db_extent.raw = body[14];
@@ -414,12 +472,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                     }
                     break;
                 }
-            }
-            if (rasterizer && body_words >= 2) {
-                const u32 op_word = body[1];
-                const auto vk_op = DirectVk::Op(op_word & 0xFFFFu);
-                if (vk_op == DirectVk::Op::DrawIndexed) {
-                    if (body_words == 6u) {
+                case DirectVk::Op::DrawIndexed: {
+                    if (rasterizer && body_words == 6u) {
                         DirectVk::DrawIndexedArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         const auto* prepared =
@@ -435,9 +489,11 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::ReleaseLabelsBatch) {
+                    break;
+                }
+                case DirectVk::Op::ReleaseLabelsBatch: {
                     const u32 count = op_word >> 16;
-                    if (count > 0 && count <= 32 && body_words == 2u + count * 2u) {
+                    if (rasterizer && count > 0 && count <= 32 && body_words == 2u + count * 2u) {
                         std::array<VAddr, 32> addrs{};
                         std::memcpy(addrs.data(), body + 2u, count * sizeof(VAddr));
                         if (BbFreeCheck::Enabled()) {
@@ -455,9 +511,11 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::ReleaseU32LabelsBatch) {
+                    break;
+                }
+                case DirectVk::Op::ReleaseU32LabelsBatch: {
                     const u32 count = op_word >> 16;
-                    if (count > 0 && count <= 32 && body_words == 3u + count * 2u) {
+                    if (rasterizer && count > 0 && count <= 32 && body_words == 3u + count * 2u) {
                         const u32 value = body[2];
                         std::array<VAddr, 32> addrs{};
                         std::memcpy(addrs.data(), body + 3u, count * sizeof(VAddr));
@@ -476,9 +534,11 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::TimestampQuery) {
+                    break;
+                }
+                case DirectVk::Op::TimestampQuery: {
                     const u32 query_op = op_word >> 16;
-                    if (body_words == 4u && query_op <= 2u) {
+                    if (rasterizer && body_words == 4u && query_op <= 2u) {
                         VAddr base_addr = 0;
                         std::memcpy(&base_addr, body + 2u, sizeof(VAddr));
                         base_addr &= 0xFFFFFFFFFFULL;
@@ -505,15 +565,17 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::OcclusionQuery) {
+                    break;
+                }
+                case DirectVk::Op::OcclusionQuery: {
                     const u32 query_op = op_word >> 16;
-                    if (body_words == 4u && query_op <= 2u) {
+                    if (rasterizer && body_words == 4u && query_op <= 2u) {
                         VAddr base_addr = 0;
                         std::memcpy(&base_addr, body + 2u, sizeof(VAddr));
                         base_addr &= 0xFFFFFFFFFFULL;
                         if (base_addr != 0 && (base_addr & 0xFULL) == 0ULL) {
                             const u64 clear_bytes = u64(num_counter_pairs) * 16ULL;
-                            if (rasterizer && Vulkan::Rasterizer::OcclusionTranslated()) {
+                            if (Vulkan::Rasterizer::OcclusionTranslated()) {
                                 const Tasks::DirectOcclusionEvent occ{base_addr, num_counter_pairs,
                                                                       query_op};
                                 const bool queued = rasterizer->RunInOrder(
@@ -532,26 +594,23 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                     base_addr + (query_op == 1u ? 8ULL : 0ULL));
                                 for (u32 i = 0; i < num_counter_pairs; ++i, counters += 2) {
                                     *counters = pixel_counter | Valid;
-                                    if (rasterizer) {
-                                        rasterizer->NoteLateCommandWrite(
-                                            reinterpret_cast<VAddr>(counters), counters,
-                                            sizeof(u64));
-                                    }
+                                    rasterizer->NoteLateCommandWrite(
+                                        reinterpret_cast<VAddr>(counters), counters, sizeof(u64));
                                 }
                                 pixel_counter += Step;
                             } else {
                                 std::memset(reinterpret_cast<void*>(base_addr), 0, clear_bytes);
-                                if (rasterizer) {
-                                    rasterizer->NoteLateCommandWrite(
-                                        base_addr, reinterpret_cast<const void*>(base_addr),
-                                        clear_bytes);
-                                }
+                                rasterizer->NoteLateCommandWrite(
+                                    base_addr, reinterpret_cast<const void*>(base_addr),
+                                    clear_bytes);
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::CopyBufferBatch) {
+                    break;
+                }
+                case DirectVk::Op::CopyBufferBatch: {
                     const u32 count = op_word >> 16;
-                    if (count > 0 && count <= 32 && body_words == 2u + count * 6u) {
+                    if (rasterizer && count > 0 && count <= 32 && body_words == 2u + count * 6u) {
                         for (u32 i = 0; i < count; ++i) {
                             DirectVk::CopyRegion reg{};
                             std::memcpy(&reg, body + 2u + i * 6u, sizeof(reg));
@@ -573,8 +632,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::FillBuffer) {
-                    if (body_words == 6u) {
+                    break;
+                }
+                case DirectVk::Op::FillBuffer: {
+                    if (rasterizer && body_words == 6u) {
                         DirectVk::FillArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.dst_va && args.byte_size) {
@@ -586,8 +647,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             rasterizer->NoteCopyIntoMemory(args.dst_va, args.byte_size);
                         }
                     }
-                } else if (vk_op == DirectVk::Op::ClearColorImage) {
-                    if (body_words == 18u) {
+                    break;
+                }
+                case DirectVk::Op::ClearColorImage: {
+                    if (rasterizer && body_words == 18u) {
                         DirectVk::ClearColorArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.dst_va && args.byte_size) {
@@ -599,8 +662,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             rasterizer->NoteCopyIntoMemory(args.dst_va, args.byte_size);
                         }
                     }
-                } else if (vk_op == DirectVk::Op::CopyTextureRegion) {
-                    if (body_words == 34u) {
+                    break;
+                }
+                case DirectVk::Op::CopyTextureRegion: {
+                    if (rasterizer && body_words == 34u) {
                         DirectVk::CopyTextureRegionArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.copy_w && args.copy_h && args.copy_d) {
@@ -619,8 +684,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::DecompressDepth) {
-                    if (body_words == 20u) {
+                    break;
+                }
+                case DirectVk::Op::DecompressDepth: {
+                    if (rasterizer && body_words == 20u) {
                         DirectVk::DecompressDepthArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.slice_count) {
@@ -636,8 +703,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::EliminateFastClear) {
-                    if (body_words == 18u) {
+                    break;
+                }
+                case DirectVk::Op::EliminateFastClear: {
+                    if (rasterizer && body_words == 18u) {
                         DirectVk::EliminateFastClearArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.slice_count) {
@@ -653,8 +722,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::ResolveColor) {
-                    if (body_words == 30u) {
+                    break;
+                }
+                case DirectVk::Op::ResolveColor: {
+                    if (rasterizer && body_words == 30u) {
                         DirectVk::ResolveColorArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.dst_va && args.src_va) {
@@ -673,8 +744,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::UploadTextureSubresource) {
-                    if (body_words == 26u) {
+                    break;
+                }
+                case DirectVk::Op::UploadTextureSubresource: {
+                    if (rasterizer && body_words == 26u) {
                         DirectVk::UploadTextureArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.src_stage_va && args.src_byte_size &&
@@ -692,8 +765,10 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::ClearDepthStencil) {
-                    if (body_words == 20u) {
+                    break;
+                }
+                case DirectVk::Op::ClearDepthStencil: {
+                    if (rasterizer && body_words == 20u) {
                         DirectVk::ClearDepthStencilArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         if (args.slice_count) {
@@ -709,47 +784,69 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                             }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::DrawIndexAddr) {
-                    if (body_words == 6u) {
+                    break;
+                }
+                case DirectVk::Op::DrawIndexAddr: {
+                    if (rasterizer && body_words == 6u) {
                         const auto* prepared =
                             level.prepared ? rasterizer->GetDrawPreparation().NextDraw() : nullptr;
                         if (!PredicationSkips(header)) {
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDrawIndexAddr", fmt::make_format_args(at),
-                                [&] { rasterizer->Draw(true, 0u, prepared); });
+                            if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                                const void* at = packet;
+                                rasterizer->ScopeMarker(
+                                    "gfx:{}:DirectDrawIndexAddr", fmt::make_format_args(at),
+                                    [&] { rasterizer->Draw(true, 0u, prepared); });
+                            } else {
+                                rasterizer->Draw(true, 0u, prepared);
+                            }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::DrawAuto) {
-                    if (body_words == 5u) {
+                    break;
+                }
+                case DirectVk::Op::DrawAuto: {
+                    if (rasterizer && body_words == 5u) {
                         const auto* prepared =
                             level.prepared ? rasterizer->GetDrawPreparation().NextDraw() : nullptr;
                         if (!PredicationSkips(header)) {
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDrawAuto", fmt::make_format_args(at),
-                                [&] { rasterizer->Draw(false, 0u, prepared); });
+                            if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                                const void* at = packet;
+                                rasterizer->ScopeMarker(
+                                    "gfx:{}:DirectDrawAuto", fmt::make_format_args(at),
+                                    [&] { rasterizer->Draw(false, 0u, prepared); });
+                            } else {
+                                rasterizer->Draw(false, 0u, prepared);
+                            }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::DrawIndirect) {
-                    if (body_words == 6u) {
+                    break;
+                }
+                case DirectVk::Op::DrawIndirect: {
+                    if (rasterizer && body_words == 6u) {
                         DirectVk::DrawIndirectArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         indirect_args_addr = (args.args_va & 0xFFFFFFFFFFull) & ~7ull;
                         if (!PredicationSkips(header)) {
                             const bool indexed = args.is_indexed != 0u;
                             const u32 stride = indexed ? 20u : 16u;
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDrawIndirect", fmt::make_format_args(at), [&] {
-                                    rasterizer->DrawIndirect(indexed, indirect_args_addr,
-                                                             args.byte_offset, stride, 1u, 0ull, 0u,
-                                                             0u);
-                                });
+                            if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                                const void* at = packet;
+                                rasterizer->ScopeMarker(
+                                    "gfx:{}:DirectDrawIndirect", fmt::make_format_args(at), [&] {
+                                        rasterizer->DrawIndirect(indexed, indirect_args_addr,
+                                                                 args.byte_offset, stride, 1u, 0ull,
+                                                                 0u, 0u);
+                                    });
+                            } else {
+                                rasterizer->DrawIndirect(indexed, indirect_args_addr,
+                                                         args.byte_offset, stride, 1u, 0ull, 0u,
+                                                         0u);
+                            }
                         }
                     }
-                } else if (vk_op == DirectVk::Op::DispatchDirect) {
-                    if (body_words == 5u && !PredicationSkips(header)) {
+                    break;
+                }
+                case DirectVk::Op::DispatchDirect: {
+                    if (rasterizer && body_words == 5u && !PredicationSkips(header)) {
                         DirectVk::DispatchDirectArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         auto& cs = GetCsRegs();
@@ -757,26 +854,43 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                         cs.dim_y = args.group_y;
                         cs.dim_z = args.group_z;
                         cs.dispatch_initiator = 1u;
-                        const void* at = packet;
-                        rasterizer->ScopeMarker("gfx:{}:DirectDispatch", fmt::make_format_args(at),
-                                                [&] { rasterizer->DispatchDirect(); });
+                        if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                            const void* at = packet;
+                            rasterizer->ScopeMarker("gfx:{}:DirectDispatch",
+                                                    fmt::make_format_args(at),
+                                                    [&] { rasterizer->DispatchDirect(); });
+                        } else {
+                            rasterizer->DispatchDirect();
+                        }
                     }
-                } else if (vk_op == DirectVk::Op::DispatchIndirect) {
-                    if (body_words == 6u) {
+                    break;
+                }
+                case DirectVk::Op::DispatchIndirect: {
+                    if (rasterizer && body_words == 6u) {
                         DirectVk::DispatchIndirectArgs args{};
                         std::memcpy(&args, body + 2u, sizeof(args));
                         indirect_args_addr = (args.args_va & 0xFFFFFFFFFFull) & ~7ull;
                         if (!PredicationSkips(header)) {
                             GetCsRegs().dispatch_initiator = 1u;
-                            const void* at = packet;
-                            rasterizer->ScopeMarker(
-                                "gfx:{}:DirectDispatchIndirect", fmt::make_format_args(at), [&] {
-                                    rasterizer->DispatchIndirect(indirect_args_addr,
-                                                                 args.byte_offset,
-                                                                 3u * sizeof(u32));
-                                });
+                            if (rasterizer->HostMarkersEnabled()) [[unlikely]] {
+                                const void* at = packet;
+                                rasterizer->ScopeMarker(
+                                    "gfx:{}:DirectDispatchIndirect", fmt::make_format_args(at),
+                                    [&] {
+                                        rasterizer->DispatchIndirect(indirect_args_addr,
+                                                                     args.byte_offset,
+                                                                     3u * sizeof(u32));
+                                    });
+                            } else {
+                                rasterizer->DispatchIndirect(indirect_args_addr, args.byte_offset,
+                                                             3u * sizeof(u32));
+                            }
                         }
                     }
+                    break;
+                }
+                default:
+                    break;
                 }
             }
             break;

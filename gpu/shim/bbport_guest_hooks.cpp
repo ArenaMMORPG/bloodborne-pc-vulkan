@@ -371,8 +371,12 @@ void ApplyHotEffects(bool force, u64 fresh = 0) {
             }
         }
     }
+    static const bool verbose_hooks = [] {
+        const char* e = std::getenv("BB_VERBOSE_STATS");
+        return e && e[0] == '1';
+    }();
     static std::atomic<int> told{0};
-    if (force && told.fetch_add(1) < 8) {
+    if (verbose_hooks && force && told.fetch_add(1) < 8) {
         std::printf("Guest hooks: game effects written to %zu of %zu options objects (the rest are gone)\n",
                     live_objects, count);
     }
@@ -394,8 +398,12 @@ void PS4_SYSV_ABI EffectsConstructed(u64 object) {
         } else {
             effects_object_count.store(MaxEffectObjects);
         }
+        static const bool verbose_hooks = [] {
+            const char* e = std::getenv("BB_VERBOSE_STATS");
+            return e && e[0] == '1';
+        }();
         static std::atomic<int> told{0};
-        if (told.fetch_add(1) < 3) {
+        if (verbose_hooks && told.fetch_add(1) < 3) {
             std::printf("Guest hooks: renderer options at %#llx (the game builds several; game effects "
                         "follow the settings in each)\n", static_cast<unsigned long long>(object));
         }
@@ -1759,8 +1767,12 @@ void PS4_SYSV_ABI FxInitClear(void* context, void* state, void* texture, const f
         const auto clear = BbFxInit::Plan(target, std::span{color, 4});
         if (clear && runtime_memory_is_mapped(clear->address, clear->bytes) &&
             BbGnm::SubmitFxInitZero(clear->address, clear->bytes)) {
+            static const bool verbose_fx = [] {
+                const char* e = std::getenv("BB_VERBOSE_STATS");
+                return e && e[0] == '1';
+            }();
             static u64 count = 0; // main thread only
-            if (++count <= 3 || (count & (count - 1)) == 0)
+            if (verbose_fx && (++count <= 3 || (count & (count - 1)) == 0))
                 std::printf("FX initialization: %llu targets cleared through private commands "
                             "(%#llx +%u bytes)\n", (unsigned long long)count,
                             (unsigned long long)clear->address, clear->bytes);
