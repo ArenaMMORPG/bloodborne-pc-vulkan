@@ -1279,8 +1279,8 @@ inline bool DirectRingEnabled() noexcept {
     return enabled;
 }
 
-// Fused 1-to-1 C++20 replacement for 0x10873a0 (generatePsShaderUsageTable) + 0x1075000 (setPsShaderUsage)
-// with a 256-slot direct-mapped `(vs_exports, ps_inputs)` linkage cache (Block 4 Step 4.2).
+// Fused 1-to-1 C++20 replacement for 0x10873a0 (generatePsShaderUsageTable) + 0x1075000 (setPsShaderUsage).
+// Must be 100% stateless/thread-safe because GXWorker:1..5 and GXRenderThread invoke this concurrently!
 inline void GenerateAndEmitPsShaderUsage(
     void* dcb_raw,
     const void* vs_exports_raw,
@@ -1299,25 +1299,7 @@ inline void GenerateAndEmitPsShaderUsage(
     pkt[1] = 0x00000191u; // SPI_PS_INPUT_CNTL_0..31
 
     if (num_ps_inputs <= 32u) {
-        struct PsUsageCacheEntry {
-            const void* vs_exports = nullptr;
-            const void* ps_inputs = nullptr;
-            uint16_t num_vs = 0;
-            uint16_t num_ps = 0;
-            uint32_t cntl[32]{};
-        };
-        static PsUsageCacheEntry s_cache[256]{};
-        const uintptr_t vs_u = reinterpret_cast<uintptr_t>(vs_exports_raw);
-        const uintptr_t ps_u = reinterpret_cast<uintptr_t>(ps_inputs_raw);
-        const size_t slot_idx = ((vs_u >> 4) ^ (ps_u >> 3) ^ (vs_u >> 13)) & 255u;
-        PsUsageCacheEntry& entry = s_cache[slot_idx];
         uint32_t* dst = &pkt[2];
-        if (entry.vs_exports == vs_exports_raw && entry.ps_inputs == ps_inputs_raw &&
-            entry.num_vs == num_vs_exports && entry.num_ps == num_ps_inputs &&
-            DirectRingEnabled()) {
-            std::memcpy(dst, entry.cntl, static_cast<size_t>(num_ps_inputs) * sizeof(uint32_t));
-            return;
-        }
         const auto* vs_exp = static_cast<const uint8_t*>(vs_exports_raw);
         const auto* ps_in_u16 = static_cast<const uint16_t*>(ps_inputs_raw);
         const auto* ps_in_u8 = static_cast<const uint8_t*>(ps_inputs_raw);
@@ -1334,14 +1316,8 @@ inline void GenerateAndEmitPsShaderUsage(
             const uint32_t lo6 = (((ps_w >> 7) & 0x1E0u) | match_val) & 0x3Fu;
             const uint32_t mid2 = lo6 | (((ps_w >> 8) & 0x3u) << 8);
             const uint32_t bit10 = (((ps_w >> 12) | (ps_w >> 10)) & 0x1u) << 10;
-            const uint32_t val = mid2 | bit10;
-            dst[i] = val;
-            entry.cntl[i] = val;
+            dst[i] = mid2 | bit10;
         }
-        entry.vs_exports = vs_exports_raw;
-        entry.ps_inputs = ps_inputs_raw;
-        entry.num_vs = static_cast<uint16_t>(num_vs_exports);
-        entry.num_ps = static_cast<uint16_t>(num_ps_inputs);
     }
 }
 

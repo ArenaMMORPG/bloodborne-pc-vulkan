@@ -1476,8 +1476,8 @@ void UpdateHudBreakdown(HudBreakdown& h) {
                 h.bottleneck_ru = "Stage A: Поток констант (ConstRing)";
                 h.bottleneck_en = "Stage A: Constant Stream (ConstRing)";
             } else {
-                h.bottleneck_ru = "Stage A: RHI / PM4 + FastPSO";
-                h.bottleneck_en = "Stage A: RHI / PM4 + FastPSO";
+                h.bottleneck_ru = "Stage A: DirectVk RHI + FastPSO";
+                h.bottleneck_en = "Stage A: DirectVk RHI + FastPSO";
             }
         } else {
             h.bottleneck_kind = 0;
@@ -1673,7 +1673,7 @@ void FpsCounter() {
         // 2. Stage A (bb:GpuComm) (3 fixed rows: Total + 2 sub-rows)
         row("2. Stage A: Total (GpuComm)", "2. Stage A: Всего (GpuComm)", h.a_total_ms,
             h.avg_a_total_ms, h.bottleneck_kind == 2);
-        row("  RHI / PM4 + FastPSO", "  RHI / PM4 + FastPSO", h.a_pm4_pipe_ms,
+        row("  DirectVk RHI + FastPSO", "  DirectVk RHI + FastPSO", h.a_pm4_pipe_ms,
             h.avg_a_pm4_pipe_ms, h.bottleneck_kind == 2 && h.a_pm4_pipe_ms >= h.a_ring_ms);
         row("  ConstRing + Drain", "  Поток констант + Drain", h.a_ring_ms + h.a_drain_ms,
             h.avg_a_ring_ms + h.avg_a_drain_ms,
