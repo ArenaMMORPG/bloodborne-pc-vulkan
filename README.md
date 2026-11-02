@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <b>100% Decompiled C++20 Graphics Engine (102,597 LOC)</b> • <b>True Split PC VRAM Architecture (0 Page Faults/s)</b> • <b>96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders</b> • <b>3D World-Space Hardware Occlusion Culler</b> • <b>Up to 481 FPS @ 2560x1440 Native</b>
+  <b>100% Decompiled C++20 Graphics Engine (152,420 LOC)</b> • <b>True Split PC VRAM Architecture (0 Page Faults/s)</b> • <b>96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders</b> • <b>3D World-Space Hardware Occlusion Culler</b> • <b>Up to 481 FPS @ 2560x1440 Native</b>
 </p>
 
 ---
@@ -32,7 +32,7 @@ Traditional PS4 emulators and translation layers run *Bloodborne*'s graphics eng
   - **System RAM (RSS):** `8.4 GB` → **`3.3 – 5.0 GB`**
 
 ### 2. Complete `2,940 / 2,940` Decompiled C++20 Graphics Engine ([`our_cpp_100000_source/`](our_cpp_100000_source))
-All **2,940 graphics functions (`102,597` lines of C++20 with AVX2/FMA intrinsics)** across all 7 internal `FD4` / `GX` rendering modules have been decompiled and verified instruction-by-instruction against `eboot.bin` (`v1.09` GOTY `CUSA03173`):
+All **2,940 graphics functions (`152,420` lines of C++20 with AVX2/FMA intrinsics)** across all 7 internal `FD4` / `GX` rendering modules have been decompiled and verified instruction-by-instruction against `eboot.bin` (`v1.09` GOTY `CUSA03173`):
 
 | Module | Directory | Functions | Engine Subsystem |
 | :---: | :--- | :---: | :--- |
@@ -63,12 +63,12 @@ All **2,940 graphics functions (`102,597` lines of C++20 with AVX2/FMA intrinsic
 - From **`bbport` (`deadinside28`)**, we use and preserve:
   - The Linux ELF loader & PS4 system-library (`libkernel` / `libc` / `libSceFios2` / audio / pad / online) runtime (`src/`).
   - The in-game **Display** menu (`gpu/shim/bbport_menu.cpp`) and temporal upscaler integrations (**`FSR 3.1`**, **`FSR 4`**, **`TAA`**, **`DLSS`**, `16:9` / `21:9` aspect ratios, and `720p`–`4K` resolutions).
-- **What `bloodborne-pc-vulkan` adds on top of `bbport` v0.6 (`+102,597 LOC` in `our_cpp_100000_source/` + `+78,369 LOC` across `191` modified/new files in `gpu/`):**
+- **What `bloodborne-pc-vulkan` adds on top of `bbport` v0.6 (`+152,420 LOC` in `our_cpp_100000_source/` + `+78,369 LOC` across `191` modified/new files in `gpu/`):**
 
 | Component | Source / Author | Scope in This Repository |
 | :--- | :--- | :--- |
 | **PS4 System Runtime (`src/`), In-Game Display Menu & Upscalers (`FSR 3.1/4`, `DLSS`, `TAA`)** | **[`bbport` (`deadinside28/bloodborne_pc`)](https://github.com/deadinside28/bloodborne_pc)** & **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** | Preserved from upstream `bbport` v0.6 (`src/` untouched; integrated with our DirectVk RHI). |
-| **Decompiled C++20 Graphics Engine (`2,940 / 2,940` functions)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | **`102,597` lines of C++20** in [`our_cpp_100000_source/`](our_cpp_100000_source) replacing raw `eboot.bin` graphics functions across all 7 `FD4`/`GX` modules (`bb_golden_engine.cpp`). |
+| **Decompiled C++20 Graphics Engine (`2,940 / 2,940` functions)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | **`152,420` lines of C++20** in [`our_cpp_100000_source/`](our_cpp_100000_source) replacing raw `eboot.bin` graphics functions across all 7 `FD4`/`GX` modules (`bb_golden_engine.cpp`). |
 | **True Split PC VRAM (`DirectBuffers` & `DirectTextures`)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), and [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h) (`0` page faults/s, `100% NatTex`, `2.5–3.5 GiB` VRAM). |
 | **96 Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native) & [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp) (`-35%` to `-68%` SPIR-V size, N-sphere `early_fragment_tests` + `demote;`). |
 | **3D World-Space `SceneOcclusionCuller` & Two-Stage Pipeline** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | Rewritten [`rasterizer.cpp`](gpu/render/rasterizer.cpp), `FastSelect` PSO cache, `O(1)` `ConstRing`, delta `push_descriptor` (`57%` saved). |
@@ -172,7 +172,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 
 # 🇷🇺 Bloodborne PC Vulkan — Описание проекта и инструкция (RU)
 
-**`bloodborne-pc-vulkan`** — это проект нативной декомпиляции графического движка *Bloodborne* (`2,940 из 2,940` функций рендера, `102,597` строк чистого кода C++20 с `AVX2`/`FMA`) в связке с прямым рендерером **Vulkan 1.3 (`libbbgpu.so`)** для Linux.
+**`bloodborne-pc-vulkan`** — это проект нативной декомпиляции графического движка *Bloodborne* (`2,940 из 2,940` функций рендера, `152,420` строк чистого кода C++20 с `AVX2`/`FMA`) в связке с прямым рендерером **Vulkan 1.3 (`libbbgpu.so`)** для Linux.
 
 ### Чем этот проект отличается от обычной эмуляции PS4:
 
@@ -194,7 +194,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 
 5. **Честное разделение: что взято из [`bbport`](https://github.com/deadinside28/bloodborne_pc) (`deadinside28`), а что написано нами:**
    - Системный рантайм PS4 (`src/`: загрузчик ELF, файловая система `Fios2`, звук, геймпад, сеть), внутриигровое меню **Display** и интеграция апскейлеров (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`) взяты из открытого проекта **[`bbport` (`deadinside28/bloodborne_pc` v0.6)](https://github.com/deadinside28/bloodborne_pc)** (который, в свою очередь, вырос из видеоядра **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** под лицензией GPL). Мы открыто указываем авторство `bbport` и не приписываем себе их системный рантайм и меню.
-   - Наша работа в **`bloodborne-pc-vulkan`** — это **`+102,597` строк** полной C++20 декомпиляции всех `2,940 / 2,940` функций графического движка в [`our_cpp_100000_source/`](our_cpp_100000_source) и **`+78,369` строк** в [`gpu/`](gpu) (`191` изменённый и новый файл): прямое разделение памяти `DirectBuffers` / `DirectTextures` (`0` page faults/s), `96` нативных шейдеров Vulkan 1.3 GLSL, `752` предкомпилированных SPIR-V шейдера, 3D World-Space `SceneOcclusionCuller` и двухстадийный RHI-конвейер.
+   - Наша работа в **`bloodborne-pc-vulkan`** — это **`+152,420` строк** полной C++20 декомпиляции всех `2,940 / 2,940` функций графического движка в [`our_cpp_100000_source/`](our_cpp_100000_source) и **`+78,369` строк** в [`gpu/`](gpu) (`191` изменённый и новый файл): прямое разделение памяти `DirectBuffers` / `DirectTextures` (`0` page faults/s), `96` нативных шейдеров Vulkan 1.3 GLSL, `752` предкомпилированных SPIR-V шейдера, 3D World-Space `SceneOcclusionCuller` и двухстадийный RHI-конвейер.
 
 ---
 
@@ -247,7 +247,7 @@ If you enjoy **Bloodborne PC Vulkan** and want to support further C++20 engine d
   - **[`shadPS4` (`shadps4-emu/shadPS4`)](https://github.com/shadps4-emu/shadPS4)** — Original PS4 Vulkan video core and shader recompiler foundation (`GPL-2.0-or-later`).
   - **[`bbhost` (`droogie/bbhost`)](https://github.com/droogie/bbhost)** — Fellow open-source Bloodborne PC translation-layer project (independent architecture; acknowledged for pioneering Bloodborne PC research).
 - **`bloodborne-pc-vulkan` Additions by [@ArenaMMORPG](https://github.com/ArenaMMORPG):**
-  - Complete `2,940 / 2,940` C++20 `FD4`/`GX` Graphics Engine decompilation (`102,597 LOC` in [`our_cpp_100000_source/`](our_cpp_100000_source) + [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)).
+  - Complete `2,940 / 2,940` C++20 `FD4`/`GX` Graphics Engine decompilation (`152,420 LOC` in [`our_cpp_100000_source/`](our_cpp_100000_source) + [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)).
   - True Split PC VRAM architecture ([`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h)).
   - 96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders ([`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native), [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp)).
   - 3D World-Space `SceneOcclusionCuller` & Two-Stage Draw Pipeline ([`rasterizer.cpp`](gpu/render/rasterizer.cpp)).
