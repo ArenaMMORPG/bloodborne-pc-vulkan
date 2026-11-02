@@ -1,7 +1,7 @@
 # Bloodborne PC Vulkan — Native C++20 Graphics Engine (`2,940 / 2,940` Functions) + Direct Vulkan 1.3 RHI
 
 <p align="center">
-  <img src="docs/images/display_menu.jpg" alt="Bloodborne PC Vulkan In-Game Display & Upscaler Menu (2560x1440 Native, FSR 3.1 / FSR 4 / TAA / DLSS)" width="920"/>
+  <img src="docs/images/wow.png" alt="Bloodborne PC Vulkan — 481 FPS (2.08 ms) @ 2560x1440 Native, 0 Page Faults/s, 100% Native Textures" width="920"/>
 </p>
 
 <p align="center">
@@ -65,6 +65,10 @@ All **2,940 graphics functions (`102,597` lines of C++20 with AVX2/FMA intrinsic
   - **Temporal Upscalers & AA:** `Off` (Native), **`FSR 3.1`**, **`FSR 4`**, **`TAA`**, **`DLSS`**
   - **Quality Preset, Sharpness & Model Detail**
 - Because the entire Vulkan 1.3 pipeline and C++20 engine live in this repository, **any new custom Vulkan feature, shader pass, or in-game menu option can be added directly in C++**.
+
+<p align="center">
+  <img src="docs/images/display_menu.jpg" alt="Bloodborne PC Vulkan In-Game Display & Upscaler Menu (2560x1440 Native, FSR 3.1 / FSR 4 / TAA / DLSS)" width="760"/>
+</p>
 
 ---
 
