@@ -13,8 +13,13 @@
 #include "bbgpu/shaders/ps_0f61fd27_vsm_blur_frag.h"
 #include "bbgpu/shaders/ps_1ae03d75_vsm_moment_cldist_frag.h"
 #include "bbgpu/shaders/ps_1ae03d75_vsm_moment_noclip_frag.h"
+#include "bbgpu/shaders/ps_32e47788_atmos_fog_frag.h"
+#include "bbgpu/shaders/ps_5e224cb6_vfx_fog_frag.h"
+#include "bbgpu/shaders/ps_71c96598_vfx_fog_frag.h"
+#include "bbgpu/shaders/ps_8c08444c_blur13_frag.h"
 #include "bbgpu/shaders/ps_ed4c7668_lut3d_frag.h"
 #include "bbgpu/shaders/ps_f7229091_bgra_blit_frag.h"
+#include "bbgpu/shaders/vs_167daba6_vsm_shadow_vert.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -68,12 +73,17 @@ struct NativeShaderCandidate {
     const char* label;
 };
 
-constexpr std::array<NativeShaderCandidate, 5> kNativeRegistry{{
+constexpr std::array<NativeShaderCandidate, 10> kNativeRegistry{{
     {0x000000000f61fd27ull, PS_0F61FD27_VSM_BLUR_FRAG, "ps_0f61fd27_vsm_blur"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_CLDIST_FRAG, "ps_1ae03d75_vsm_moment_cldist"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_NOCLIP_FRAG, "ps_1ae03d75_vsm_moment_noclip"},
     {0x00000000f7229091ull, PS_F7229091_BGRA_BLIT_FRAG, "ps_f7229091_bgra_blit"},
     {0x00000000ed4c7668ull, PS_ED4C7668_LUT3D_FRAG, "ps_ed4c7668_lut3d"},
+    {0x00000000167daba6ull, VS_167DABA6_VSM_SHADOW_VERT, "vs_167daba6_vsm_shadow"},
+    {0x000000008c08444cull, PS_8C08444C_BLUR13_FRAG, "ps_8c08444c_blur13"},
+    {0x0000000032e47788ull, PS_32E47788_ATMOS_FOG_FRAG, "ps_32e47788_atmos_fog"},
+    {0x000000005e224cb6ull, PS_5E224CB6_VFX_FOG_FRAG, "ps_5e224cb6_vfx_fog"},
+    {0x0000000071c96598ull, PS_71C96598_VFX_FOG_FRAG, "ps_71c96598_vfx_fog"},
 }};
 
 struct DescSlot {
@@ -233,7 +243,8 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
     for (const auto& v : global_vars) {
         const u32 pointee = ptr_pointee[v.ptr_type];
         if (v.sc == kStorageClassInput) {
-            if (var_has_builtin[v.id]) {
+            if (var_has_builtin[v.id] ||
+                (pointee < bound && struct_deco[pointee] != 0 && !var_has_loc[v.id])) {
                 continue;
             }
             if (var_per_vertex[v.id]) {
@@ -247,7 +258,8 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
             sig.in_interp[loc] = var_interp[v.id];
             sig.in_comps[loc] = (pointee < bound) ? type_comps[pointee] : 0u;
         } else if (v.sc == kStorageClassOutput) {
-            if (var_has_builtin[v.id]) {
+            if (var_has_builtin[v.id] ||
+                (pointee < bound && struct_deco[pointee] != 0 && !var_has_loc[v.id])) {
                 continue;
             }
             if (!var_has_loc[v.id] || var_loc[v.id] >= 64u) {
@@ -367,11 +379,14 @@ bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
 
         u32 base_binding = 0;
         if (!cand_sig.descs.empty()) {
-            if (cand_sig.descs[0].binding != 0 ||
-                ref_sig.descs[0].binding < cand_sig.descs[0].binding) {
+            if (cand_sig.descs[0].binding == ref_sig.descs[0].binding) {
+                base_binding = 0;
+            } else if (cand_sig.descs[0].binding == 0 && cand_sig.exec_model != 0 &&
+                       ref_sig.descs[0].binding > 0) {
+                base_binding = ref_sig.descs[0].binding;
+            } else {
                 continue;
             }
-            base_binding = ref_sig.descs[0].binding;
         }
         bool descs_ok = true;
         for (size_t i = 0; i < cand_sig.descs.size(); ++i) {

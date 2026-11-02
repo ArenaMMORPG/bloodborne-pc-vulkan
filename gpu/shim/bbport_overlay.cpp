@@ -1377,7 +1377,24 @@ void UpdateHudBreakdown(HudBreakdown& h) {
     }
 
     // Determine primary bottleneck across parallel stages (and detect active FPS limiter):
-    const int fps_cap = BbFrameRate::Limit();
+    const auto effective_fps_cap = []() noexcept -> int {
+        if (const int live = BbFrameRate::Limit(); live > 0) {
+            return live;
+        }
+        static const int env_cap = [] {
+            if (const char* lim = std::getenv("BB_FPS_LIMIT"); lim && std::atoi(lim) > 0) {
+                return std::atoi(lim);
+            }
+            if (const char* fps = std::getenv("BB_FPS");
+                fps && *fps && std::strcmp(fps, "uncap") != 0 && std::atoi(fps) > 0) {
+                return std::atoi(fps);
+            }
+            return 0;
+        }();
+        return env_cap;
+    };
+    const int fps_cap = effective_fps_cap();
+    h.fps_cap_active = fps_cap;
     const float cap_budget_ms = fps_cap > 0 ? (1000.0f / float(fps_cap)) : 0.0f;
     const float game_cpu_bound_ms = std::max(0.0f, h.idle_a_ms - h.a_drain_ms);
     const float stage_a_work_ms = h.a_pm4_pipe_ms + h.a_ring_ms;
@@ -1391,7 +1408,6 @@ void UpdateHudBreakdown(HudBreakdown& h) {
         std::max({stage_b_work_ms, stage_a_work_ms, h.hw_gpu_busy_ms, h.gnm_wait_ms});
 
     if (fps_cap > 0 && h.fps >= float(fps_cap) * 0.92f && max_active_ms < cap_budget_ms * 0.92f) {
-        h.fps_cap_active = fps_cap;
         h.bottleneck_kind = 5;
         if (stage_b_work_ms >= stage_a_work_ms && stage_b_work_ms >= h.hw_gpu_busy_ms) {
             h.bottleneck_ms = stage_b_work_ms;
@@ -1410,7 +1426,6 @@ void UpdateHudBreakdown(HudBreakdown& h) {
             h.bottleneck_en = "FPS Cap Active (Max: Stage A)";
         }
     } else {
-        h.fps_cap_active = 0;
         if (h.gnm_wait_ms >= 1.50f && h.b_busy_pct < 78.0f && h.gpu_present_ms < 0.50f) {
             h.bottleneck_kind = 4;
             h.bottleneck_ms = h.gnm_wait_ms;
@@ -1587,7 +1602,7 @@ void FpsCounter() {
                                                 "%.0f FPS  %.2f мс  [%s]"),
                            now_fps, now_ms, upscaler_str);
     }
-    const int fps_cap = BbFrameRate::Limit();
+    const int fps_cap = h.fps_cap_active;
     char cap_buf[32];
     if (fps_cap > 0) {
         std::snprintf(cap_buf, sizeof(cap_buf), "Cap %d", fps_cap);

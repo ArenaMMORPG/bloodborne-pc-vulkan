@@ -151,6 +151,15 @@ bool MatchSpvLiteralString(const u32* words, u32 num_words, const char* target) 
     return std::strcmp(bytes, target) == 0;
 }
 
+/// Extensions promoted to core in SPIR-V 1.3 / 1.4 / 1.6 (Vulkan 1.1 / 1.2 / 1.3).
+/// Leaving them as explicit OpExtension declarations in a SPIR-V 1.6 module causes SPIRV-Tools'
+/// AggressiveDCEPass (and other passes checking extension allowlists) to bail out without running.
+bool IsRedundantCoreExtension(const u32* words, u32 num_words) noexcept {
+    return MatchSpvLiteralString(words, num_words, "SPV_KHR_float_controls") ||
+           MatchSpvLiteralString(words, num_words, "SPV_KHR_shader_draw_parameters") ||
+           MatchSpvLiteralString(words, num_words, "SPV_EXT_demote_to_helper_invocation");
+}
+
 enum class InterpMode : u8 {
     Keep = 0,
     Smooth = 1,
@@ -769,6 +778,10 @@ bool ApplyHwInterpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
     for (const auto& pi : ps.insts) {
         const u32* w = &in[pi.offset];
 
+        if (pi.opcode == kOpExtension && pi.wc >= 2 && IsRedundantCoreExtension(w + 1, pi.wc - 1)) {
+            continue;
+        }
+
         if (strip_bary_ext) {
             if (pi.opcode == kOpCapability && pi.wc == 2) {
                 if (w[1] == kCapFragmentBarycentricKHR) {
@@ -1300,6 +1313,10 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             in_function = false;
         }
 
+        if (op == kOpExtension && wc >= 2 && IsRedundantCoreExtension(&in[pos + 1], wc - 1)) {
+            pos += wc;
+            continue;
+        }
         if (op == kOpDecorate && wc == 3 && in[pos + 2] == kDecoNoContraction) {
             ++nocontract;
             pos += wc;
@@ -1331,23 +1348,18 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             }
             const IdPair rsq_mul = select_safe_rsq_mul[res];
             if (rsq_mul.a != 0 && rsq_mul.b != 0) {
-                const u32 lhs =
-                    (rsq_mul.a < bound && safe_rsq_id[rsq_mul.a] != 0) ? safe_rsq_id[rsq_mul.a]
-                                                                       : rsq_mul.a;
-                const u32 rhs =
-                    (rsq_mul.b < bound && safe_rsq_id[rsq_mul.b] != 0) ? safe_rsq_id[rsq_mul.b]
-                                                                       : rsq_mul.b;
                 // Only rewrite if every required %safe_rsq dominated this select.
                 const bool lhs_ready = !(rsq_mul.a < bound && needs_safe_rsq[rsq_mul.a]) ||
                                        safe_rsq_id[rsq_mul.a] != 0;
                 const bool rhs_ready = !(rsq_mul.b < bound && needs_safe_rsq[rsq_mul.b]) ||
                                        safe_rsq_id[rsq_mul.b] != 0;
                 if (lhs_ready && rhs_ready) {
-                    out.push_back((5u << 16) | kOpFMul);
+                    // Since %rsq_res was guarded in-place at its InverseSqrt definition, the
+                    // existing OpFMul (%f_id = in[pos + 5]) already uses the finite %safe_rsq.
+                    out.push_back((4u << 16) | kOpCopyObject);
                     out.push_back(f32_type_id);
                     out.push_back(res);
-                    out.push_back(lhs);
-                    out.push_back(rhs);
+                    out.push_back(in[pos + 5]);
                     ++safe_rsq_muls;
                     pos += wc;
                     continue;
@@ -1428,39 +1440,8 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             }
         }
 
-        out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(pos),
-                   in.begin() + static_cast<std::ptrdiff_t>(pos + wc));
-
-        if (any_safe_rsq && pos == f32_type_pos) {
-            if (emit_bool_type) {
-                out.push_back((2u << 16) | kOpTypeBool);
-                out.push_back(bool_type_id);
-                emit_bool_type = false;
-            }
-            if (emit_f32_zero) {
-                out.push_back((4u << 16) | kOpConstant);
-                out.push_back(f32_type_id);
-                out.push_back(f32_zero_id);
-                out.push_back(kF32PosZeroBits);
-                emit_f32_zero = false;
-            }
-            if (emit_f32_flt_min) {
-                out.push_back((4u << 16) | kOpConstant);
-                out.push_back(f32_type_id);
-                out.push_back(f32_flt_min_id);
-                out.push_back(kF32FltMinBits);
-                emit_f32_flt_min = false;
-            }
-            if (emit_f32_flt_max) {
-                out.push_back((4u << 16) | kOpConstant);
-                out.push_back(f32_type_id);
-                out.push_back(f32_flt_max_id);
-                out.push_back(kF32FltMaxBits);
-                emit_f32_flt_max = false;
-            }
-        }
-
-        // Right after %rsq = InverseSqrt(%arg), synthesize finite %safe_rsq once.
+        // Replace %rsq = InverseSqrt(%arg) IN-PLACE with finite-clamped %safe_rsq so no duplicate
+        // InverseSqrt is ever left behind and both legacy and non-legacy OpFMul users share it.
         if (in_function && op == kOpExtInst && wc == 6 && in[pos + 2] < bound &&
             needs_safe_rsq[in[pos + 2]]) {
             const u32 rsq_res = in[pos + 2];
@@ -1471,7 +1452,6 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             const u32 gt0_id = next_id++;
             const u32 le_max_id = next_id++;
             const u32 valid_id = next_id++;
-            const u32 safe_id = next_id++;
 
             out.push_back((7u << 16) | kOpExtInst);
             out.push_back(f32_type_id);
@@ -1516,13 +1496,47 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
 
             out.push_back((6u << 16) | kOpSelect);
             out.push_back(f32_type_id);
-            out.push_back(safe_id);
+            out.push_back(rsq_res);
             out.push_back(valid_id);
             out.push_back(fin_rsq_id);
             out.push_back(f32_zero_id);
 
-            safe_rsq_id[rsq_res] = safe_id;
+            safe_rsq_id[rsq_res] = rsq_res;
             ++safe_rsq_guards;
+            pos += wc;
+            continue;
+        }
+
+        out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(pos),
+                   in.begin() + static_cast<std::ptrdiff_t>(pos + wc));
+
+        if (any_safe_rsq && pos == f32_type_pos) {
+            if (emit_bool_type) {
+                out.push_back((2u << 16) | kOpTypeBool);
+                out.push_back(bool_type_id);
+                emit_bool_type = false;
+            }
+            if (emit_f32_zero) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_zero_id);
+                out.push_back(kF32PosZeroBits);
+                emit_f32_zero = false;
+            }
+            if (emit_f32_flt_min) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_flt_min_id);
+                out.push_back(kF32FltMinBits);
+                emit_f32_flt_min = false;
+            }
+            if (emit_f32_flt_max) {
+                out.push_back((4u << 16) | kOpConstant);
+                out.push_back(f32_type_id);
+                out.push_back(f32_flt_max_id);
+                out.push_back(kF32FltMaxBits);
+                emit_f32_flt_max = false;
+            }
         }
 
         pos += wc;
