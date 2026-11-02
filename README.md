@@ -58,16 +58,23 @@ All **2,940 graphics functions (`102,597` lines of C++20 with AVX2/FMA intrinsic
   - Uses non-blocking `VkQueryPool(vk::QueryType::eOcclusion)` queries keyed by each draw's vertex buffer hash + **3D World-Space `3x4` Transform Matrix Palette** (`palette_ptr + model_cb[20] * 48`), paired with **0-latency 864-byte G-Buffer camera tracking**.
   - Eliminates occluded 6-MRT G-Buffer meshes and secondary 32×32 / 64×64 micro-shadow clutter batches on the CPU before resource binding, with **zero pop-in delay on camera turns** and **zero false culling**.
 
-### 5. Native In-Game PC Display Menu & Upscalers ([`gpu/shim/bbport_menu.cpp`](gpu/shim/bbport_menu.cpp))
-- Seamless in-game **Display** settings menu (building upon the `bbport` menu framework) with native support for:
-  - **Aspect Ratio:** `16:9`, `21:9` Ultrawide, etc.
-  - **Resolution:** `1280x720`, `1920x1080`, `2560x1440`, `3840x2160` (`4K`)
-  - **Temporal Upscalers & AA:** `Off` (Native), **`FSR 3.1`**, **`FSR 4`**, **`TAA`**, **`DLSS`**
-  - **Quality Preset, Sharpness & Model Detail**
-- Because the entire Vulkan 1.3 pipeline and C++20 engine live in this repository, **any new custom Vulkan feature, shader pass, or in-game menu option can be added directly in C++**.
+### 5. Upstream `bbport` Runtime, In-Game Display Menu & Upscalers (Honest Lineage & Credits)
+- **Full credit where credit is due:** We do **not** reinvent the OS runtime or the in-game settings UI. This project builds directly upon the open-source **[`bbport` (`deadinside28/bloodborne_pc` v0.6)](https://github.com/deadinside28/bloodborne_pc)** runtime (which itself originated from **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)**'s video core under `GPL-2.0-or-later`).
+- From **`bbport` (`deadinside28`)**, we use and preserve:
+  - The Linux ELF loader & PS4 system-library (`libkernel` / `libc` / `libSceFios2` / audio / pad / online) runtime (`src/`).
+  - The in-game **Display** menu (`gpu/shim/bbport_menu.cpp`) and temporal upscaler integrations (**`FSR 3.1`**, **`FSR 4`**, **`TAA`**, **`DLSS`**, `16:9` / `21:9` aspect ratios, and `720p`–`4K` resolutions).
+- **What `bloodborne-pc-vulkan` adds on top of `bbport` v0.6 (`+102,597 LOC` in `our_cpp_100000_source/` + `+78,369 LOC` across `191` modified/new files in `gpu/`):**
+
+| Component | Source / Author | Scope in This Repository |
+| :--- | :--- | :--- |
+| **PS4 System Runtime (`src/`), In-Game Display Menu & Upscalers (`FSR 3.1/4`, `DLSS`, `TAA`)** | **[`bbport` (`deadinside28/bloodborne_pc`)](https://github.com/deadinside28/bloodborne_pc)** & **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** | Preserved from upstream `bbport` v0.6 (`src/` untouched; integrated with our DirectVk RHI). |
+| **Decompiled C++20 Graphics Engine (`2,940 / 2,940` functions)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | **`102,597` lines of C++20** in [`our_cpp_100000_source/`](our_cpp_100000_source) replacing raw `eboot.bin` graphics functions across all 7 `FD4`/`GX` modules (`bb_golden_engine.cpp`). |
+| **True Split PC VRAM (`DirectBuffers` & `DirectTextures`)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), and [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h) (`0` page faults/s, `100% NatTex`, `2.5–3.5 GiB` VRAM). |
+| **96 Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native) & [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp) (`-35%` to `-68%` SPIR-V size, N-sphere `early_fragment_tests` + `demote;`). |
+| **3D World-Space `SceneOcclusionCuller` & Two-Stage Pipeline** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | Rewritten [`rasterizer.cpp`](gpu/render/rasterizer.cpp), `FastSelect` PSO cache, `O(1)` `ConstRing`, delta `push_descriptor` (`57%` saved). |
 
 <p align="center">
-  <img src="docs/images/display_menu.jpg" alt="Bloodborne PC Vulkan In-Game Display & Upscaler Menu (2560x1440 Native, FSR 3.1 / FSR 4 / TAA / DLSS)" width="760"/>
+  <img src="docs/images/display_menu.jpg" alt="Upstream bbport In-Game Display & Upscaler Menu running on Bloodborne PC Vulkan" width="760"/>
 </p>
 
 ---
@@ -185,8 +192,9 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
    - Закрытые стенами и рельефом объекты отсекаются через `VkQueryPool(eOcclusion)` до биндинга ресурсов и без малейшей задержки появления при повороте камеры.
    - **Производительность в `2560x1440` Native:** до **`481 FPS` без лимита (`2.08 мс/кадр`, `1.88 мс` HW GPU Busy)** и стабильные **`170 FPS` при нагрузке на CPU всего `5.5%–8.7%`**.
 
-5. **Внутриигровое меню настроек графики и апскейлеров (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`):**
-   - Прямо в игре в разделе **Display** доступен выбор разрешения (`720p` / `1080p` / `1440p` / `4K`), соотношения сторон (`16:9`, `21:9`), апскейлера (`Off`, `FSR 3.1`, `FSR 4`, `TAA`, `DLSS`), резкости и детализации моделей.
+5. **Честное разделение: что взято из [`bbport`](https://github.com/deadinside28/bloodborne_pc) (`deadinside28`), а что написано нами:**
+   - Системный рантайм PS4 (`src/`: загрузчик ELF, файловая система `Fios2`, звук, геймпад, сеть), внутриигровое меню **Display** и интеграция апскейлеров (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`) взяты из открытого проекта **[`bbport` (`deadinside28/bloodborne_pc` v0.6)](https://github.com/deadinside28/bloodborne_pc)** (который, в свою очередь, вырос из видеоядра **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** под лицензией GPL). Мы открыто указываем авторство `bbport` и не приписываем себе их системный рантайм и меню.
+   - Наша работа в **`bloodborne-pc-vulkan`** — это **`+102,597` строк** полной C++20 декомпиляции всех `2,940 / 2,940` функций графического движка в [`our_cpp_100000_source/`](our_cpp_100000_source) и **`+78,369` строк** в [`gpu/`](gpu) (`191` изменённый и новый файл): прямое разделение памяти `DirectBuffers` / `DirectTextures` (`0` page faults/s), `96` нативных шейдеров Vulkan 1.3 GLSL, `752` предкомпилированных SPIR-V шейдера, 3D World-Space `SceneOcclusionCuller` и двухстадийный RHI-конвейер.
 
 ---
 
@@ -232,8 +240,15 @@ If you enjoy **Bloodborne PC Vulkan** and want to support further C++20 engine d
 
 ---
 
-## 📜 Credits & License
+## 📜 Credits, Acknowledgements & License
 
-- Built upon the open-source foundation of **bbport** and the **shadPS4** Vulkan video core (`SPDX-License-Identifier: GPL-2.0-or-later`).
-- Full `2,940 / 2,940` C++20 `FD4`/`GX` Graphics Engine decompilation, DirectBuffers/DirectTextures split-VRAM architecture, 96 Native Vulkan 1.3 GLSL shaders, and 3D World-Space `SceneOcclusionCuller` by **[@ArenaMMORPG](https://github.com/ArenaMMORPG)**.
-- Licensed under the **[GNU General Public License v3.0](LICENSE)** (`GPL-3.0`).
+- **Upstream OS Runtime, In-Game Menu, Upscalers & Base Video Core:**
+  - **[`bbport` (`deadinside28/bloodborne_pc`)](https://github.com/deadinside28/bloodborne_pc)** — Linux runtime (`src/`), in-game Display menu (`bbport_menu.cpp`), temporal upscalers (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`), and base GTK4 launcher.
+  - **[`shadPS4` (`shadps4-emu/shadPS4`)](https://github.com/shadps4-emu/shadPS4)** — Original PS4 Vulkan video core and shader recompiler foundation (`GPL-2.0-or-later`).
+  - **[`bbhost` (`droogie/bbhost`)](https://github.com/droogie/bbhost)** — Fellow open-source Bloodborne PC translation-layer project (independent architecture; acknowledged for pioneering Bloodborne PC research).
+- **`bloodborne-pc-vulkan` Additions by [@ArenaMMORPG](https://github.com/ArenaMMORPG):**
+  - Complete `2,940 / 2,940` C++20 `FD4`/`GX` Graphics Engine decompilation (`102,597 LOC` in [`our_cpp_100000_source/`](our_cpp_100000_source) + [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)).
+  - True Split PC VRAM architecture ([`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h)).
+  - 96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders ([`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native), [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp)).
+  - 3D World-Space `SceneOcclusionCuller` & Two-Stage Draw Pipeline ([`rasterizer.cpp`](gpu/render/rasterizer.cpp)).
+- Licensed under the **[GNU General Public License v3.0](LICENSE)** (`GPL-3.0`, compatible with upstream `GPL-2.0-or-later`).
