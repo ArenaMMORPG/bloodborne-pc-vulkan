@@ -100,41 +100,35 @@ Measured on Linux (`Ryzen 9 7950X 16C/32T`, `NVIDIA RTX 4090`, `2560x1440` Nativ
 
 > **⚠️ Legal Notice:** This repository contains **ZERO** proprietary Sony or FromSoftware assets, executables (`eboot.bin`), or game data. You must provide your own legally dumped PS4 *Bloodborne* Game of the Year Edition (`CUSA03173` or `CUSA00900` updated to **v1.09**).
 
-### Step 1: Prepare Your Unpacked Game Dump (`CUSA03173` v1.09)
-Place your unpacked PS4 *Bloodborne* folder (`CUSA03173` or `CUSA00900`, containing `eboot.bin`, `sce_module/`, `sce_sys/`, and `dvdroot_ps4/`) right next to the `bloodborne-pc-vulkan` directory:
+### Option A (Simplest — No Git or Compilation Needed): Unpack Release Archive Next to `CUSA03173`
+1. Download **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** from the **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** page.
+2. Extract all files from the archive directly into the folder where your unpacked `CUSA03173` (v1.09) game folder sits:
+   ```text
+   your_game_folder/
+   ├── CUSA03173/                  # Your unpacked Bloodborne v1.09 game dump (eboot.bin, dvdroot_ps4/, ...)
+   ├── play.sh                     # <-- Run this to start the game directly!
+   ├── launcher.sh                 # <-- Or run this to open the GUI settings launcher
+   ├── run.sh
+   ├── out/                        # Prebuilt runtime & DirectVk libbbgpu.so + DLSS 4.5
+   ├── bin -> out
+   ├── scripts/
+   ├── patches/
+   ├── launcher/
+   └── fsr4_shaders/
+   ```
+3. Run **`./play.sh`** (or **`./launcher.sh`**):
+   ```bash
+   ./play.sh
+   # Or with the on-screen FPS / pipeline telemetry HUD:
+   BB_FRAME_STATS=1 ./play.sh
+   ```
 
-```text
-parent_folder/
-├── CUSA03173/                  # Your unpacked Bloodborne v1.09 game dump
-│   ├── eboot.bin
-│   ├── sce_module/
-│   ├── sce_sys/
-│   └── dvdroot_ps4/
-└── bloodborne-pc-vulkan/       # This repository
-    ├── play.sh                 # Direct game launch
-    ├── launcher.sh             # GUI launcher
-    ├── run.sh
-    └── ...
-```
-*(Alternatively, set `export BB_GAME_DIR=/path/to/your/CUSA03173` before running).*
-
-### Step 2A: Run with Prebuilt Binaries (Fastest — No Compilation Required)
-1. Clone the repository (all prebuilt Linux `x86_64` binaries — `out/bb-probe`, `out/gpu/libbbgpu.so`, `out/libbbport_dlss.so`, `out/libnvidia-ngx-dlss.so.310.9.1`, and `fsr4_shaders/` — are **already bundled directly inside the repository**, and also archived on the **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** page):
+### Option B: Clone via Git (Prebuilt Binaries Already Included in `main`)
+1. Place your `CUSA03173` folder either inside or right next to `bloodborne-pc-vulkan` and clone the repository:
    ```bash
    git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
    cd bloodborne-pc-vulkan
-   ```
-2. Launch the game directly (at first launch, `scripts/prepare.py` automatically links your `CUSA03173/eboot.bin` into `out/boot-linked.bin`):
-   ```bash
-   # Launch at 60 FPS cap with HUD telemetry:
-   BB_FRAME_STATS=1 BB_FPS_LIMIT=60 ./play.sh
-
-   # Or launch at 170 FPS / Uncapped:
-   BB_FRAME_STATS=1 BB_FPS_LIMIT=170 ./play.sh
-   BB_FRAME_STATS=1 BB_FPS_LIMIT=0 ./play.sh
-
-   # Or open the GUI Launcher:
-   ./launcher.sh
+   ./play.sh
    ```
 
 ### Step 2B: Building from Source on Linux
@@ -200,23 +194,36 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 
 ### 📦 Как установить и запустить на Linux (Пошагово)
 
-1. **Подготовьте распакованный дамп игры (`CUSA03173` или `CUSA00900` с патчем `v1.09`):**
-   Положите папку `CUSA03173` (внутри которой лежат `eboot.bin`, `sce_module/`, `sce_sys/`, `dvdroot_ps4/`) рядом с папкой репозитория `bloodborne-pc-vulkan` (либо укажите путь через `export BB_GAME_DIR=/путь/к/CUSA03173`).
-2. **Склонируйте репозиторий** (все готовые пребилд-бинарники для Linux `x86_64` — `out/bb-probe`, `out/gpu/libbbgpu.so`, `out/libbbport_dlss.so`, `out/libnvidia-ngx-dlss.so.310.9.1` и `fsr4_shaders/` — **уже включены прямо в репозиторий**, а также продублированы в разделе **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)**):
-   ```bash
-   git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
-   cd bloodborne-pc-vulkan
+#### Вариант А (Самый простой — без Git и терминала: просто распаковать архив из Releases рядом с `CUSA03173`)
+1. Скачайте готовый архив **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** из раздела **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)**.
+2. Просто перекиньте (распакуйте) все файлы из архива прямо в ту папку, где у вас лежит распакованная папка игры **`CUSA03173`** (`v1.09`), чтобы получилось так:
+   ```text
+   ваша_папка_с_игрой/
+   ├── CUSA03173/                  # Ваша папка с игрой (внутри eboot.bin, dvdroot_ps4/, sce_module/, sce_sys/)
+   ├── play.sh                     # <-- Запустите для прямого старта игры!
+   ├── launcher.sh                 # <-- Или запустите для открытия окна лаунчера настроек
+   ├── run.sh
+   ├── out/                        # Готовые бинарники, libbbgpu.so и DLSS 4.5
+   ├── bin -> out
+   ├── scripts/
+   ├── patches/
+   ├── launcher/
+   └── fsr4_shaders/
    ```
-3. **Запустите игру:**
+3. Запустите **`./play.sh`** (сразу запускает игру) или **`./launcher.sh`** (открывает окно лаунчера):
    ```bash
-   # Запуск с локом 60 FPS и оверлеем статистики:
-   BB_SAVE_LOG=1 BB_FRAME_STATS=1 BB_FPS_LIMIT=60 ./play.sh
-
-   # Запуск в 170 FPS или без лимита FPS:
-   BB_SAVE_LOG=1 BB_FRAME_STATS=1 BB_FPS_LIMIT=170 ./play.sh
-   BB_SAVE_LOG=1 BB_FRAME_STATS=1 BB_FPS_LIMIT=0 ./play.sh
+   ./play.sh
+   # Или запуск с оверлеем FPS и статистики конвейера:
+   BB_FRAME_STATS=1 ./play.sh
    ```
    *(При первом запуске скрипт `scripts/prepare.py` автоматически соберёт `out/boot-linked.bin` из вашего `CUSA03173/eboot.bin`).*
+
+#### Вариант Б (Через `git clone` — все готовые бинарники также уже включены в репозиторий)
+```bash
+git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
+cd bloodborne-pc-vulkan
+./play.sh
+```
 
 ---
 

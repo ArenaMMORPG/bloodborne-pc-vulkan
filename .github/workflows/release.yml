@@ -35,6 +35,24 @@ jobs:
           body: |
             ## Bloodborne PC Vulkan ${{ github.ref_name }} — Linux `x86_64` Prebuilt Release
 
+            ### 🚀 Quick Start (No Git Required — Just Unpack Next to `CUSA03173`)
+            1. Download **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** below.
+            2. Extract all files from the archive directly into the folder where your unpacked **`CUSA03173`** (`v1.09`) folder sits:
+               ```text
+               your_game_folder/
+               ├── CUSA03173/       # Your unpacked Bloodborne v1.09 game dump (eboot.bin, dvdroot_ps4/, ...)
+               ├── play.sh          # <-- Run this to start the game directly!
+               ├── launcher.sh      # <-- Or run this to open the GUI settings launcher
+               ├── run.sh
+               ├── out/
+               ├── bin -> out
+               ├── scripts/
+               ├── patches/
+               ├── launcher/
+               └── fsr4_shaders/
+               ```
+            3. Run **`./play.sh`** (or **`./launcher.sh`**).
+
             ### Included in `bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`:
             - **`out/gpu/libbbgpu.so`**: Complete `2,940 / 2,940` Decompiled C++20 Graphics Engine (`152,420 LOC`) + Direct Vulkan 1.3 RHI (`DirectBuffers` & `DirectTextures`, `0` page faults/s, `2.5–3.5 GiB` VRAM) + 96 Native GLSL Shaders + 3D World-Space `SceneOcclusionCuller`.
             - **In-Game `System -> Controls` & `System -> Display` Overhaul**:
