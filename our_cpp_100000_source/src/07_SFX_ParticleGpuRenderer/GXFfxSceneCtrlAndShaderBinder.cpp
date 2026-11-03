@@ -371,6 +371,7 @@ void sub_230ffe0(void* pSelf, void* pAllocator) {
         *reinterpret_cast<void**>(pHead + 0x00) = pHead;
     } else {
         handleContainerAllocFailure();
+        return;
     }
 
     *reinterpret_cast<void**>(pHead + 0x08) = pHead;
@@ -462,15 +463,25 @@ void* sub_230f420(void* pGfxDevice, void* pAllocator, void* pShaderBnd) {
                     pLayoutTable1[i],
                     pCountTable1[i],
                     pVsShader,
-                    nullptr,
+                    pAllocator,
                     nullptr);
-                if (err == 0) {
-                    FfxTempWString insStr;
-                    initTempWString(&insStr, pVsName);
-                    void** ppSlot = sub_23103c0(pTree, &insStr);
-                    *ppSlot = pLayoutWrapper;
-                    destroyTempWString(&insStr);
+                if (err != 0) {
+                    sub_230ee40(pCache);
+                    void* vtbl = *reinterpret_cast<void**>(pAllocator);
+                    (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(
+                        pAllocator, pCache);
+                    if (pLayoutWrapper != nullptr) {
+                        vtbl = *reinterpret_cast<void**>(pAllocator);
+                        (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(
+                            pAllocator, pLayoutWrapper);
+                    }
+                    return nullptr;
                 }
+                FfxTempWString insStr;
+                initTempWString(&insStr, pVsName);
+                void** ppSlot = sub_23103c0(pTree, &insStr);
+                *ppSlot = pLayoutWrapper;
+                destroyTempWString(&insStr);
             } else {
                 pLayoutWrapper = *reinterpret_cast<void**>(foundIter.node + 0x58);
             }
@@ -515,11 +526,6 @@ void* sub_230f420(void* pGfxDevice, void* pAllocator, void* pShaderBnd) {
         pEntry[4] = pGsHwObj;
         pEntry[5] = pDsHwObj;
     }
-
-    const char16_t* hsNames2[127];
-    const char16_t* psNames2[127];
-    std::memset(hsNames2, 0, sizeof(hsNames2));
-    std::memset(psNames2, 0, sizeof(psNames2));
 
     const char16_t* const* pVsTable2 = reinterpret_cast<const char16_t* const*>(GX_VMA(0x5363750ULL));
     const void* const* pLayoutTable2 = reinterpret_cast<const void* const*>(GX_VMA(0x5364750ULL));
@@ -578,20 +584,7 @@ void* sub_230f420(void* pGfxDevice, void* pAllocator, void* pShaderBnd) {
         }
 
         void* pHsHwObj = nullptr;
-        if (hsNames2[j] != nullptr) {
-            void* bndVtbl = *reinterpret_cast<void**>(pShaderBnd);
-            void* pHsShader = (*reinterpret_cast<void* (**)(void*, uint32_t, const char16_t*)>(
-                static_cast<uint8_t*>(bndVtbl) + 0x28))(pShaderBnd, 0, hsNames2[j]);
-            pHsHwObj = extractShaderHwObj(pHsShader);
-        }
-
         void* pPsHwObj = nullptr;
-        if (psNames2[j] != nullptr) {
-            void* bndVtbl = *reinterpret_cast<void**>(pShaderBnd);
-            void* pPsShader = (*reinterpret_cast<void* (**)(void*, uint32_t, const char16_t*)>(
-                static_cast<uint8_t*>(bndVtbl) + 0x20))(pShaderBnd, 0, psNames2[j]);
-            pPsHwObj = extractShaderHwObj(pPsShader);
-        }
 
         void* pGsHwObj = nullptr;
         if (pGsTable2[j] != nullptr) {
@@ -671,6 +664,9 @@ void* sub_230f420(void* pGfxDevice, void* pAllocator, void* pShaderBnd) {
 void sub_230ee40(void* pSelf) {
     uint8_t* self = static_cast<uint8_t*>(pSelf);
     uint8_t* pHead = *reinterpret_cast<uint8_t**>(self + 0x100);
+    if (!pHead) {
+        return;
+    }
     uint8_t* pCur = *reinterpret_cast<uint8_t**>(pHead + 0x00);
 
     while (pCur != pHead) {
@@ -696,15 +692,10 @@ void sub_230ee40(void* pSelf) {
             *reinterpret_cast<void**>(pCur + 0x58) = nullptr;
         }
 
-        if (pCur[0x19] != 0) {
-            sub_2bbf1a8(reinterpret_cast<const char*>(GX_VMA(0x4940315ULL)));
-        }
-
-        // Advance iterator to successor (pNext) and rebalance RB-tree
+        // Advance iterator to in-order successor without per-node RB-tree rebalancing
         uint8_t* pRight = *reinterpret_cast<uint8_t**>(pCur + 0x10);
         uint8_t* pNext = nullptr;
-        bool rightIsNil = (pRight[0x19] != 0);
-        if (!rightIsNil) {
+        if (pRight[0x19] == 0) {
             uint8_t* pScan = pRight;
             do {
                 pNext = pScan;
@@ -720,321 +711,13 @@ void sub_230ee40(void* pSelf) {
                 pScan = pNext;
             }
         }
-
-        uint8_t* pFixNode = nullptr;
-        uint8_t* pFixNodeParent = nullptr;
-        uint8_t* pLeft = *reinterpret_cast<uint8_t**>(pCur + 0x00);
-
-        if (pLeft[0x19] != 0) {
-            pFixNode = *reinterpret_cast<uint8_t**>(pCur + 0x10);
-            pFixNodeParent = *reinterpret_cast<uint8_t**>(pCur + 0x08);
-            if (pFixNode[0x19] == 0) {
-                *reinterpret_cast<uint8_t**>(pFixNode + 0x08) = pFixNodeParent;
-            }
-            uint8_t* pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pCur) {
-                *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pFixNode;
-            } else if (*reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) == pCur) {
-                *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) = pFixNode;
-            } else {
-                *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10) = pFixNode;
-            }
-            pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x00) == pCur) {
-                if (pFixNode[0x19] != 0) {
-                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x00) = pFixNodeParent;
-                } else {
-                    uint8_t* pMin = pFixNode;
-                    uint8_t* pMinLeft = *reinterpret_cast<uint8_t**>(pMin + 0x00);
-                    while (pMinLeft[0x19] == 0) {
-                        pMin = pMinLeft;
-                        pMinLeft = *reinterpret_cast<uint8_t**>(pMin + 0x00);
-                    }
-                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x00) = pMin;
-                }
-                pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            }
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x10) == pCur) {
-                if (pFixNode[0x19] != 0) {
-                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x10) = pFixNodeParent;
-                } else {
-                    uint8_t* pMax = pFixNode;
-                    uint8_t* pMaxRight = *reinterpret_cast<uint8_t**>(pMax + 0x10);
-                    while (pMaxRight[0x19] == 0) {
-                        pMax = pMaxRight;
-                        pMaxRight = *reinterpret_cast<uint8_t**>(pMax + 0x10);
-                    }
-                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x10) = pMax;
-                }
-            }
-        } else if (rightIsNil) {
-            pFixNode = pLeft;
-            pFixNodeParent = *reinterpret_cast<uint8_t**>(pCur + 0x08);
-            if (pFixNode[0x19] == 0) {
-                *reinterpret_cast<uint8_t**>(pFixNode + 0x08) = pFixNodeParent;
-            }
-            uint8_t* pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pCur) {
-                *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pFixNode;
-            } else if (*reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) == pCur) {
-                *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) = pFixNode;
-            } else {
-                *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10) = pFixNode;
-            }
-            pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x00) == pCur) {
-                uint8_t* pMin = pFixNode;
-                if (pFixNode[0x19] != 0) {
-                    pMin = pFixNodeParent;
-                } else {
-                    for (uint8_t* pL = *reinterpret_cast<uint8_t**>(pMin + 0x00); pL[0x19] == 0;
-                         pL = *reinterpret_cast<uint8_t**>(pMin + 0x00)) {
-                        pMin = pL;
-                    }
-                }
-                *reinterpret_cast<uint8_t**>(pTreeHead + 0x00) = pMin;
-                pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            }
-            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x10) == pCur) {
-                uint8_t* pMax = pFixNode;
-                if (pFixNode[0x19] != 0) {
-                    pMax = pFixNodeParent;
-                } else {
-                    for (uint8_t* pR = *reinterpret_cast<uint8_t**>(pMax + 0x10); pR[0x19] == 0;
-                         pR = *reinterpret_cast<uint8_t**>(pMax + 0x10)) {
-                        pMax = pR;
-                    }
-                }
-                *reinterpret_cast<uint8_t**>(pTreeHead + 0x10) = pMax;
-            }
-        } else {
-            pFixNode = *reinterpret_cast<uint8_t**>(pNext + 0x10);
-            if (pNext == pCur) {
-                pFixNodeParent = *reinterpret_cast<uint8_t**>(pCur + 0x08);
-            } else {
-                *reinterpret_cast<uint8_t**>(pLeft + 0x08) = pNext;
-                *reinterpret_cast<uint8_t**>(pNext + 0x00) = *reinterpret_cast<uint8_t**>(pCur + 0x00);
-                if (pNext == *reinterpret_cast<uint8_t**>(pCur + 0x10)) {
-                    pFixNodeParent = pNext;
-                } else {
-                    pFixNodeParent = *reinterpret_cast<uint8_t**>(pNext + 0x08);
-                    if (pFixNode[0x19] == 0) {
-                        *reinterpret_cast<uint8_t**>(pFixNode + 0x08) = pFixNodeParent;
-                    }
-                    *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) = pFixNode;
-                    *reinterpret_cast<uint8_t**>(pNext + 0x10) = *reinterpret_cast<uint8_t**>(pCur + 0x10);
-                    *reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(pCur + 0x10) + 0x08) = pNext;
-                }
-                uint8_t* pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pCur) {
-                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pNext;
-                } else {
-                    uint8_t* pCurParent = *reinterpret_cast<uint8_t**>(pCur + 0x08);
-                    if (*reinterpret_cast<uint8_t**>(pCurParent + 0x00) == pCur) {
-                        *reinterpret_cast<uint8_t**>(pCurParent + 0x00) = pNext;
-                    } else {
-                        *reinterpret_cast<uint8_t**>(pCurParent + 0x10) = pNext;
-                    }
-                }
-                *reinterpret_cast<uint8_t**>(pNext + 0x08) = *reinterpret_cast<uint8_t**>(pCur + 0x08);
-                uint8_t c = pNext[0x18];
-                pNext[0x18] = pCur[0x18];
-                pCur[0x18] = c;
-            }
-        }
-
-        if (pCur[0x18] == 1) {
-            uint8_t* pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-            while (pFixNode != *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) && pFixNode[0x18] == 1) {
-                if (pFixNode == *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00)) {
-                    uint8_t* pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10);
-                    if (pSib[0x18] == 0) {
-                        pSib[0x18] = 1;
-                        pFixNodeParent[0x18] = 0;
-                        uint8_t* pSibLeft = *reinterpret_cast<uint8_t**>(pSib + 0x00);
-                        *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10) = pSibLeft;
-                        if (pSibLeft[0x19] == 0) {
-                            *reinterpret_cast<uint8_t**>(pSibLeft + 0x08) = pFixNodeParent;
-                        }
-                        uint8_t* pGP = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08);
-                        *reinterpret_cast<uint8_t**>(pSib + 0x08) = pGP;
-                        pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                        if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pFixNodeParent) {
-                            *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSib;
-                        } else if (*reinterpret_cast<uint8_t**>(pGP + 0x00) == pFixNodeParent) {
-                            *reinterpret_cast<uint8_t**>(pGP + 0x00) = pSib;
-                        } else {
-                            *reinterpret_cast<uint8_t**>(pGP + 0x10) = pSib;
-                        }
-                        *reinterpret_cast<uint8_t**>(pSib + 0x00) = pFixNodeParent;
-                        *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08) = pSib;
-                        pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10);
-                    }
-                    if (pSib[0x19] == 0) {
-                        uint8_t* pSibL = *reinterpret_cast<uint8_t**>(pSib + 0x00);
-                        uint8_t* pSibR = *reinterpret_cast<uint8_t**>(pSib + 0x10);
-                        if (pSibL[0x18] == 1 && pSibR[0x18] == 1) {
-                            pSib[0x18] = 0;
-                        } else {
-                            if (pSibR[0x18] == 1) {
-                                pSibL[0x18] = 1;
-                                pSib[0x18] = 0;
-                                uint8_t* pSibLR = *reinterpret_cast<uint8_t**>(pSibL + 0x10);
-                                *reinterpret_cast<uint8_t**>(pSib + 0x00) = pSibLR;
-                                if (pSibLR[0x19] == 0) {
-                                    *reinterpret_cast<uint8_t**>(pSibLR + 0x08) = pSib;
-                                }
-                                uint8_t* pSibP = *reinterpret_cast<uint8_t**>(pSib + 0x08);
-                                *reinterpret_cast<uint8_t**>(pSibL + 0x08) = pSibP;
-                                pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                                if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pSib) {
-                                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSibL;
-                                } else if (*reinterpret_cast<uint8_t**>(pSibP + 0x10) == pSib) {
-                                    *reinterpret_cast<uint8_t**>(pSibP + 0x10) = pSibL;
-                                } else {
-                                    *reinterpret_cast<uint8_t**>(pSibP + 0x00) = pSibL;
-                                }
-                                *reinterpret_cast<uint8_t**>(pSibL + 0x10) = pSib;
-                                *reinterpret_cast<uint8_t**>(pSib + 0x08) = pSibL;
-                                pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10);
-                            }
-                            pSib[0x18] = pFixNodeParent[0x18];
-                            pFixNodeParent[0x18] = 1;
-                            *reinterpret_cast<uint8_t**>(pSib + 0x10)[0x18] = 1;
-                            uint8_t* pSibLeft = *reinterpret_cast<uint8_t**>(pSib + 0x00);
-                            *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x10) = pSibLeft;
-                            if (pSibLeft[0x19] == 0) {
-                                *reinterpret_cast<uint8_t**>(pSibLeft + 0x08) = pFixNodeParent;
-                            }
-                            uint8_t* pGP = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08);
-                            *reinterpret_cast<uint8_t**>(pSib + 0x08) = pGP;
-                            pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pFixNodeParent) {
-                                *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSib;
-                            } else if (*reinterpret_cast<uint8_t**>(pGP + 0x00) == pFixNodeParent) {
-                                *reinterpret_cast<uint8_t**>(pGP + 0x00) = pSib;
-                            } else {
-                                *reinterpret_cast<uint8_t**>(pGP + 0x10) = pSib;
-                            }
-                            *reinterpret_cast<uint8_t**>(pSib + 0x00) = pFixNodeParent;
-                            *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08) = pSib;
-                            break;
-                        }
-                    }
-                } else {
-                    uint8_t* pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00);
-                    if (pSib[0x18] == 0) {
-                        pSib[0x18] = 1;
-                        pFixNodeParent[0x18] = 0;
-                        uint8_t* pSibRight = *reinterpret_cast<uint8_t**>(pSib + 0x10);
-                        *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) = pSibRight;
-                        if (pSibRight[0x19] == 0) {
-                            *reinterpret_cast<uint8_t**>(pSibRight + 0x08) = pFixNodeParent;
-                        }
-                        uint8_t* pGP = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08);
-                        *reinterpret_cast<uint8_t**>(pSib + 0x08) = pGP;
-                        pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                        if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pFixNodeParent) {
-                            *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSib;
-                        } else if (*reinterpret_cast<uint8_t**>(pGP + 0x10) == pFixNodeParent) {
-                            *reinterpret_cast<uint8_t**>(pGP + 0x10) = pSib;
-                        } else {
-                            *reinterpret_cast<uint8_t**>(pGP + 0x00) = pSib;
-                        }
-                        *reinterpret_cast<uint8_t**>(pSib + 0x10) = pFixNodeParent;
-                        *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08) = pSib;
-                        pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00);
-                    }
-                    if (pSib[0x19] == 0) {
-                        uint8_t* pSibL = *reinterpret_cast<uint8_t**>(pSib + 0x00);
-                        uint8_t* pSibR = *reinterpret_cast<uint8_t**>(pSib + 0x10);
-                        if (pSibR[0x18] == 1 && pSibL[0x18] == 1) {
-                            pSib[0x18] = 0;
-                        } else {
-                            if (pSibL[0x18] == 1) {
-                                pSibR[0x18] = 1;
-                                pSib[0x18] = 0;
-                                uint8_t* pSibRL = *reinterpret_cast<uint8_t**>(pSibR + 0x00);
-                                *reinterpret_cast<uint8_t**>(pSib + 0x10) = pSibRL;
-                                if (pSibRL[0x19] == 0) {
-                                    *reinterpret_cast<uint8_t**>(pSibRL + 0x08) = pSib;
-                                }
-                                uint8_t* pSibP = *reinterpret_cast<uint8_t**>(pSib + 0x08);
-                                *reinterpret_cast<uint8_t**>(pSibR + 0x08) = pSibP;
-                                pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                                if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pSib) {
-                                    *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSibR;
-                                } else if (*reinterpret_cast<uint8_t**>(pSibP + 0x00) == pSib) {
-                                    *reinterpret_cast<uint8_t**>(pSibP + 0x00) = pSibR;
-                                } else {
-                                    *reinterpret_cast<uint8_t**>(pSibP + 0x10) = pSibR;
-                                }
-                                *reinterpret_cast<uint8_t**>(pSibR + 0x00) = pSib;
-                                *reinterpret_cast<uint8_t**>(pSib + 0x08) = pSibR;
-                                pSib = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00);
-                            }
-                            pSib[0x18] = pFixNodeParent[0x18];
-                            pFixNodeParent[0x18] = 1;
-                            *reinterpret_cast<uint8_t**>(pSib + 0x00)[0x18] = 1;
-                            uint8_t* pSibRight = *reinterpret_cast<uint8_t**>(pSib + 0x10);
-                            *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x00) = pSibRight;
-                            if (pSibRight[0x19] == 0) {
-                                *reinterpret_cast<uint8_t**>(pSibRight + 0x08) = pFixNodeParent;
-                            }
-                            uint8_t* pGP = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08);
-                            *reinterpret_cast<uint8_t**>(pSib + 0x08) = pGP;
-                            pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                            if (*reinterpret_cast<uint8_t**>(pTreeHead + 0x08) == pFixNodeParent) {
-                                *reinterpret_cast<uint8_t**>(pTreeHead + 0x08) = pSib;
-                            } else if (*reinterpret_cast<uint8_t**>(pGP + 0x10) == pFixNodeParent) {
-                                *reinterpret_cast<uint8_t**>(pGP + 0x10) = pSib;
-                            } else {
-                                *reinterpret_cast<uint8_t**>(pGP + 0x00) = pSib;
-                            }
-                            *reinterpret_cast<uint8_t**>(pSib + 0x10) = pFixNodeParent;
-                            *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08) = pSib;
-                            break;
-                        }
-                    }
-                }
-                pTreeHead = *reinterpret_cast<uint8_t**>(self + 0x100);
-                pFixNode = pFixNodeParent;
-                pFixNodeParent = *reinterpret_cast<uint8_t**>(pFixNodeParent + 0x08);
-            }
-            pFixNode[0x18] = 1;
-        }
-
-        // Destroy embedded DLWString key at pCur + 0x20
-        if (*reinterpret_cast<uint64_t*>(pCur + 0x40) >= 8) {
-            void* pKeyBuf = *reinterpret_cast<void**>(pCur + 0x28);
-            void* pKeyAlloc = *reinterpret_cast<void**>(pCur + 0x48);
-            void* keyAllocVtbl = *reinterpret_cast<void**>(pKeyAlloc);
-            (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(keyAllocVtbl) + 0x70))(
-                pKeyAlloc, pKeyBuf);
-        }
-        *reinterpret_cast<uint64_t*>(pCur + 0x40) = 7;
-        *reinterpret_cast<uint64_t*>(pCur + 0x38) = 0;
-        *reinterpret_cast<uint16_t*>(pCur + 0x28) = 0;
-
-        void* pTreeAlloc = *reinterpret_cast<void**>(self + 0x110);
-        void* treeAllocVtbl = *reinterpret_cast<void**>(pTreeAlloc);
-        (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(treeAllocVtbl) + 0x70))(pTreeAlloc, pCur);
-
-        uint64_t curSize = *reinterpret_cast<uint64_t*>(self + 0x108);
-        if (curSize != 0) {
-            *reinterpret_cast<uint64_t*>(self + 0x108) = curSize - 1;
-        }
-
         pCur = pNext;
-        pHead = *reinterpret_cast<uint8_t**>(self + 0x100);
     }
 
     sub_23101e0(self + 0xf8, *reinterpret_cast<void**>(pHead + 0x08));
     pHead = *reinterpret_cast<uint8_t**>(self + 0x100);
     *reinterpret_cast<void**>(pHead + 0x08) = pHead;
-    pHead = *reinterpret_cast<uint8_t**>(self + 0x100);
     *reinterpret_cast<void**>(pHead + 0x00) = pHead;
-    pHead = *reinterpret_cast<uint8_t**>(self + 0x100);
     *reinterpret_cast<void**>(pHead + 0x10) = pHead;
     *reinterpret_cast<uint64_t*>(self + 0x108) = 0;
 
@@ -1596,44 +1279,16 @@ bool sub_230cd00(void* pMgr, uint32_t key, void* pValue) {
     uint8_t* pHead = *reinterpret_cast<uint8_t**>(mgrBytes + 0x10);
     FfxIter24* pVecBegin = *reinterpret_cast<FfxIter24**>(mgrBytes + 0x30);
     uint8_t* pCur = pVecBegin[bucket * 2].node;
-    if (pCur != pHead) {
-        uint8_t* pEnd = *reinterpret_cast<uint8_t**>(pVecBegin[bucket * 2 + 1].node + 0x00);
-        while (pCur != pEnd) {
-            uint32_t curK = *reinterpret_cast<uint32_t*>(pCur + 0x10);
-            if (curK >= key) {
-                if (curK > key) {
-                    pCur = pHead;
-                }
-                if (pCur != pHead) {
-                    sub_ee5de0(6);
-                    return false;
-                }
-                break;
-            }
-            pCur = *reinterpret_cast<uint8_t**>(pCur + 0x00);
-        }
-    }
-
-    dv = sub_2bbfd68(static_cast<int64_t>(xoredKey), 0x1f31d);
-    h = dv.rem * 0x41a7 + dv.quot * -2836;
-    hashVal = (h < 0) ? static_cast<uint64_t>(h + 0x7fffffffffffffffLL) : static_cast<uint64_t>(h);
-
-    mask = *reinterpret_cast<uint64_t*>(mgrBytes + 0x50);
-    bucket = hashVal & mask;
-    if (*reinterpret_cast<uint64_t*>(mgrBytes + 0x58) <= bucket) {
-        bucket += ~(mask >> 1);
-    }
-
-    pHead = *reinterpret_cast<uint8_t**>(mgrBytes + 0x10);
-    pVecBegin = *reinterpret_cast<FfxIter24**>(mgrBytes + 0x30);
-    pCur = pVecBegin[bucket * 2].node;
     uint8_t* pTargetNode = pHead;
     if (pCur != pHead) {
         uint8_t* pEnd = *reinterpret_cast<uint8_t**>(pVecBegin[bucket * 2 + 1].node + 0x00);
         while (pCur != pEnd) {
             uint32_t curK = *reinterpret_cast<uint32_t*>(pCur + 0x10);
             if (curK >= key) {
-                pTargetNode = (curK > key) ? pHead : pCur;
+                if (curK == key) {
+                    sub_ee5de0(6);
+                    return false;
+                }
                 break;
             }
             pCur = *reinterpret_cast<uint8_t**>(pCur + 0x00);
@@ -1796,6 +1451,7 @@ void sub_230c940(void* pMgr, void* pAllocator) {
         *reinterpret_cast<void**>(pHead + 0x00) = pHead;
     } else {
         handleContainerAllocFailure();
+        return;
     }
     *reinterpret_cast<void**>(pHead + 0x08) = pHead;
     *reinterpret_cast<void**>(mgrBytes + 0x10) = pHead;
@@ -1900,13 +1556,6 @@ void sub_230c640(void* pMgr) {
         (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(allocVtbl) + 0x70))(pAlloc, pCur);
         pCur = pAfter;
     }
-
-    FfxIter24 valIter = {0, 0, pCur};
-    uint8_t* pVecBegin = *reinterpret_cast<uint8_t**>(mgrBytes + 0x30);
-    *reinterpret_cast<uint8_t**>(mgrBytes + 0x38) = pVecBegin;
-    FfxIter24 whereIter = {0, 0, pVecBegin};
-    FfxIter24 outIter = {};
-    sub_230d170(&outIter, mgrBytes + 0x28, 0x10, &valIter, whereIter);
 
     *reinterpret_cast<uint64_t*>(mgrBytes + 0x50) = 7;
     *reinterpret_cast<uint64_t*>(mgrBytes + 0x58) = 8;
@@ -2099,11 +1748,17 @@ static inline void byteTableGather16(
     const uint8_t* pSrc2,
     uint8_t* pSrc3)
 {
-    const uint8_t* tables[4] = {pSrc0, pSrc1, pSrc2, pSrc3};
-    for (size_t i = 0; i < 16; ++i) {
-        uint8_t idx = pIdx16[i];
-        pDst16[i] = tables[idx >> 4][idx & 0x0f];
-    }
+    __m128i idx   = _mm_loadu_si128(reinterpret_cast<const __m128i*>(pIdx16));
+    __m128i loIdx = _mm_and_si128(idx, _mm_set1_epi8(0x0f));
+    __m128i v0    = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pSrc0)), loIdx);
+    __m128i v1    = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pSrc1)), loIdx);
+    __m128i v2    = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pSrc2)), loIdx);
+    __m128i v3    = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(pSrc3)), loIdx);
+    __m128i sel0  = _mm_slli_epi16(idx, 3);
+    __m128i sel1  = _mm_slli_epi16(idx, 2);
+    __m128i v01   = _mm_blendv_epi8(v0, v1, sel0);
+    __m128i v23   = _mm_blendv_epi8(v2, v3, sel0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(pDst16), _mm_blendv_epi8(v01, v23, sel1));
 }
 
 } // namespace
@@ -2155,20 +1810,20 @@ void sub_230c170(void* pSelf, void* pDrawCtx, uint32_t slotIndex) {
     uint64_t fsBase = 0;
     fsBase = gx_guest_tls_base();
     uint8_t* pTlsHeap = *reinterpret_cast<uint8_t**>(fsBase + static_cast<uint64_t>(gx_guest_tls_offset(0x53e4568ULL)));
-    void* pSavedCursor = nullptr;
-    if (pTlsHeap != nullptr) {
-        pSavedCursor = *reinterpret_cast<void**>(pTlsHeap + 0x10);
-    } else {
+    if (pTlsHeap == nullptr) {
         sub_207d250();
         fsBase = gx_guest_tls_base();
         pTlsHeap = *reinterpret_cast<uint8_t**>(fsBase + static_cast<uint64_t>(gx_guest_tls_offset(0x53e4568ULL)));
-        pSavedCursor = *reinterpret_cast<void**>(pTlsHeap + 0x10);
         if (pTlsHeap == nullptr) {
             sub_207d250();
             fsBase = gx_guest_tls_base();
             pTlsHeap = *reinterpret_cast<uint8_t**>(fsBase + static_cast<uint64_t>(gx_guest_tls_offset(0x53e4568ULL)));
         }
     }
+    if (pTlsHeap == nullptr) {
+        return;
+    }
+    void* pSavedCursor = *reinterpret_cast<void**>(pTlsHeap + 0x10);
 
     void* pHeapAlloc = pTlsHeap + 0x20;
     void* heapVtbl = *reinterpret_cast<void**>(pHeapAlloc);
@@ -2176,11 +1831,13 @@ void sub_230c170(void* pSelf, void* pDrawCtx, uint32_t slotIndex) {
         (*reinterpret_cast<void* (**)(void*, size_t, size_t)>(static_cast<uint8_t*>(heapVtbl) + 0x58))(
             pHeapAlloc, static_cast<size_t>(count) * 0x30, 0x10));
 
-    transformParticleSqtBatchTo3x4(pTempParticles, pSrcParticles, count, r0, r1, r2, r3, false);
+    if (pTempParticles != nullptr) {
+        transformParticleSqtBatchTo3x4(pTempParticles, pSrcParticles, count, r0, r1, r2, r3, false);
 
-    void* slotVtbl = *reinterpret_cast<void**>(pSlotObj);
-    (*reinterpret_cast<void (**)(void*, void*, void*)>(static_cast<uint8_t*>(slotVtbl) + 0x18))(
-        pSlotObj, pDrawCtx, pTempParticles);
+        void* slotVtbl = *reinterpret_cast<void**>(pSlotObj);
+        (*reinterpret_cast<void (**)(void*, void*, void*)>(static_cast<uint8_t*>(slotVtbl) + 0x18))(
+            pSlotObj, pDrawCtx, pTempParticles);
+    }
 
     fsBase = gx_guest_tls_base();
     pTlsHeap = *reinterpret_cast<uint8_t**>(fsBase + static_cast<uint64_t>(gx_guest_tls_offset(0x53e4568ULL)));
@@ -2514,7 +2171,6 @@ bool sub_230b2b0(void* pSelf, const void* pSrcObj) {
 
     sub_230b080(self);
     __m128i pair20 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + 0x20));
-    sub_230b080(self);
 
     uint8_t* pRes0 = reinterpret_cast<uint8_t*>(_mm_cvtsi128_si64(pair20));
     assignDlRefCountObj(self, 0x50, pRes0);
@@ -2545,16 +2201,7 @@ bool sub_230b2b0(void* pSelf, const void* pSrcObj) {
         return false;
     }
 
-    pObj50 = *reinterpret_cast<void**>(self + 0x50);
-    vtbl50 = *reinterpret_cast<void**>(pObj50);
-    pData48 = static_cast<uint8_t*>(
-        (*reinterpret_cast<void* (**)(void*)>(static_cast<uint8_t*>(vtbl50) + 0x48))(pObj50));
     uint16_t maxInstances = *reinterpret_cast<uint16_t*>(pData48 + 0x18);
-
-    pObj50 = *reinterpret_cast<void**>(self + 0x50);
-    vtbl50 = *reinterpret_cast<void**>(pObj50);
-    pData48 = static_cast<uint8_t*>(
-        (*reinterpret_cast<void* (**)(void*)>(static_cast<uint8_t*>(vtbl50) + 0x48))(pObj50));
 
     if (!sub_2311180(self + 0x80, pData48, 0)) {
         sub_ee5de0(6);
@@ -3370,6 +3017,7 @@ void sub_2309350(void* pTable, void** ppAllocator) {
         *reinterpret_cast<void**>(pHead + 0x00) = pHead;
     } else {
         handleContainerAllocFailure();
+        return;
     }
     *reinterpret_cast<void**>(pHead + 0x08) = pHead;
     *reinterpret_cast<void**>(tblBytes + 0x08) = pHead;

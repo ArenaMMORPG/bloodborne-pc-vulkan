@@ -946,18 +946,14 @@ void GParamInterpolationWorkerJob_ExecuteRange(
             continue;
         }
 
-        uint64_t anyAppliedFlag = 0;
-        for (uint64_t slotIdx = 0; slotIdx < 17; ++slotIdx) {
-            uint32_t subGroupId = pTarget->m_subGroupId20;
-            GParamHashTable* pSubMap = &pGroupNode->m_subGroupMap18;
-            uint64_t subBucketIdx = GParamComputeBucketIndex(subGroupId, pSubMap->m_bucketMask48, pSubMap->m_bucketCount50);
+        uint32_t subGroupId = pTarget->m_subGroupId20;
+        GParamHashTable* pSubMap = &pGroupNode->m_subGroupMap18;
+        uint64_t subBucketIdx = GParamComputeBucketIndex(subGroupId, pSubMap->m_bucketMask48, pSubMap->m_bucketCount50);
 
-            auto* pSubHead = static_cast<GParamBlendSubGroupNode*>(pSubMap->m_pHeadNode08);
-            GParamBucketIterator* pSubBuckets = pSubMap->m_buckets28.m_pBegin;
-            auto* pSubCur = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucketIdx * 2].m_pNode10);
-            if (pSubCur == pSubHead) {
-                continue;
-            }
+        auto* pSubHead = static_cast<GParamBlendSubGroupNode*>(pSubMap->m_pHeadNode08);
+        GParamBucketIterator* pSubBuckets = pSubMap->m_buckets28.m_pBegin;
+        auto* pSubCur = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucketIdx * 2].m_pNode10);
+        if (pSubCur != pSubHead) {
             auto* pSubEnd = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucketIdx * 2 + 1].m_pNode10)->m_pNext;
             while (pSubCur != pSubEnd && pSubCur->m_subGroupId < subGroupId) {
                 pSubCur = pSubCur->m_pNext;
@@ -965,11 +961,19 @@ void GParamInterpolationWorkerJob_ExecuteRange(
             if (pSubCur == pSubEnd || subGroupId < pSubCur->m_subGroupId) {
                 pSubCur = pSubHead;
             }
-            if (pSubCur == pSubHead) {
+        }
+        if (pSubCur == pSubHead) {
+            continue;
+        }
+
+        uint64_t anyAppliedFlag = 0;
+        for (uint64_t slotIdx = 0; slotIdx < 17; ++slotIdx) {
+            const GParamBlendSlotState& slotState = pSubCur->m_slots[slotIdx];
+            uint64_t fileKey = slotState.m_targetFileKey;
+            if (fileKey == 0xFFFFFFFFFFFFFFFFULL) {
                 continue;
             }
 
-            const GParamBlendSlotState& slotState = pSubCur->m_slots[slotIdx];
             bool bSlotInterpolating = slotState.m_bInterpolating;
             float slotBlendFactor = 1.0f;
             if (slotState.m_blendDuration > 0.0f) {
@@ -981,7 +985,6 @@ void GParamInterpolationWorkerJob_ExecuteRange(
                 }
             }
 
-            uint64_t fileKey = slotState.m_targetFileKey;
             GParamHashTable* pFileMap = pThis->m_pLoadedFileMap38;
             uint64_t fileBucketIdx = GParamComputeBucketIndex(fileKey, pFileMap->m_bucketMask48, pFileMap->m_bucketCount50);
 
@@ -2677,26 +2680,29 @@ void GParamManager_UpdateAndStepInterpolation(GParamManager* pThis, float deltaT
                 continue;
             }
 
+            uint32_t subGroupId = pTarget->m_subGroupId20;
+            GParamHashTable* pSubMap = &pGroupCur->m_subGroupMap18;
+            uint64_t subBucket = GParamComputeBucketIndex(subGroupId, pSubMap->m_bucketMask48, pSubMap->m_bucketCount50);
+            auto* pSubHead = static_cast<GParamBlendSubGroupNode*>(pSubMap->m_pHeadNode08);
+            GParamBucketIterator* pSubBuckets = pSubMap->m_buckets28.m_pBegin;
+            auto* pSubCur = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucket * 2].m_pNode10);
+            if (pSubCur == pSubHead) {
+                continue;
+            }
+            auto* pSubEnd = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucket * 2 + 1].m_pNode10)->m_pNext;
+            while (pSubCur != pSubEnd && pSubCur->m_subGroupId < subGroupId) {
+                pSubCur = pSubCur->m_pNext;
+            }
+            if (pSubCur == pSubEnd || subGroupId < pSubCur->m_subGroupId) {
+                continue;
+            }
+
             uint64_t anyAppliedFlag = 0;
             for (uint32_t slotIdx = 0; slotIdx < 17; ++slotIdx) {
-                uint32_t subGroupId = pTarget->m_subGroupId20;
-                GParamHashTable* pSubMap = &pGroupCur->m_subGroupMap18;
-                uint64_t subBucket = GParamComputeBucketIndex(subGroupId, pSubMap->m_bucketMask48, pSubMap->m_bucketCount50);
-                auto* pSubHead = static_cast<GParamBlendSubGroupNode*>(pSubMap->m_pHeadNode08);
-                GParamBucketIterator* pSubBuckets = pSubMap->m_buckets28.m_pBegin;
-                auto* pSubCur = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucket * 2].m_pNode10);
-                if (pSubCur == pSubHead) {
-                    continue;
-                }
-                auto* pSubEnd = static_cast<GParamBlendSubGroupNode*>(pSubBuckets[subBucket * 2 + 1].m_pNode10)->m_pNext;
-                while (pSubCur != pSubEnd && pSubCur->m_subGroupId < subGroupId) {
-                    pSubCur = pSubCur->m_pNext;
-                }
-                if (pSubCur == pSubEnd || subGroupId < pSubCur->m_subGroupId) {
-                    continue;
-                }
-
                 const GParamBlendSlotState& slotState = pSubCur->m_slots[slotIdx];
+                if (slotState.m_targetFileKey == 0xFFFFFFFFFFFFFFFFULL) {
+                    continue;
+                }
                 bool bSlotInterpolating = slotState.m_bInterpolating;
                 float slotBlendFactor = 1.0f;
                 if (slotState.m_blendDuration > 0.0f) {
@@ -4308,13 +4314,23 @@ bool GXSurfaceTexture_InitializeFromTextureContainer(
     void* pNewSrv = nullptr;
     int32_t hr = pContainer->m_pVTable00->AcquireSurfaceAndSrv60(pContainer, &pNewSurf, &pNewSrv, 0);
 
-    if (hr == 0) {
-        if (__sync_fetch_and_add(&pNewSurf->m_refCount10, -1) == 1 && pNewSurf != nullptr) {
-            DLAllocator* pAlloc = pNewSurf->m_pAllocator08;
-            pNewSurf->m_pVTable00[0](pNewSurf);
-            pAlloc->m_pVTable->Free(pAlloc, pNewSurf);
+    GXRefCountedSurface* pOldSurf = pThis->m_pSurface40;
+    if (pOldSurf != pNewSurf) {
+        if (pOldSurf) {
+            if (__sync_fetch_and_add(&pOldSurf->m_refCount10, -1) == 1) {
+                DLAllocator* pAlloc = pOldSurf->m_pAllocator08;
+                pOldSurf->m_pVTable00[0](pOldSurf);
+                pAlloc->m_pVTable->Free(pAlloc, pOldSurf);
+            }
+            pThis->m_pSurface40 = nullptr;
         }
-        // pNewSurf reloaded from stack slot [rbp-0x58]
+        pThis->m_pSurface40 = pNewSurf;
+        if (pNewSurf) {
+            __sync_fetch_and_add(&pNewSurf->m_refCount10, 1);
+        }
+    }
+
+    if (hr == 0 && pNewSurf != nullptr) {
         uint32_t fmtOffset = static_cast<uint32_t>(pNewSurf->m_surfaceFormat4B) - 0x46u;
         if (fmtOffset <= 8u && ((0x1C7u >> fmtOffset) & 1u) != 0) {
             uint32_t mipCount = pContainer->m_pVTable00->GetMipCount40(pContainer);
@@ -4339,22 +4355,14 @@ bool GXSurfaceTexture_InitializeFromTextureContainer(
                 }
             }
         }
-        pThis->m_pitchOrSize58 = pNewSurf ? pNewSurf->m_pitchOrSize2C : 0;
+        pThis->m_pitchOrSize58 = pNewSurf->m_pitchOrSize2C;
     }
 
-    GXRefCountedSurface* pOldSurf = pThis->m_pSurface40;
-    if (pOldSurf != pNewSurf) {
-        if (pOldSurf) {
-            if (__sync_fetch_and_add(&pOldSurf->m_refCount10, -1) == 1) {
-                DLAllocator* pAlloc = pOldSurf->m_pAllocator08;
-                pOldSurf->m_pVTable00[0](pOldSurf);
-                pAlloc->m_pVTable->Free(pAlloc, pOldSurf);
-            }
-            pThis->m_pSurface40 = nullptr;
-        }
-        pThis->m_pSurface40 = pNewSurf;
-        if (pNewSurf) {
-            __sync_fetch_and_add(&pNewSurf->m_refCount10, 1);
+    if (pNewSurf != nullptr) {
+        if (__sync_fetch_and_add(&pNewSurf->m_refCount10, -1) == 1) {
+            DLAllocator* pAlloc = pNewSurf->m_pAllocator08;
+            pNewSurf->m_pVTable00[0](pNewSurf);
+            pAlloc->m_pVTable->Free(pAlloc, pNewSurf);
         }
     }
 
@@ -4543,16 +4551,6 @@ void GXSurfaceTexture_ReleaseViewsAndSurface(GXSurfaceTexture* pThis) {
 void GXSurfaceTexture_Destructor(GXSurfaceTexture* pThis) {
     pThis->m_pVTable00 = reinterpret_cast<void*>(GX_VMA(0x53b62c0ULL));
     GXSurfaceTexture_ReleaseViewsAndSurface(pThis);
-
-    GXRefCountedSurface* pSurf = pThis->m_pSurface40;
-    if (pSurf) {
-        if (__sync_fetch_and_add(&pSurf->m_refCount10, -1) == 1) {
-            DLAllocator* pAlloc = pSurf->m_pAllocator08;
-            pSurf->m_pVTable00[0](pSurf);
-            pAlloc->m_pVTable->Free(pAlloc, pSurf);
-        }
-        pThis->m_pSurface40 = nullptr;
-    }
 
     pThis->m_pVTable00 = reinterpret_cast<void*>(GX_VMA(0x53b6b00ULL));
     if (pThis->m_pResource30) {

@@ -158,18 +158,15 @@ static inline wchar_t* GXFixedWString_GetMutablePtr(DLFixedWString31* pStr) {
 }
 
 static inline int32_t GXCompareWideStringsCaseInsensitive(const wchar_t* pLhs, const wchar_t* pRhs) {
-    const int16_t* pLowerTbl1;
-    const int16_t* pLowerTbl2;
+    const int16_t* pLowerTbl = sub_2bbec48();
     int16_t c1;
     int16_t c2;
     for (;;) {
         uint8_t b1 = *reinterpret_cast<const uint8_t*>(pLhs);
-        pLowerTbl1 = sub_2bbec48();
-        c1 = static_cast<int8_t>(pLowerTbl1[b1] & 0xFF);
+        c1 = static_cast<int8_t>(pLowerTbl[b1] & 0xFF);
 
         uint8_t b2 = *reinterpret_cast<const uint8_t*>(pRhs);
-        pLowerTbl2 = sub_2bbec48();
-        c2 = static_cast<int8_t>(pLowerTbl2[b2] & 0xFF);
+        c2 = static_cast<int8_t>(pLowerTbl[b2] & 0xFF);
 
         if (static_cast<uint8_t>(c1) == 0) {
             break;
@@ -424,17 +421,12 @@ void GXNamedResourceMap_Destroy(GXNamedResourceMap* pThis) {
         }
     }
     auto* pTreeBase = reinterpret_cast<GXNamedResourceTreeBase*>(&pThis->m_pTreeAlloc);
-    GXNamedResourceTree_EraseSubtreeRecursive(pTreeBase, pCur->m_pParent);
-    pThis->m_pHead->m_pParent = pThis->m_pHead;
-    pThis->m_pHead->m_pLeft   = pThis->m_pHead;
-    pThis->m_pHead->m_pRight  = pThis->m_pHead;
-    pThis->m_nodeCount        = 0;
-    pThis->m_totalBytes       = 0;
     GXNamedResourceTree_EraseSubtreeRecursive(pTreeBase, pThis->m_pHead->m_pParent);
     pThis->m_pHead->m_pParent = pThis->m_pHead;
     pThis->m_pHead->m_pLeft   = pThis->m_pHead;
     pThis->m_pHead->m_pRight  = pThis->m_pHead;
     pThis->m_nodeCount        = 0;
+    pThis->m_totalBytes       = 0;
     if (pThis->m_pNodeAlloc) {
         using FreeFn = void (*)(void*, void*);
         void** vtbl = *reinterpret_cast<void***>(pThis->m_pNodeAlloc);
@@ -581,8 +573,7 @@ GXResourceBase* GXNamedResourceMap_FindByNameCaseInsensitive(
         return pBest->m_payload.m_pResource;
     }
 
-    (void)localOnly;
-    if (pThis->m_pParentMap) {
+    if (!localOnly && pThis->m_pParentMap) {
         using FindFn = GXResourceBase*(*)(GXNamedResourceMap*, const wchar_t*);
         return reinterpret_cast<FindFn>(pThis->m_pParentMap->m_vptr[0x28 / 8])(
             pThis->m_pParentMap, name);
@@ -1538,7 +1529,6 @@ bool GXCubeTextureResource_LoadFromMemoryContainer(
     void* pNewSrv = nullptr;
     int err = reinterpret_cast<LoadFn>(vtbl[0x58 / 8])(pContainer, &pNewTex, &pNewSrv, 0);
     if (err == 0) {
-        CGTextureGnmRef_ReleaseRaw(pNewTex);
         if (pNewTex) {
             uint8_t fmt = pNewTex->m_dxgiFormat;
             if (static_cast<uint8_t>(fmt - 0x46u) <= 8u && ((0x1C7u >> (fmt - 0x46u)) & 1u)) {
@@ -1549,6 +1539,9 @@ bool GXCubeTextureResource_LoadFromMemoryContainer(
     }
     CGTextureGnmRef_Assign(pThis->m_pGnmTexture, pNewTex);
     pThis->m_pSrv = pNewSrv;
+    if (pNewTex) {
+        CGTextureGnmRef_ReleaseRaw(pNewTex);
+    }
     return err == 0;
 }
 
@@ -1561,7 +1554,6 @@ uint32_t GXCubeTextureResource_GetGnmTextureByteSizeSafe(const CGTextureGnmRef* 
 void GXCubeTextureResource_BaseDtor(GXTextureResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6ba0ULL));
     GXCubeTextureResource_ReleaseGpuResources(pThis);
-    CGTextureGnmRef_Release(pThis->m_pGnmTexture);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     GXTextureColorScale_Destroy(&pThis->m_colorScale);
 }
@@ -1570,7 +1562,6 @@ void GXCubeTextureResource_BaseDtor(GXTextureResource* pThis) {
 void GXCubeTextureResource_DeletingDtor(GXTextureResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6ba0ULL));
     GXCubeTextureResource_ReleaseGpuResources(pThis);
-    CGTextureGnmRef_Release(pThis->m_pGnmTexture);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     if (pThis->m_colorScale.m_pConstantBuffer) {
         CGBufferGnm_Release(pThis->m_colorScale.m_pConstantBuffer);
@@ -1674,7 +1665,6 @@ bool GXTexture2DResource_LoadFromStreamContainer(
     void* pNewSrv = nullptr;
     int err = reinterpret_cast<LoadFn>(vtbl[0x68 / 8])(pContainer, &pNewTex, &pNewSrv, 0);
     if (err == 0) {
-        CGTextureGnmRef_ReleaseRaw(pNewTex);
         if (pNewTex) {
             uint8_t fmt = pNewTex->m_dxgiFormat;
             if (static_cast<uint8_t>(fmt - 0x46u) <= 8u && ((0x1C7u >> (fmt - 0x46u)) & 1u)) {
@@ -1691,6 +1681,9 @@ bool GXTexture2DResource_LoadFromStreamContainer(
     }
     CGTextureGnmRef_Assign(pThis->m_pGnmTexture, pNewTex);
     pThis->m_pSrv = pNewSrv;
+    if (pNewTex) {
+        CGTextureGnmRef_ReleaseRaw(pNewTex);
+    }
     return err == 0;
 }
 
@@ -1894,7 +1887,6 @@ void GXTexture2DResource_ReleaseGpuResources(GXTextureResource* pThis) {
 void GXTexture2DResource_BaseDtor(GXTextureResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6a20ULL));
     GXTexture2DResource_ReleaseGpuResources(pThis);
-    CGTextureGnmRef_Release(pThis->m_pGnmTexture);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     GXTextureColorScale_Destroy(&pThis->m_colorScale);
 }
@@ -1903,7 +1895,6 @@ void GXTexture2DResource_BaseDtor(GXTextureResource* pThis) {
 void GXTexture2DResource_DeletingDtor(GXTextureResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6a20ULL));
     GXTexture2DResource_ReleaseGpuResources(pThis);
-    CGTextureGnmRef_Release(pThis->m_pGnmTexture);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     if (pThis->m_colorScale.m_pConstantBuffer) {
         CGBufferGnm_Release(pThis->m_colorScale.m_pConstantBuffer);

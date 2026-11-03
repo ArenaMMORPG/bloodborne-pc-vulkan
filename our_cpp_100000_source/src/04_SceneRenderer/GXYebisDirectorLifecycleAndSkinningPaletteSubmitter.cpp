@@ -597,43 +597,11 @@ void sub_21d4860(
     void* linearAlloc = *reinterpret_cast<void**>(rendererBytes + 0x450);
     uint8_t* packet = static_cast<uint8_t*>(
         sub_e45560(static_cast<uint8_t*>(linearAlloc) + 0x38, 0x4d0, 0x10));
-
-    if (packet != nullptr) {
-        std::memcpy(packet + 0x3a0, kIdentityMatrix4x4_5128a40, 64);
-        *reinterpret_cast<uint64_t*>(packet + 0x3f0) = 0x3dcccccd3f75be0bULL;
-        *reinterpret_cast<uint32_t*>(packet + 0x3f8) = 0x459c4000u; // 5000.0f
-        *reinterpret_cast<uint32_t*>(packet + 0x404) = 0u;
-
-        auto* globalCtx = static_cast<uint8_t*>(g_GlobalSceneRendererContext_55406c8);
-        if (globalCtx != nullptr) {
-            auto* vp = *reinterpret_cast<const uint8_t* const*>(globalCtx + 0x90);
-            *reinterpret_cast<uint32_t*>(packet + 0x3fc) = *reinterpret_cast<const uint32_t*>(vp + 0x80);
-            *reinterpret_cast<uint32_t*>(packet + 0x400) = *reinterpret_cast<const uint32_t*>(vp + 0x84);
-        } else {
-            *reinterpret_cast<uint64_t*>(packet + 0x3fc) = 0ULL;
-        }
-        packet[0x408] = 0;
-        *reinterpret_cast<uint64_t*>(packet + 0x41c) = 0ULL;
-        *reinterpret_cast<uint64_t*>(packet + 0x414) = 0ULL;
-        *reinterpret_cast<uint64_t*>(packet + 0x40c) = 0ULL;
-
-        std::memcpy(packet + 0x440, kIdentityMatrix4x4_5128a40, 64);
-        *reinterpret_cast<uint64_t*>(packet + 0x490) = 0x3dcccccd3f75be0bULL;
-        *reinterpret_cast<uint32_t*>(packet + 0x498) = 0x459c4000u;
-        *reinterpret_cast<uint32_t*>(packet + 0x4a4) = 0u;
-
-        if (globalCtx != nullptr) {
-            auto* vp = *reinterpret_cast<const uint8_t* const*>(globalCtx + 0x90);
-            *reinterpret_cast<uint32_t*>(packet + 0x49c) = *reinterpret_cast<const uint32_t*>(vp + 0x80);
-            *reinterpret_cast<uint32_t*>(packet + 0x4a0) = *reinterpret_cast<const uint32_t*>(vp + 0x84);
-        } else {
-            *reinterpret_cast<uint64_t*>(packet + 0x49c) = 0ULL;
-        }
-        packet[0x4a8] = 0;
-        *reinterpret_cast<uint64_t*>(packet + 0x4bc) = 0ULL;
-        *reinterpret_cast<uint64_t*>(packet + 0x4b4) = 0ULL;
-        *reinterpret_cast<uint64_t*>(packet + 0x4ac) = 0ULL;
+    if (packet == nullptr) {
+        return;
     }
+    packet[0x408] = 0;
+    packet[0x4a8] = 0;
 
     std::memcpy(packet, g_GlobalYebisFilterParam_55406e0, 0x370);
     *reinterpret_cast<void**>(packet + 0x370) = resA;
@@ -981,7 +949,9 @@ void sub_21d2dd0(void* self) {
                 void* poolMem = reinterpret_cast<void*(*)(void*, int64_t, uint64_t)>(
                     mainAllocVt[0x58 / 8])(mainAlloc, poolSize, 0x200000ULL);
                 *reinterpret_cast<void**>(dir + 0x2648) = poolMem;
-                std::memset(poolMem, 0xFF, static_cast<std::size_t>(*reinterpret_cast<int32_t*>(dir + 0x2714)));
+                if (poolMem != nullptr) {
+                    std::memset(poolMem, 0xFF, static_cast<std::size_t>(*reinterpret_cast<int32_t*>(dir + 0x2714)));
+                }
 
                 uint8_t* rawBase = *reinterpret_cast<uint8_t**>(dir + 0x2648);
                 if (rawBase != nullptr) {
@@ -1533,23 +1503,30 @@ void sub_21d2830(void* self) {
     }
 
     *reinterpret_cast<void**>(dir + 0x10) = nullptr;
-    g_YebisRingBuffersAllocated_56c3ce0 = 0u;
+    if (g_YebisRingBuffersAllocated_56c3ce0 != 0u) {
+        g_YebisRingBuffersAllocated_56c3ce0 = 0u;
 
-    auto freeGfx = [](void* ptr) {
-        void* ga = g_GlobalGfxAllocator_55406a8;
-        auto* vt = *reinterpret_cast<void***>(ga);
-        reinterpret_cast<void(*)(void*, void*)>(vt[0x70 / 8])(ga, ptr);
-    };
+        auto freeGfx = [](void*& ptr) {
+            if (ptr != nullptr) {
+                void* ga = g_GlobalGfxAllocator_55406a8;
+                auto* vt = *reinterpret_cast<void***>(ga);
+                reinterpret_cast<void(*)(void*, void*)>(vt[0x70 / 8])(ga, ptr);
+                ptr = nullptr;
+            }
+        };
 
-    freeGfx(g_YebisRingBuf0_A_56c3d00);
-    freeGfx(g_YebisRingBuf0_B_56c3d10);
-    freeGfx(g_YebisRingBuf0_C_56c3d20);
-    freeGfx(g_YebisRingBuf0_D_56c3d30);
-    freeGfx(g_YebisRingBuf1_A_56c3d08);
-    freeGfx(g_YebisRingBuf1_B_56c3d18);
-    freeGfx(g_YebisRingBuf1_C_56c3d28);
-    freeGfx(g_YebisRingBuf1_D_56c3d38);
-    freeGfx(g_YebisFenceLabel0_56c3cf0);
+        freeGfx(g_YebisRingBuf0_A_56c3d00);
+        freeGfx(g_YebisRingBuf0_B_56c3d10);
+        freeGfx(g_YebisRingBuf0_C_56c3d20);
+        freeGfx(g_YebisRingBuf0_D_56c3d30);
+        freeGfx(g_YebisRingBuf1_A_56c3d08);
+        freeGfx(g_YebisRingBuf1_B_56c3d18);
+        freeGfx(g_YebisRingBuf1_C_56c3d28);
+        freeGfx(g_YebisRingBuf1_D_56c3d38);
+        void* fencePtr = g_YebisFenceLabel0_56c3cf0;
+        freeGfx(fencePtr);
+        g_YebisFenceLabel0_56c3cf0 = nullptr;
+    }
 
     g_YebisFenceLabel1_56c3cf8    = nullptr;
     g_YebisActiveRingBase_56c3cb8 = nullptr;
@@ -1716,11 +1693,7 @@ void sub_21d1f80(void* self, void* heapAllocator) {
     *reinterpret_cast<uint64_t*>(dir + 0xc4) = 2ULL;
     *reinterpret_cast<uint32_t*>(dir + 0xcc) = 0u;
 
-    for (int32_t i = 0; i < 0x800; ++i) {
-        int32_t row = i / 4;
-        int32_t col = i - (row * 4);
-        *reinterpret_cast<uint32_t*>(dir + 0xd0 + static_cast<std::size_t>(row) * 16u + static_cast<std::size_t>(col) * 4u) = 0u;
-    }
+    std::memset(dir + 0xd0, 0, 0x2000);
 
     *reinterpret_cast<void**>(dir + 0x20d0) = nullptr;
     *reinterpret_cast<void**>(dir + 0x20d8) = nullptr;
@@ -2366,10 +2339,12 @@ after_skinning_bind:
     }
 
     uint8_t* drawStateClearPtr = cmdWrapper + 0x1670;
+    const int32_t* ibIndices = *reinterpret_cast<const int32_t* const*>(mesh + 0x30);
+    uint8_t* ibTable         = *reinterpret_cast<uint8_t**>(model + 0x138);
+    uint8_t* vbt             = *reinterpret_cast<uint8_t**>(model + 0x170);
+    void* customHook         = *reinterpret_cast<void**>(skin + 0x18);
     for (uint32_t idxSet = 0u; idxSet < numIndexSets; ++idxSet) {
-        const int32_t* ibIndices = *reinterpret_cast<const int32_t* const*>(mesh + 0x30);
         int64_t ibIdx            = ibIndices[idxSet];
-        uint8_t* ibTable         = *reinterpret_cast<uint8_t**>(model + 0x138);
         uint8_t* ibEntry         = ibTable + (ibIdx << 5);
         int32_t ibFlags          = *reinterpret_cast<int32_t*>(ibEntry + 0x00);
 
@@ -2421,13 +2396,10 @@ after_skinning_bind:
         if (curNumVbs != 0u) {
             if ((uniformBaseVertexFlag & 0xFFu) != 0u) {
                 for (uint32_t s = 0u; s < curNumVbs; ++s) {
-                    const int32_t* streamIndices = *reinterpret_cast<const int32_t* const*>(mesh + 0x38);
-                    int64_t sIdx = streamIndices[s];
-                    uint8_t* vbt = *reinterpret_cast<uint8_t**>(model + 0x170);
+                    int64_t sIdx = vbIndices[s];
                     uint8_t* vbEntry = vbt + sIdx * 0x90;
                     uint32_t byteOff = *reinterpret_cast<uint32_t*>(vbEntry + 0x78);
 
-                    void* customHook = *reinterpret_cast<void**>(skin + 0x18);
                     bool handledByHook = false;
                     if (customHook != nullptr) {
                         struct StreamHookArgs {
@@ -2451,21 +2423,18 @@ after_skinning_bind:
                         auto* gs = *reinterpret_cast<uint8_t**>(cmdWrapper + 0x08);
                         *reinterpret_cast<uint32_t*>(gs + 0x25f0) |= (1u << s);
                         *reinterpret_cast<void**>(gs + s * 8 + 0xb750) = vbGpuObj;
-                        *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb850) = *reinterpret_cast<uint32_t*>(vbEntry + 0x68);
+                        *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb850) = stride;
                         *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb8d0) = byteOff;
                     }
                 }
             } else {
                 for (uint32_t s = 0u; s < curNumVbs; ++s) {
-                    const int32_t* streamIndices = *reinterpret_cast<const int32_t* const*>(mesh + 0x38);
-                    int64_t sIdx = streamIndices[s];
-                    uint8_t* vbt = *reinterpret_cast<uint8_t**>(model + 0x170);
+                    int64_t sIdx = vbIndices[s];
                     uint8_t* vbEntry = vbt + sIdx * 0x90;
                     uint32_t stride  = *reinterpret_cast<uint32_t*>(vbEntry + 0x68);
                     uint32_t vertOff = *reinterpret_cast<uint32_t*>(vbEntry + 0x6c);
                     uint32_t byteOff = vertOff * stride + *reinterpret_cast<uint32_t*>(vbEntry + 0x78);
 
-                    void* customHook = *reinterpret_cast<void**>(skin + 0x18);
                     bool handledByHook = false;
                     if (customHook != nullptr) {
                         struct StreamHookArgs {
@@ -2481,15 +2450,14 @@ after_skinning_bind:
                     }
                     if (!handledByHook) {
                         void* vbGpuObj = *reinterpret_cast<void**>(vbEntry + 0x70);
-                        uint32_t curStride = *reinterpret_cast<uint32_t*>(vbEntry + 0x68);
                         *reinterpret_cast<void**>(cmdWrapper + s * 8 + 0x280) = vbGpuObj;
-                        *reinterpret_cast<uint32_t*>(cmdWrapper + s * 4 + 0x380) = curStride;
+                        *reinterpret_cast<uint32_t*>(cmdWrapper + s * 4 + 0x380) = stride;
                         *reinterpret_cast<uint32_t*>(cmdWrapper + s * 4 + 0x400) = byteOff;
 
                         auto* gs = *reinterpret_cast<uint8_t**>(cmdWrapper + 0x08);
                         *reinterpret_cast<uint32_t*>(gs + 0x25f0) |= (1u << s);
                         *reinterpret_cast<void**>(gs + s * 8 + 0xb750) = vbGpuObj;
-                        *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb850) = *reinterpret_cast<uint32_t*>(vbEntry + 0x68);
+                        *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb850) = stride;
                         *reinterpret_cast<uint32_t*>(gs + s * 4 + 0xb8d0) = byteOff;
                     }
                 }
@@ -3252,7 +3220,7 @@ uint8_t sub_21cf3c0(
                                 uint32_t idxCount = *reinterpret_cast<uint32_t*>(flverIb + 0x08);
                                 int32_t bitsPerIdx = static_cast<int8_t>(flverHdr[0x48]);
                                 if (bitsPerIdx == 0) {
-                                    bitsPerIdx = static_cast<int32_t>(flverIb[0x18]);
+                                    bitsPerIdx = 16;
                                 }
                                 byteSize = (static_cast<uint32_t>(bitsPerIdx) * idxCount) >> 3;
                             }
@@ -3534,7 +3502,7 @@ uint32_t sub_21cee70(const void* flverContainer, uint32_t ibIndex) {
     uint32_t indexCount = *reinterpret_cast<const uint32_t*>(ibHdr + 0x08);
     int32_t bitsPerIndex = static_cast<int8_t>(hdr[0x48]);
     if (bitsPerIndex == 0) {
-        bitsPerIndex = static_cast<int32_t>(ibHdr[0x18]);
+        bitsPerIndex = 16;
     }
     return (static_cast<uint32_t>(bitsPerIndex) * indexCount) >> 3;
 }

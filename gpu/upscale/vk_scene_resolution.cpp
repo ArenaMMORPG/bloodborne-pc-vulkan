@@ -70,17 +70,19 @@ bool SceneTargets::ShaderResampled(const VideoCore::Image& image) const {
 // 1 for the scene size, 2 for half resolution (the game's post-processing chain), else 0.
 // Half resolution needs a scene size that halves exactly: the proxy keeps the scene's factor,
 // so the shaders' FragCoord conversion (1920 / scene width) stays correct for it.
-static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scene) {
-    if (i.size.width == 1920 && i.size.height == 1080) return 1;
-    if (i.size.width == 960 && i.size.height == 540 && scene.width % 2 == 0 &&
-        scene.height % 2 == 0 && !BbToggle::Disabled(BbToggle::SceneHalfRes)) {
+static u32 SizeDivisor(const VideoCore::ImageInfo& i, SceneResolution::Size scene,
+                       SceneResolution::Size base) {
+    if (i.size.width == base.width && i.size.height == base.height) return 1;
+    if (i.size.width == base.width / 2 && i.size.height == base.height / 2 &&
+        scene.width % 2 == 0 && scene.height % 2 == 0 &&
+        !BbToggle::Disabled(BbToggle::SceneHalfRes)) {
         return 2;
     }
     return 0;
 }
 bool SceneTargets::Eligible(const VideoCore::Image& image) const {
     const auto& i = image.info;
-    const u32 div = SizeDivisor(i, size);
+    const u32 div = SizeDivisor(i, size, base_size);
     if (!div || i.size.depth != 1 || i.resources.layers != 1 || i.num_samples != 1 ||
         i.props.is_block || !image.backing || image.backing->num_samples != 1) {
         return false;
@@ -93,10 +95,11 @@ bool SceneTargets::Eligible(const VideoCore::Image& image) const {
     return Blittable(image.backing->image.image_ci.format) || ShaderResampled(image);
 }
 bool SceneTargets::EligibleScene(const VideoCore::Image& image) const {
-    return image.info.size.width == 1920 && image.info.size.height == 1080 && Eligible(image);
+    return image.info.size.width == base_size.width &&
+           image.info.size.height == base_size.height && Eligible(image);
 }
 SceneResolution::Size SceneTargets::ProxySize(const VideoCore::Image& image, u32 level) const {
-    const u32 div = std::max(1u, SizeDivisor(image.info, size));
+    const u32 div = std::max(1u, SizeDivisor(image.info, size, base_size));
     return {std::max(1u, size.width / div >> level), std::max(1u, size.height / div >> level)};
 }
 bool SceneTargets::SetSize(SceneResolution::Size next) {

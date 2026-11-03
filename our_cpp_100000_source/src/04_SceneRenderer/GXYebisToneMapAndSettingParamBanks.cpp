@@ -191,6 +191,10 @@ static DLBucketIter* DLHashBucketVector_InsertFillImpl(
                     reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
                         0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                 }
+                outIter->proxy0 = 0;
+                outIter->proxy1 = 0;
+                outIter->node   = nullptr;
+                return outIter;
             }
 
             const uint64_t prefixCount = static_cast<uint64_t>(posPtr - vec->begin);
@@ -594,6 +598,9 @@ static void GXParamBankManager_OpenParamEditListDialogImpl(
             void* desktopCtx = *reinterpret_cast<void**>(guiDesktop + 0x20);
             reinterpret_cast<FnAttachGuiDialogChild>(GX_VMA(0x2328e40ULL))(
                 dialog, guiDesktop, desktopCtx, &rectDesc);
+        } else {
+            ReleaseGuiWidgetRef(dialog);
+            dialog = nullptr;
         }
     }
 
@@ -655,7 +662,7 @@ static void GXParamBankManager_OpenParamEditListDialogImpl(
             }
             bankNode = bankNode->next;
         }
-        if (bankNode != outerHead) {
+        if (bankNode != outerHead && bankNode != bankLast) {
             DLHashTable* innerTable = static_cast<DLHashTable*>(bankNode->value);
             DLHashListNode* paramNode = innerTable->listHead->next;
             while (paramNode != innerTable->listHead) {
@@ -981,8 +988,7 @@ extern "C" void GXParamBankManagerA_RegisterDebugMenu(uint8_t* self, void* paren
         alignas(16) uint64_t labelDesc[2] = {0, reinterpret_cast<uint64_t>(labelWStr)};
         uint8_t* cbObj = static_cast<uint8_t*>(cbAlloc->vptr->Allocate(cbAlloc, 0x30, 8));
         if (cbObj) {
-            uint32_t flags = (*reinterpret_cast<uint32_t*>(cbObj + 0x08) & 0x80000000U) | 0x40000000U;
-            *reinterpret_cast<uint32_t*>(cbObj + 0x08)  = flags;
+            *reinterpret_cast<uint32_t*>(cbObj + 0x08)  = 0x40000000U;
             *reinterpret_cast<uintptr_t*>(cbObj + 0x00) = GX_VMA(0x53b7260ULL);
             *reinterpret_cast<void**>(cbObj + 0x10)     = self;
             *reinterpret_cast<uint32_t*>(cbObj + 0x18)  = 0;
@@ -1139,7 +1145,7 @@ extern "C" uint64_t GXParamBankManagerA_NotifyParamChanged(void* self, uint32_t 
 
 namespace {
 
-using FnOnSceneBankUnregister   = void (*)(void* sceneMgr, uint32_t slotIdx);
+using FnOnSceneBankUnregister   = void (*)(void* sceneMgr, uint32_t slotIdx, uint32_t bankId, uint32_t overrideSlotIdx, float blendTime);
 using FnCheckSceneParamActive   = bool (*)(void* sceneMgr, uint32_t slotIdx, uint32_t paramId, uint32_t bankId);
 using FnBeginSceneBankLoad      = int32_t (*)(void* sceneMgr, uint32_t slotIdx, void* streamDesc);
 using FnQuerySceneParamIdAt     = uint32_t (*)(void* sceneMgr, uint32_t slotIdx, void* streamDesc, uint32_t index);
@@ -1256,6 +1262,8 @@ static void DestroyInnerParamHashTable(DLAllocator* managerAlloc, DLHashTable* i
 static void GXParamBankManager_PruneInactiveParamsImpl(
     uint8_t* self,
     uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime,
     uint32_t sceneSlotOffset,
     uint32_t activeFlagOffset)
 {
@@ -1263,7 +1271,8 @@ static void GXParamBankManager_PruneInactiveParamsImpl(
     uint8_t* sceneMgr   = *reinterpret_cast<uint8_t**>(globalRoot + 0x5ad0);
     uint32_t slotIdx    = *reinterpret_cast<uint32_t*>(sceneMgr + sceneSlotOffset);
 
-    reinterpret_cast<FnOnSceneBankUnregister>(GX_VMA(0x2185b50ULL))(sceneMgr, slotIdx);
+    reinterpret_cast<FnOnSceneBankUnregister>(GX_VMA(0x2185b50ULL))(
+        sceneMgr, slotIdx, bankId, overrideSlotIdx, blendTime);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     DLHashTable* outerTable = reinterpret_cast<DLHashTable*>(self + 0x08);
@@ -1380,13 +1389,13 @@ static void GXParamBankManager_ClearAllBanksImpl(uint8_t* self) {
 // ============================================================================
 extern "C" void GXParamBankManagerA_PruneInactiveParams(
     uint8_t* self,
-    uint32_t unusedSlot,
-    uint32_t bankId)
+    void* unusedSlot,
+    uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime)
 {
-    if (unusedSlot == 0xdeadbeefU) {
-        asm volatile("" ::: "memory");
-    }
-    GXParamBankManager_PruneInactiveParamsImpl(self, bankId, 0x34, 0x128);
+    (void)unusedSlot;
+    GXParamBankManager_PruneInactiveParamsImpl(self, bankId, overrideSlotIdx, blendTime, 0x34, 0x128);
 }
 
 // ============================================================================
@@ -1450,6 +1459,7 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                     mgrAlloc->vptr->Allocate(mgrAlloc, 0x20, 8));
                 if (innerHead) {
                     innerHead->next = innerHead;
+                    innerHead->prev = innerHead;
                 } else {
                     int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                         GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
@@ -1462,7 +1472,6 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                             0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                     }
                 }
-                innerHead->prev    = innerHead;
                 newInner->listHead = innerHead;
 
                 newInner->buckets.cap   = nullptr;
@@ -1486,12 +1495,7 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
             DLAllocator* listAlloc    = outerTable->listAlloc;
             DLHashListNode* newOuterNode = static_cast<DLHashListNode*>(
                 listAlloc->vptr->Allocate(listAlloc, 0x20, 8));
-            if (newOuterNode) {
-                newOuterNode->next = firstNode ? firstNode : newOuterNode;
-                if (!firstNode) {
-                    prevNode = newOuterNode;
-                }
-            } else {
+            if (!newOuterNode) {
                 int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                     GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
                 if (*tlsFlag != 0) {
@@ -1502,9 +1506,11 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                     reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
                         0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                 }
-                if (!firstNode) {
-                    prevNode = newOuterNode;
-                }
+                return;
+            }
+            newOuterNode->next = firstNode ? firstNode : newOuterNode;
+            if (!firstNode) {
+                prevNode = newOuterNode;
             }
             newOuterNode->prev  = prevNode;
             newOuterNode->key   = bankId;
@@ -1522,26 +1528,7 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
             DLBucketIter insertIter{0, 0, headNext};
             DLHashInsertResult insertOut{};
             DLHashTable_InsertNodeImpl(&insertOut, outerTable, &headNext->key, insertIter);
-
-            // Re-lookup bankNode in outerTable
-            const uint64_t reBucket = ComputeDLHashBucket(
-                bankId, outerTable->bucketMask, outerTable->maxBuckets);
-            bankNode = outerTable->listHead;
-            DLHashListNode* reCur = static_cast<DLHashListNode*>(
-                outerTable->buckets.begin[reBucket * 2].node);
-            if (reCur != bankNode) {
-                DLHashListNode* reEnd = static_cast<DLHashListNode*>(
-                    outerTable->buckets.begin[reBucket * 2 + 1].node)->next;
-                while (reCur != reEnd) {
-                    if (reCur->key >= bankId) {
-                        if (reCur->key <= bankId) {
-                            bankNode = reCur;
-                        }
-                        break;
-                    }
-                    reCur = reCur->next;
-                }
-            }
+            bankNode = insertOut.node ? static_cast<DLHashListNode*>(insertOut.node) : headNext;
         }
 
         for (int32_t i = 0; i < paramCount; ++i) {
@@ -1576,9 +1563,12 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                 DLAllocator* mgrAlloc = *reinterpret_cast<DLAllocator**>(self);
                 uint8_t* newEntry = static_cast<uint8_t*>(
                     mgrAlloc->vptr->Allocate(mgrAlloc, 0x138, 8));
-                if (newEntry) {
-                    reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe8ad90ULL))(newEntry);
+                if (!newEntry) {
+                    reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
+                        0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
+                reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe8ad90ULL))(newEntry);
                 reinterpret_cast<FnParamEntryInitDefaults>(GX_VMA(0xe8b150ULL))(newEntry);
                 *reinterpret_cast<uint32_t*>(newEntry + 0x130) = paramId;
                 *reinterpret_cast<uint32_t*>(newEntry + 0x134) = bankId;
@@ -1591,12 +1581,7 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                 DLAllocator* pAlloc    = innerTable->listAlloc;
                 DLHashListNode* newParamNode = static_cast<DLHashListNode*>(
                     pAlloc->vptr->Allocate(pAlloc, 0x20, 8));
-                if (newParamNode) {
-                    newParamNode->next = pFirst ? pFirst : newParamNode;
-                    if (!pFirst) {
-                        pPrev = newParamNode;
-                    }
-                } else {
+                if (!newParamNode) {
                     int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                         GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
                     if (*tlsFlag != 0) {
@@ -1607,9 +1592,11 @@ extern "C" void GXParamBankManagerA_LoadBankFromStream(
                         reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
                             0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                     }
-                    if (!pFirst) {
-                        pPrev = newParamNode;
-                    }
+                    continue;
+                }
+                newParamNode->next = pFirst ? pFirst : newParamNode;
+                if (!pFirst) {
+                    pPrev = newParamNode;
                 }
                 newParamNode->prev  = pPrev;
                 newParamNode->key   = paramId;
@@ -2025,14 +2012,15 @@ extern "C" void GXParamBankManagerA_Destruct(uint8_t* self) {
 
     uint64_t strCap = *reinterpret_cast<uint64_t*>(self + 0x248);
     if (strCap >= 8) {
+        void* heapBuf = *reinterpret_cast<void**>(self + 0x230);
         if ((strCap + 1) >= 0x41ULL) {
-            reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-                    reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)))),
-                0x120,
-                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+            DLAllocator* sAlloc = *reinterpret_cast<DLAllocator**>(self + 0x250);
+            if (sAlloc && heapBuf) {
+                sAlloc->vptr->Free(sAlloc, heapBuf);
+            }
+        } else {
+            self[0x2d1] &= 0xfdU;
         }
-        self[0x2d1] &= 0xfdU;
     }
     *reinterpret_cast<uint64_t*>(self + 0x248) = 7;
     *reinterpret_cast<uint64_t*>(self + 0x240) = 0;
@@ -2088,6 +2076,7 @@ extern "C" void GXParamBankManagerA_Construct(uint8_t* self, DLAllocator* alloc)
         alloc->vptr->Allocate(alloc, 0x20, 8));
     if (headNode) {
         headNode->next = headNode;
+        headNode->prev = headNode;
     } else {
         int32_t* tlsFlag = reinterpret_cast<int32_t*>(
             GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
@@ -2100,7 +2089,6 @@ extern "C" void GXParamBankManagerA_Construct(uint8_t* self, DLAllocator* alloc)
                 0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
         }
     }
-    headNode->prev       = headNode;
     outerTable->listHead = headNode;
 
     outerTable->buckets.cap   = nullptr;
@@ -2171,7 +2159,7 @@ extern "C" void GXParamBankManagerA_Construct(uint8_t* self, DLAllocator* alloc)
     };
 
     initToneMapParamBlock(self + 0x68);
-    initToneMapParamBlock(self + 0x144);
+    reinterpret_cast<FnMemcpy>(GX_VMA(0x2bbe578ULL))(self + 0x144, self + 0x68, 0xdc);
     *reinterpret_cast<uint32_t*>(self + 0x220) = 0;
 
     // Embedded DLFixedBasicString<char16_t, 64> at self + 0x228
@@ -2195,9 +2183,6 @@ extern "C" void GXParamBankManagerA_Construct(uint8_t* self, DLAllocator* alloc)
     reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe8ad90ULL))(self + 0x2d8);
     reinterpret_cast<FnParamEntryInitDefaults>(GX_VMA(0xe8b150ULL))(self + 0x2d8);
 
-    initToneMapParamBlock(self + 0x68);
-    reinterpret_cast<FnMemcpy>(GX_VMA(0x2bbe578ULL))(self + 0x144, self + 0x68, 0xdc);
-    *reinterpret_cast<uint32_t*>(self + 0x220) = 0;
     reinterpret_cast<FnDLStringAssign>(GX_VMA(0x29354e0ULL))(
         self + 0x228, reinterpret_cast<const void*>(GX_VMA(0x49d85f0ULL)), 0);
 }
@@ -2325,8 +2310,7 @@ extern "C" void GXParamBankManagerB_RegisterDebugMenu(uint8_t* self, void* paren
         alignas(16) uint64_t labelDesc[2] = {0, reinterpret_cast<uint64_t>(labelWStr)};
         uint8_t* cbObj = static_cast<uint8_t*>(cbAlloc->vptr->Allocate(cbAlloc, 0x30, 8));
         if (cbObj) {
-            uint32_t flags = (*reinterpret_cast<uint32_t*>(cbObj + 0x08) & 0x80000000U) | 0x40000000U;
-            *reinterpret_cast<uint32_t*>(cbObj + 0x08)  = flags;
+            *reinterpret_cast<uint32_t*>(cbObj + 0x08)  = 0x40000000U;
             *reinterpret_cast<uintptr_t*>(cbObj + 0x00) = GX_VMA(0x53b7220ULL);
             *reinterpret_cast<void**>(cbObj + 0x10)     = self;
             *reinterpret_cast<uint32_t*>(cbObj + 0x18)  = 0;
@@ -2408,13 +2392,13 @@ extern "C" uint64_t GXParamBankManagerB_NotifyParamChanged(void* self, uint32_t 
 // ============================================================================
 extern "C" void GXParamBankManagerB_PruneInactiveParams(
     uint8_t* self,
-    uint32_t unusedSlot,
-    uint32_t bankId)
+    void* unusedSlot,
+    uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime)
 {
-    if (unusedSlot == 0xdeadbeefU) {
-        asm volatile("" ::: "memory");
-    }
-    GXParamBankManager_PruneInactiveParamsImpl(self, bankId, 0x30, 0xb0);
+    (void)unusedSlot;
+    GXParamBankManager_PruneInactiveParamsImpl(self, bankId, overrideSlotIdx, blendTime, 0x30, 0xb0);
 }
 
 // ============================================================================
@@ -2477,6 +2461,7 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                     mgrAlloc->vptr->Allocate(mgrAlloc, 0x20, 8));
                 if (innerHead) {
                     innerHead->next = innerHead;
+                    innerHead->prev = innerHead;
                 } else {
                     int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                         GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
@@ -2489,7 +2474,6 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                             0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                     }
                 }
-                innerHead->prev    = innerHead;
                 newInner->listHead = innerHead;
 
                 newInner->buckets.cap   = nullptr;
@@ -2512,12 +2496,7 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
             DLAllocator* listAlloc    = outerTable->listAlloc;
             DLHashListNode* newOuterNode = static_cast<DLHashListNode*>(
                 listAlloc->vptr->Allocate(listAlloc, 0x20, 8));
-            if (newOuterNode) {
-                newOuterNode->next = firstNode ? firstNode : newOuterNode;
-                if (!firstNode) {
-                    prevNode = newOuterNode;
-                }
-            } else {
+            if (!newOuterNode) {
                 int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                     GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
                 if (*tlsFlag != 0) {
@@ -2528,9 +2507,11 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                     reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
                         0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                 }
-                if (!firstNode) {
-                    prevNode = newOuterNode;
-                }
+                return;
+            }
+            newOuterNode->next = firstNode ? firstNode : newOuterNode;
+            if (!firstNode) {
+                prevNode = newOuterNode;
             }
             newOuterNode->prev  = prevNode;
             newOuterNode->key   = bankId;
@@ -2548,25 +2529,7 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
             DLBucketIter insertIter{0, 0, headNext};
             DLHashInsertResult insertOut{};
             DLHashTable_InsertNodeImpl(&insertOut, outerTable, &headNext->key, insertIter);
-
-            const uint64_t reBucket = ComputeDLHashBucket(
-                bankId, outerTable->bucketMask, outerTable->maxBuckets);
-            bankNode = outerTable->listHead;
-            DLHashListNode* reCur = static_cast<DLHashListNode*>(
-                outerTable->buckets.begin[reBucket * 2].node);
-            if (reCur != bankNode) {
-                DLHashListNode* reEnd = static_cast<DLHashListNode*>(
-                    outerTable->buckets.begin[reBucket * 2 + 1].node)->next;
-                while (reCur != reEnd) {
-                    if (reCur->key >= bankId) {
-                        if (reCur->key <= bankId) {
-                            bankNode = reCur;
-                        }
-                        break;
-                    }
-                    reCur = reCur->next;
-                }
-            }
+            bankNode = insertOut.node ? static_cast<DLHashListNode*>(insertOut.node) : headNext;
         }
 
         for (int32_t i = 0; i < paramCount; ++i) {
@@ -2601,9 +2564,12 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                 DLAllocator* mgrAlloc = *reinterpret_cast<DLAllocator**>(self);
                 uint8_t* newEntry = static_cast<uint8_t*>(
                     mgrAlloc->vptr->Allocate(mgrAlloc, 0xc0, 8));
-                if (newEntry) {
-                    reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe836f0ULL))(newEntry);
+                if (!newEntry) {
+                    reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
+                        0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
+                reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe836f0ULL))(newEntry);
                 reinterpret_cast<FnParamEntryInitDefaults>(GX_VMA(0xe83860ULL))(newEntry);
                 reinterpret_cast<FnParamEntryBindOwner>(GX_VMA(0xe83c50ULL))(
                     newEntry, *reinterpret_cast<void**>(self));
@@ -2616,12 +2582,7 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                 DLAllocator* pAlloc    = innerTable->listAlloc;
                 DLHashListNode* newParamNode = static_cast<DLHashListNode*>(
                     pAlloc->vptr->Allocate(pAlloc, 0x20, 8));
-                if (newParamNode) {
-                    newParamNode->next = pFirst ? pFirst : newParamNode;
-                    if (!pFirst) {
-                        pPrev = newParamNode;
-                    }
-                } else {
+                if (!newParamNode) {
                     int32_t* tlsFlag = reinterpret_cast<int32_t*>(
                         GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
                     if (*tlsFlag != 0) {
@@ -2632,9 +2593,11 @@ extern "C" void GXParamBankManagerB_LoadBankFromStream(
                         reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
                             0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                     }
-                    if (!pFirst) {
-                        pPrev = newParamNode;
-                    }
+                    continue;
+                }
+                newParamNode->next = pFirst ? pFirst : newParamNode;
+                if (!pFirst) {
+                    pPrev = newParamNode;
                 }
                 newParamNode->prev  = pPrev;
                 newParamNode->key   = paramId;
@@ -2788,12 +2751,12 @@ extern "C" uint8_t GXParamBankManagerB_RegisterYebisSettingInfoProperties(uint8_
     RegisterScalarPropHelper(
         propMgr, slot, bolVtbl0, bolVtbl20, self + 0x110,
         3, 0, 0U, 7U, 1U, 0x3f800000U,
-        GX_VMA(0x49c7be6ULL), GX_VMA(0x49c7c00ULL), 0); // "GlareQuality"
+        GX_VMA(0x49c7be6ULL), GX_VMA(0x49c7c00ULL), 1); // "GlareQuality"
 
     RegisterScalarPropHelper(
         propMgr, slot, bolVtbl0, bolVtbl20, self + 0x114,
         3, 0, 0U, 12U, 1U, 0x3f800000U,
-        GX_VMA(0x49c7c2eULL), GX_VMA(0x49c7c56ULL), 0); // "DepthOfFieldQuality"
+        GX_VMA(0x49c7c2eULL), GX_VMA(0x49c7c56ULL), 1); // "DepthOfFieldQuality"
 
     // Section: "Auto Dist Compute Param" / "SettingInfo-LightCollect-Auto Dist Compute Param"
     reinterpret_cast<FnPropMgrBeginSection>(GX_VMA(0xe333e0ULL))(
@@ -2855,14 +2818,15 @@ extern "C" void GXParamBankManagerB_Destruct(uint8_t* self) {
 
     uint64_t strCap = *reinterpret_cast<uint64_t*>(self + 0x160);
     if (strCap >= 8) {
+        void* heapBuf = *reinterpret_cast<void**>(self + 0x148);
         if ((strCap + 1) >= 0x41ULL) {
-            reinterpret_cast<FnLogIncompatibleHeap>(GX_VMA(0x20b55b0ULL))(
-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-                    reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)))),
-                0x120,
-                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+            DLAllocator* sAlloc = *reinterpret_cast<DLAllocator**>(self + 0x168);
+            if (sAlloc && heapBuf) {
+                sAlloc->vptr->Free(sAlloc, heapBuf);
+            }
+        } else {
+            self[0x1e9] &= 0xfdU;
         }
-        self[0x1e9] &= 0xfdU;
     }
     *reinterpret_cast<uint64_t*>(self + 0x160) = 7;
     *reinterpret_cast<uint64_t*>(self + 0x158) = 0;
@@ -2918,6 +2882,7 @@ extern "C" void GXParamBankManagerB_Construct(uint8_t* self, DLAllocator* alloc)
         alloc->vptr->Allocate(alloc, 0x20, 8));
     if (headNode) {
         headNode->next = headNode;
+        headNode->prev = headNode;
     } else {
         int32_t* tlsFlag = reinterpret_cast<int32_t*>(
             GetThreadLocalBase() + gx_guest_tls_offset(0x53e4318ULL));
@@ -2930,7 +2895,6 @@ extern "C" void GXParamBankManagerB_Construct(uint8_t* self, DLAllocator* alloc)
                 0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
         }
     }
-    headNode->prev       = headNode;
     outerTable->listHead = headNode;
 
     outerTable->buckets.cap   = nullptr;
@@ -2977,7 +2941,7 @@ extern "C" void GXParamBankManagerB_Construct(uint8_t* self, DLAllocator* alloc)
     };
 
     initSettingInfoBlock(self + 0x68);
-    initSettingInfoBlock(self + 0xd0);
+    std::memcpy(self + 0xd0, self + 0x68, 0x66);
     *reinterpret_cast<uint32_t*>(self + 0x138) = 0;
 
     // Embedded DLFixedBasicString<char16_t, 64> at self + 0x140
@@ -3001,9 +2965,6 @@ extern "C" void GXParamBankManagerB_Construct(uint8_t* self, DLAllocator* alloc)
     reinterpret_cast<FnParamEntryConstruct>(GX_VMA(0xe836f0ULL))(self + 0x1f0);
     reinterpret_cast<FnParamEntryInitDefaults>(GX_VMA(0xe83860ULL))(self + 0x1f0);
 
-    initSettingInfoBlock(self + 0x68);
-    std::memcpy(self + 0xd0, self + 0x68, 0x66);
-    *reinterpret_cast<uint32_t*>(self + 0x138) = 0;
     reinterpret_cast<FnDLStringAssign>(GX_VMA(0x29354e0ULL))(
         self + 0x140, reinterpret_cast<const void*>(GX_VMA(0x49d85f0ULL)), 0);
 }

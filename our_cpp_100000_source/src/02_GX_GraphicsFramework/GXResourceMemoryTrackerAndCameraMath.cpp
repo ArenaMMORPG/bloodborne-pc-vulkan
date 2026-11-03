@@ -492,6 +492,13 @@ void GXResourceMemoryTracker_ClearAllVectors(GXResourceMemoryTracker* self) {
     GXResourceMemoryTracker_ShrinkBucketVector(&self->buckets[1].vec, DLVectorPtr_MoveAssignType1);
     GXResourceMemoryTracker_ShrinkBucketVector(&self->buckets[2].vec, DLVectorPtr_MoveAssignType2);
     GXResourceMemoryTracker_ShrinkBucketVector(&self->buckets[3].vec, DLVectorPtr_MoveAssign);
+    GXResourceMemoryTracker_ShrinkBucketVector(&self->buckets[4].vec, DLVectorPtr_MoveAssign);
+    GXResourceMemoryTracker_ShrinkBucketVector(&self->buckets[5].vec, DLVectorPtr_MoveAssign);
+    for (int i = 0; i < 6; ++i) {
+        self->buckets[i].counter.count = 0;
+        self->buckets[i].counter.totalBytes = 0;
+        self->buckets[i].counter.totalMegabytes = 0.0f;
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -668,7 +675,6 @@ void GXResourceMemoryTrackerOwner_FinalizeAndFree(
         alloc = *reinterpret_cast<DLAllocator**>(GX_VMA(0x5540680ULL));
     }
     if (self->tracker != nullptr) {
-        GXResourceMemoryTracker_ClearAllVectors(self->tracker);
         GXResourceMemoryTracker_Destroy(self->tracker);
         alloc->vptr->Free(alloc, self->tracker);
         self->tracker = nullptr;
@@ -745,6 +751,7 @@ void GXCameraFrustum_UnpackFromCompact(GXCameraFrustum* dst, const GXCameraFrust
     dst->aspectRatio = src->aspectRatio;
     dst->viewportWidth = src->viewportWidth;
     dst->viewportHeight = src->viewportHeight;
+    dst->enableHalfPixelOffset = 0;
     dst->tileGridSubdiv = src->tileGridSubdiv;
     dst->tileLinearIndex = src->tileLinearIndex;
     dst->tileMarginPixels = src->tileMarginPixels;
@@ -861,7 +868,10 @@ float* GXCameraFrustum_ExtractSixWorldFrustumPlanes(
 {
     float aspect = cam->aspectRatio;
     if (aspect == 0.0f) {
-        aspect = static_cast<float>(cam->viewportWidth) / static_cast<float>(cam->viewportHeight);
+        aspect = (cam->viewportHeight != 0)
+            ? (static_cast<float>(cam->viewportWidth) / static_cast<float>(cam->viewportHeight))
+            : 1.0f;
+        if (aspect == 0.0f) aspect = 1.0f;
     }
 
     float halfFov = cam->fovYRadians * 0.5f;
@@ -942,7 +952,10 @@ void GXCameraFrustum_ComputeTileTangentBounds(
     uint32_t subdiv = (cam->tileGridSubdiv != 0) ? cam->tileGridSubdiv : 1u;
     float aspect = cam->aspectRatio;
     if (aspect == 0.0f) {
-        aspect = static_cast<float>(cam->viewportWidth) / static_cast<float>(cam->viewportHeight);
+        aspect = (cam->viewportHeight != 0)
+            ? (static_cast<float>(cam->viewportWidth) / static_cast<float>(cam->viewportHeight))
+            : 1.0f;
+        if (aspect == 0.0f) aspect = 1.0f;
     }
 
     float tanHalfY = std::tan(cam->fovYRadians * 0.5f);
@@ -987,11 +1000,12 @@ GXMatrix4x4* GXCameraFrustum_BuildUntiledProjectionMatrix(
     const float heightF = static_cast<float>(cam->viewportHeight);
     float aspect = cam->aspectRatio;
     if (aspect == 0.0f) {
-        aspect = widthF / heightF;
+        aspect = (heightF != 0.0f) ? (widthF / heightF) : 1.0f;
+        if (aspect == 0.0f) aspect = 1.0f;
     }
 
-    const float offsetX = (1.0f / widthF) * -0.5f;
-    const float offsetY = (1.0f / heightF) * 0.5f;
+    const float offsetX = (widthF != 0.0f) ? ((1.0f / widthF) * -0.5f) : 0.0f;
+    const float offsetY = (heightF != 0.0f) ? ((1.0f / heightF) * 0.5f) : 0.0f;
 
     const float halfFov = cam->fovYRadians * 0.5f;
     const float sinHalf = GXGuestTrig_SinCos(0u, halfFov);
@@ -1032,7 +1046,8 @@ GXMatrix4x4* GXCameraFrustum_BuildProjectionMatrix(
     const float heightF = static_cast<float>(cam->viewportHeight);
     float aspect = cam->aspectRatio;
     if (aspect == 0.0f) {
-        aspect = widthF / heightF;
+        aspect = (heightF != 0.0f) ? (widthF / heightF) : 1.0f;
+        if (aspect == 0.0f) aspect = 1.0f;
     }
 
     if (cam->tileGridSubdiv == 0) {
@@ -1054,8 +1069,12 @@ GXMatrix4x4* GXCameraFrustum_BuildProjectionMatrix(
     const float tileStepY = fullHeight / subdivF;
 
     const float marginF = static_cast<float>(cam->tileMarginPixels);
-    const float marginX = tileStepX * (marginF / static_cast<float>(cam->tileWidthPixels));
-    const float marginY = tileStepY * (marginF / static_cast<float>(cam->tileHeightPixels));
+    const float marginX = (cam->tileWidthPixels != 0)
+        ? (tileStepX * (marginF / static_cast<float>(cam->tileWidthPixels)))
+        : 0.0f;
+    const float marginY = (cam->tileHeightPixels != 0)
+        ? (tileStepY * (marginF / static_cast<float>(cam->tileHeightPixels)))
+        : 0.0f;
 
     const uint32_t tileX = tileIdx % subdiv;
     const uint32_t tileY = tileIdx / subdiv;
@@ -1114,7 +1133,7 @@ GXMatrix4x4* GXMatrix4x4_InvertSIMD(GXMatrix4x4* dst, const GXMatrix4x4* src) {
     inv[15]=  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] + m[4]*m[2]*m[9]  + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
 
     float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
-    float invDet = 1.0f / det;
+    float invDet = (det != 0.0f) ? (1.0f / det) : 0.0f;
     float* out = &dst->m[0][0];
     for (int i = 0; i < 16; ++i) {
         out[i] = inv[i] * invDet;
@@ -1147,6 +1166,10 @@ void GXCameraFrustum_ResetDefaults(GXCameraFrustum* self, uint32_t defaultWidth 
         { 0.0f, 0.0f, 0.0f, 1.0f }
     };
     std::memcpy(&self->viewMatrix, kIdentity4x4, sizeof(kIdentity4x4));
+    self->eyePosition[0] = 0.0f;
+    self->eyePosition[1] = 0.0f;
+    self->eyePosition[2] = 0.0f;
+    self->eyePosition[3] = 1.0f;
     self->fovYRadians = 0.95993108f; // 0x3f75be0b (~55 degrees)
     self->nearZ       = 0.1f;        // 0x3dcccccd
     self->farZ        = 5000.0f;     // 0x459c4000

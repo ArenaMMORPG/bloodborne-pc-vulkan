@@ -507,6 +507,7 @@ extern "C" void GXStreamOutElementVector_GrowAndReallocate(GXStreamOutVector* ve
 
     if (!newBuf) {
         GXLogging_LogError(0, 0x109, "Out of memory in GXStreamOutElementVector_GrowAndReallocate");
+        return;
     }
 
     GXStreamOutElement28* src = vec->begin;
@@ -514,9 +515,7 @@ extern "C" void GXStreamOutElementVector_GrowAndReallocate(GXStreamOutVector* ve
     if (src != srcEnd) {
         GXStreamOutElement28* dst = newBuf;
         for (; src != srcEnd; ++src, ++dst) {
-            if (dst) {
-                *dst = *src;
-            }
+            *dst = *src;
         }
     }
 
@@ -633,7 +632,7 @@ extern "C" int32_t GXGnmGeometryShaderWithStreamOut_InitializeFromBinary(
             uint32_t sIdx = decl.streamIndex;
             streamOffsets[sIdx] += addBytes;
             uint8_t shift = static_cast<uint8_t>(decl.semanticKey & 0xFFu);
-            streamMasks[sIdx] = (1u << shift);
+            streamMasks[sIdx] |= (1u << shift);
         }
 
         int64_t userCount = userVec.end - userVec.begin;
@@ -805,12 +804,16 @@ extern "C" int32_t GXGnmGeometryShaderProgram_InitializeFromShdrBinary(
     for (uint32_t i = 0; i < attrCount; ++i) {
         uint8_t attrType = gsHdr[0x38 + i * 4];
         if (attrType > 0x1Bu) {
+            gpuAlloc->vptr->Free(gpuAlloc, gpuBase);
+            self->shaderUcodeGpu = nullptr;
             SceShaderBinaryInfo_Destroy(shaderInfo);
             return 8;
         }
         if ((0x0F680097u & (1u << attrType)) != 0) {
             ++validAttrCount;
         } else if ((0x00840108u & (1u << attrType)) == 0) {
+            gpuAlloc->vptr->Free(gpuAlloc, gpuBase);
+            self->shaderUcodeGpu = nullptr;
             SceShaderBinaryInfo_Destroy(shaderInfo);
             return 8;
         }
@@ -965,17 +968,18 @@ extern "C" int32_t GXGnmVertexOrPixelShaderProgram_InitializeFromShdrBinary(
         return 8;
     }
 
+    if (err != 0) {
+        gpuAlloc->vptr->Free(gpuAlloc, self->shaderUcodeGpu);
+        self->shaderUcodeGpu = nullptr;
+        return err;
+    }
+
     const uint32_t* headerWords = static_cast<const uint32_t*>(self->shaderHeaderCpu);
     self->hasConstantBufferSlot = CGConstantBufferGnm_InitBufferVSharpFromShaderSlot(
         self->constantBufferVSharp,
         self->shaderHeaderCpu,
         headerWords[3],
         headerWords[2]);
-
-    if (err != 0) {
-        gpuAlloc->vptr->Free(gpuAlloc, self->shaderUcodeGpu);
-        return err;
-    }
 
     self->cpuAllocator = cpuAlloc;
     self->gpuAllocator = gpuAlloc;
@@ -1345,6 +1349,8 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
         int32_t addrErr = SceGpuAddress_ComputeTextureSurfaceOffsetAndSize(&mipOffset, &mipSize, gnmTex, mip, 0u);
         if (addrErr != 0) {
             CGErrorGnm_ReportGpuAddrError(addrErr);
+            activeAlloc->vptr->Free(activeAlloc, gpuMem);
+            hwTex->gpuBaseAddr = nullptr;
             return 8;
         }
         SceGpuAddress_InitTilingParametersFromTexture(tilingParams, gnmTex, mip, 0u);
@@ -1352,6 +1358,7 @@ extern "C" int32_t GXGnmTexture3D_CreateAndInitialize(
         BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + mipOffset, mipSize);
         if (SceGpuAddress_TileSurface(gpuMem + mipOffset, srcLinear, tilingParams) != 0) {
             activeAlloc->vptr->Free(activeAlloc, gpuMem);
+            hwTex->gpuBaseAddr = nullptr;
             return 8;
         }
         BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + mipOffset, mipSize);
@@ -1541,6 +1548,8 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
             int32_t addrErr = SceGpuAddress_ComputeTextureSurfaceOffsetAndSize(&surfOffset, &surfSize, gnmTex, mip, slice);
             if (addrErr != 0) {
                 CGErrorGnm_ReportGpuAddrError(addrErr);
+                activeAlloc->vptr->Free(activeAlloc, gpuMem);
+                hwTex->gpuBaseAddr = nullptr;
                 return 8;
             }
             SceGpuAddress_InitTilingParametersFromTexture(tilingParams, gnmTex, mip, slice);
@@ -1548,6 +1557,7 @@ extern "C" int32_t GXGnmTexture2D_CreateAndInitialize(
             BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + surfOffset, surfSize);
             if (SceGpuAddress_TileSurface(gpuMem + surfOffset, srcLinear, tilingParams) != 0) {
                 activeAlloc->vptr->Free(activeAlloc, gpuMem);
+                hwTex->gpuBaseAddr = nullptr;
                 return 8;
             }
             BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + surfOffset, surfSize);
@@ -1730,6 +1740,8 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
             int32_t addrErr = SceGpuAddress_ComputeTextureSurfaceOffsetAndSize(&surfOffset, &surfSize, gnmTex, mip, slice);
             if (addrErr != 0) {
                 CGErrorGnm_ReportGpuAddrError(addrErr);
+                activeAlloc->vptr->Free(activeAlloc, gpuMem);
+                hwTex->gpuBaseAddr = nullptr;
                 return 8;
             }
             SceGpuAddress_InitTilingParametersFromTexture(tilingParams, gnmTex, mip, slice);
@@ -1737,6 +1749,7 @@ extern "C" int32_t GXGnmTexture1D_CreateAndInitialize(
             BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + surfOffset, surfSize);
             if (SceGpuAddress_TileSurface(gpuMem + surfOffset, srcLinear, tilingParams) != 0) {
                 activeAlloc->vptr->Free(activeAlloc, gpuMem);
+                hwTex->gpuBaseAddr = nullptr;
                 return 8;
             }
             BbGoldenEngine_NotifyGpuSurfaceWrite(gpuMem + surfOffset, surfSize);
@@ -1902,7 +1915,8 @@ extern "C" int32_t GXGnmTexture1D_ComputeMipSurfaceSizeAndAlignment(
     if (mipLevel != 0) {
         uint64_t mipOffset = 0;
         uint64_t mipSize = 0;
-        int32_t err = SceGpuAddress_ComputeTextureSurfaceOffsetAndSize(&mipOffset, &mipSize, gnmTexA, mipLevel, 0u);
+        const uint64_t* texForMip = (alignMask != 0u) ? gnmTexA : gnmTexB;
+        int32_t err = SceGpuAddress_ComputeTextureSurfaceOffsetAndSize(&mipOffset, &mipSize, texForMip, mipLevel, 0u);
         if (err != 0) {
             CGErrorGnm_ReportGpuAddrError(err);
             return 5;
@@ -3383,9 +3397,8 @@ extern "C" int32_t GXGnmShaderResourceView_InitializeForSurfaceMipSlice(
         }
 
         if (CGFormatGnm_IsStencilOnlyViewFormat(surf3d.bindFlags, surf3d.format)) {
-            uint64_t dummyTex[4] = {0, 0, 0, 0};
             SceGnmTexture_Init3DAndReturnSizeAlign(
-                dummyTex, surf3d.width, surf3d.height, surf3d.depth, totalMips,
+                outGnmTex, surf3d.width, surf3d.height, surf3d.depth, totalMips,
                 surf3d.gnmDataFormat, surf3d.tileMode);
         } else {
             SceGnmTexture_Init3DAndReturnSizeAlign(
@@ -4194,9 +4207,11 @@ uint32_t GXGnmFetchShader_GenerateAndRemapInputTable(
                 ++numBufferSgprSlots;
             } else if (usageKind == 0x03u) {
                 uint8_t inputIdx = sgprUsageTable[i * 4u + 1u];
-                uint32_t elemIdx = buildCtx->inputToElementMap[inputIdx];
-                uint8_t slotIdx = inputElements[elemIdx].inputSlot;
-                vertexTableSgprMask |= (1u << slotIdx);
+                uint32_t elemIdx = (inputIdx < 32u) ? buildCtx->inputToElementMap[inputIdx] : 0xffffffffu;
+                if (elemIdx != 0xffffffffu && elemIdx < numInputElements) {
+                    uint8_t slotIdx = inputElements[elemIdx].inputSlot;
+                    vertexTableSgprMask |= (1u << slotIdx);
+                }
             }
         }
         if (numBufferSgprSlots != 0) {
@@ -4213,6 +4228,15 @@ uint32_t GXGnmFetchShader_GenerateAndRemapInputTable(
         }
     }
 
+    void* gpuFetchMem = garlicAllocator->vtable->AllocateAligned(
+        garlicAllocator, buildState.fetchShaderByteSize, 4u);
+    outFetchShader->fetchShaderGpuMem = gpuFetchMem;
+    if (gpuFetchMem == nullptr) {
+        return 9;
+    }
+
+    SceGnm_GenerateFetchShader(gpuFetchMem, &buildState);
+
     size_t vsharpBytes = static_cast<size_t>(numActiveElements) * 16u;
     size_t elemEntryOffset = vsharpBytes + static_cast<size_t>(numActiveElements) * 4u;
     size_t streamRangeEnd = elemEntryOffset + static_cast<size_t>(activeStreamCount) * 4u;
@@ -4224,7 +4248,6 @@ uint32_t GXGnmFetchShader_GenerateAndRemapInputTable(
         outFetchShader->streamSlotEntries = nullptr;
         outFetchShader->vertexAttrDescs = nullptr;
         outFetchShader->inputTableBlock = nullptr;
-        outFetchShader->fetchShaderGpuMem = nullptr;
         outFetchShader->vertexTableSgprMask = 0;
         outFetchShader->directFetchSlotMask = 0;
         outFetchShader->activeStreamCount = 0;
@@ -4239,6 +4262,7 @@ uint32_t GXGnmFetchShader_GenerateAndRemapInputTable(
         sysAllocator->vtable->AllocateAligned(sysAllocator, totalTableBytes, 16u));
     if (tableMem == nullptr) {
         garlicAllocator->vtable->FreeAligned(garlicAllocator, outFetchShader->fetchShaderGpuMem);
+        outFetchShader->fetchShaderGpuMem = nullptr;
         return 9;
     }
 
@@ -4267,15 +4291,6 @@ uint32_t GXGnmFetchShader_GenerateAndRemapInputTable(
     outFetchShader->instanceStreamSpan = 0;
     outFetchShader->vertexTableSgprMask = vertexTableSgprMask;
     outFetchShader->directFetchSlotMask = directFetchSlotMask;
-
-    void* gpuFetchMem = garlicAllocator->vtable->AllocateAligned(
-        garlicAllocator, buildState.fetchShaderByteSize, 4u);
-    outFetchShader->fetchShaderGpuMem = gpuFetchMem;
-    if (gpuFetchMem == nullptr) {
-        return 9;
-    }
-
-    SceGnm_GenerateFetchShader(gpuFetchMem, &buildState);
 
     uint32_t remainingSlotMask = activeSlotMask;
     if (remainingSlotMask != 0) {

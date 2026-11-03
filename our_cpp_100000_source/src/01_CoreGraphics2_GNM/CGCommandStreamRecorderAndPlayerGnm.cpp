@@ -77,12 +77,12 @@ void CGResourceStagingHashMapGnm_FreeAll(CGResourceStagingHashMapGnm* self) {
         return;
     }
     uint32_t numChunks = (count + 0x7Fu) >> 7;
-    if (numChunks != 0) {
-        for (uint32_t i = 0; i < numChunks; ++i) {
-            alloc->vtable->deallocate(self->allocator, self->chunkTable[i]);
-        }
-    }
     if (self->chunkTable) {
+        if (numChunks != 0) {
+            for (uint32_t i = 0; i < numChunks; ++i) {
+                alloc->vtable->deallocate(self->allocator, self->chunkTable[i]);
+            }
+        }
         self->allocator->vtable->deallocate(self->allocator, self->chunkTable);
         self->chunkTable = nullptr;
     }
@@ -236,6 +236,10 @@ int32_t CGCommandStreamRecorderGnm_BakeContiguousStream(
         self->streamAllocator->vtable->allocateAligned(
             self->streamAllocator, self->totalBytes, 0x10));
     if (!flatBuf) {
+        if (self->tailChunk && self->tailChunk->usedBytes >= 0x10) {
+            self->tailChunk->usedBytes -= 0x10;
+            self->totalBytes -= 0x10;
+        }
         return 9;
     }
 

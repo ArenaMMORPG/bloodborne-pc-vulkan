@@ -316,7 +316,7 @@ void CGRasterizerCacheGnm_FlushToGfxContext(
 
     if (*reinterpret_cast<const void* const*>(pipeline_state + 0x1970) != nullptr) {
         uint32_t inv_vp = ~self->dirty_viewport_mask & 0xFFFFFFFEu;
-        uint32_t vp_limit = inv_vp ? static_cast<uint32_t>(__builtin_ctz(inv_vp)) : 32u;
+        uint32_t vp_limit = inv_vp ? std::min(16u, static_cast<uint32_t>(__builtin_ctz(inv_vp))) : 16u;
         if (vp_limit >= 2u) {
             const float* vp_ptr = reinterpret_cast<const float*>(pipeline_state + 0x260);
             for (uint32_t slot = 1u; slot < vp_limit; ++slot, vp_ptr += 6) {
@@ -338,7 +338,7 @@ void CGRasterizerCacheGnm_FlushToGfxContext(
         self->dirty_viewport_mask = 0;
 
         uint32_t inv_sc = ~self->dirty_scissor_mask & 0xFFFFFFFEu;
-        uint32_t sc_limit = inv_sc ? static_cast<uint32_t>(__builtin_ctz(inv_sc)) : 32u;
+        uint32_t sc_limit = inv_sc ? std::min(16u, static_cast<uint32_t>(__builtin_ctz(inv_sc))) : 16u;
         if (sc_limit >= 2u) {
             const int32_t* sc_ptr = reinterpret_cast<const int32_t*>(pipeline_state + 0x3d8);
             for (uint32_t slot = 1u; slot < sc_limit; ++slot, sc_ptr += 4) {
@@ -353,7 +353,7 @@ void CGRasterizerCacheGnm_FlushToGfxContext(
                 }
             }
         }
-        self->dirty_scissor_mask = 0;
+        self->dirty_scissor_mask = (self->scissor_enable == 0) ? (self->dirty_scissor_mask & 1u) : 0u;
     }
 
     if (direct_rs) {
@@ -980,7 +980,6 @@ void CGOutputMergerCacheGnm_FlushBlendAndDepthStencilState(
                 sub_10733a0_setDepthControl(gfxc, eff_ds->depth_control);
             }
             self->depth_control = eff_ds->depth_control;
-            self->bound_ds_state = reinterpret_cast<const CGDepthStencilStateObject*>(-1ULL);
         }
         if (eff_ds->stencil_control != self->stencil_control) {
             if (direct_bds) {
@@ -989,9 +988,9 @@ void CGOutputMergerCacheGnm_FlushBlendAndDepthStencilState(
                 sub_1073400_setStencil(gfxc, eff_ds->stencil_control);
             }
             self->stencil_control = eff_ds->stencil_control;
-            self->bound_ds_state = reinterpret_cast<const CGDepthStencilStateObject*>(-1ULL);
         }
         stencil_op_src = &eff_ds->stencil_op_control;
+        self->bound_ds_state = ds;
     }
 
     uint32_t sref = pipeline_state[0x584];
@@ -1003,7 +1002,6 @@ void CGOutputMergerCacheGnm_FlushBlendAndDepthStencilState(
             sub_1073190_setStencilSeparate(gfxc, combined_stencil);
         }
         self->stencil_op_control = combined_stencil;
-        self->bound_ds_state = reinterpret_cast<const CGDepthStencilStateObject*>(-1ULL);
     }
 
     float db_min = *reinterpret_cast<const float*>(pipeline_state + 0x578);

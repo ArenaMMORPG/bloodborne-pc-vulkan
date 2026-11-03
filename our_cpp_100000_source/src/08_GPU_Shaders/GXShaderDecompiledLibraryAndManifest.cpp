@@ -67,7 +67,9 @@ inline float clamp01(float x) noexcept {
 }
 
 inline float rcp_f32(float x) noexcept {
-    return 1.0f / x;
+    if (x == 0.0f) return std::copysign(3.402823466e+38f, x);
+    const float r = 1.0f / x;
+    return std::isfinite(r) ? r : std::copysign(3.402823466e+38f, x);
 }
 
 inline float rsq_clamp_f32(float x) noexcept {
@@ -391,17 +393,13 @@ void GXShader_Deferred_ReconstructFragmentAndNormal(const float ndc_xy[2],
     out_view_pos[2] = vz;
 
     // 000114..000170 + 000328..000340: Eye vector in world/light space from cb[32..43]
+    // Avoid catastrophic FP32 cancellation from (v2w[3] + rot * v) - v2w[3] at large world coordinates
     const float* v2w0 = cb_light_acc_dwords + 32;
     const float* v2w1 = cb_light_acc_dwords + 36;
     const float* v2w2 = cb_light_acc_dwords + 40;
-    const float wx = v2w0[3] + v2w0[2] * vz + v2w0[1] * vy + v2w0[0] * vx;
-    const float wy = v2w1[3] + v2w1[2] * vz + v2w1[1] * vy + v2w1[0] * vx;
-    const float wz = v2w2[3] + v2w2[2] * vz + v2w2[1] * vy + v2w2[0] * vx;
-
-    // v8 = s51 - v8, v9 = s55 - v9, v10 = s19 - v10 -> normalized eye vector
-    const float ex = v2w0[3] - wx;
-    const float ey = v2w1[3] - wy;
-    const float ez = v2w2[3] - wz;
+    const float ex = -(v2w0[2] * vz + v2w0[1] * vy + v2w0[0] * vx);
+    const float ey = -(v2w1[2] * vz + v2w1[1] * vy + v2w1[0] * vx);
+    const float ez = -(v2w2[2] * vz + v2w2[1] * vy + v2w2[0] * vx);
     const float e_len_sq = gcn_math::mul_legacy_f32(ez, ez) +
                            gcn_math::mul_legacy_f32(ey, ey) +
                            gcn_math::mul_legacy_f32(ex, ex);

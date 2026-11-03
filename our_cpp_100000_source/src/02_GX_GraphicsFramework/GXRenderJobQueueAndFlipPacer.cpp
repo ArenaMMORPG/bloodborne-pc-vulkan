@@ -756,39 +756,42 @@ bool GXRenderJobQueue_EnqueueJobType1(
     void* arg1,
     uint32_t sortKey)
 {
+    self->jobQueueMutex.vptr->Lock(&self->jobQueueMutex, 0xFFFFFFFFu);
+
     if (sortKey == 0xFFFFFFFFu) {
         uint32_t curKey = self->highestSortKey;
         uint32_t nextBucket = (curKey + 0x400000u) & 0x0FC00000u;
         sortKey = (curKey & 0xF03FFFFFu) | nextBucket;
     }
 
-    self->jobQueueMutex.vptr->Lock(&self->jobQueueMutex, 0xFFFFFFFFu);
-
     auto* pkt = static_cast<uint8_t*>(GXLinearRingBuffer_Allocate(&self->jobPacketArena, 0x1Cu, 4u));
-    pkt[0] = 1; // Job Type 1 (callback + 2 arguments)
-    *reinterpret_cast<uint16_t*>(pkt + 2) = 0x1Cu;
-    uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pkt)) + 4u) & 3u;
-    uint8_t padBytes = (misalign != 0) ? static_cast<uint8_t>(4u - misalign) : 0u;
-    pkt[1] = padBytes;
+    void** payload = nullptr;
+    if (pkt && self->jobCount < self->jobCapacity) {
+        pkt[0] = 1; // Job Type 1 (callback + 2 arguments)
+        *reinterpret_cast<uint16_t*>(pkt + 2) = 0x1Cu;
+        uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pkt)) + 4u) & 3u;
+        uint8_t padBytes = (misalign != 0) ? static_cast<uint8_t>(4u - misalign) : 0u;
+        pkt[1] = padBytes;
 
-    GXRenderJobEntry* entry = nullptr;
-    if (self->jobCount < self->jobCapacity) {
         int32_t idx = self->jobCount++;
-        entry = &self->jobEntries[idx];
-    }
-    entry->jobPacket = pkt;
-    entry->sortKey = sortKey;
+        GXRenderJobEntry* entry = &self->jobEntries[idx];
+        entry->jobPacket = pkt;
+        entry->sortKey = sortKey;
+        payload = reinterpret_cast<void**>(pkt + 4 + padBytes);
 
-    auto* payload = pkt ? reinterpret_cast<void**>(pkt + 4 + padBytes) : nullptr;
+        if (self->highestSortKey < sortKey) {
+            self->highestSortKey = sortKey;
+        }
+    }
+
     self->jobQueueMutex.vptr->Unlock(&self->jobQueueMutex);
+    if (!payload) {
+        return false;
+    }
 
     payload[0] = callbackFn;
     payload[1] = arg0;
     payload[2] = arg1;
-
-    if (self->highestSortKey < sortKey) {
-        self->highestSortKey = sortKey;
-    }
     return true;
 }
 
@@ -806,37 +809,40 @@ bool GXRenderJobQueue_EnqueueJobType0(
         return false;
     }
 
+    self->jobQueueMutex.vptr->Lock(&self->jobQueueMutex, 0xFFFFFFFFu);
+
     if (sortKey == 0xFFFFFFFFu) {
         uint32_t curKey = self->highestSortKey;
         uint32_t nextBucket = (curKey + 0x400000u) & 0x0FC00000u;
         sortKey = (curKey & 0xF03FFFFFu) | nextBucket;
     }
 
-    self->jobQueueMutex.vptr->Lock(&self->jobQueueMutex, 0xFFFFFFFFu);
-
     auto* pkt = static_cast<uint8_t*>(GXLinearRingBuffer_Allocate(&self->jobPacketArena, 0x0Cu, 4u));
-    pkt[0] = 0; // Job Type 0 (job object pointer)
-    *reinterpret_cast<uint16_t*>(pkt + 2) = 0x0Cu;
-    uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pkt)) + 4u) & 3u;
-    uint8_t padBytes = (misalign != 0) ? static_cast<uint8_t>(4u - misalign) : 0u;
-    pkt[1] = padBytes;
+    void** payload = nullptr;
+    if (pkt && self->jobCount < self->jobCapacity) {
+        pkt[0] = 0; // Job Type 0 (job object pointer)
+        *reinterpret_cast<uint16_t*>(pkt + 2) = 0x0Cu;
+        uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pkt)) + 4u) & 3u;
+        uint8_t padBytes = (misalign != 0) ? static_cast<uint8_t>(4u - misalign) : 0u;
+        pkt[1] = padBytes;
 
-    GXRenderJobEntry* entry = nullptr;
-    if (self->jobCount < self->jobCapacity) {
         int32_t idx = self->jobCount++;
-        entry = &self->jobEntries[idx];
-    }
-    entry->jobPacket = pkt;
-    entry->sortKey = sortKey;
+        GXRenderJobEntry* entry = &self->jobEntries[idx];
+        entry->jobPacket = pkt;
+        entry->sortKey = sortKey;
+        payload = reinterpret_cast<void**>(pkt + 4 + padBytes);
 
-    auto* payload = pkt ? reinterpret_cast<void**>(pkt + 4 + padBytes) : nullptr;
+        if (self->highestSortKey < sortKey) {
+            self->highestSortKey = sortKey;
+        }
+    }
+
     self->jobQueueMutex.vptr->Unlock(&self->jobQueueMutex);
+    if (!payload) {
+        return false;
+    }
 
     payload[0] = jobObject;
-
-    if (self->highestSortKey < sortKey) {
-        self->highestSortKey = sortKey;
-    }
     return true;
 }
 
@@ -896,6 +902,7 @@ static inline void GX_DestroyPthreadMutexField(DLMutex* mtx) {
     auto fnPthreadDestroy = reinterpret_cast<int (*)(uint64_t*)>(GX_VMA(0x2bbfee8ULL));
     auto fnAssertLog      = reinterpret_cast<void (*)(uintptr_t, uint32_t, uintptr_t, ...)>(GX_VMA(0x20b55b0ULL));
     uint32_t rc = static_cast<uint32_t>(fnPthreadDestroy(&mtx->pthreadMutex));
+    mtx->initialized = 0u;
     if (rc == 0x8001C010u) {
         return;
     }
@@ -905,7 +912,6 @@ static inline void GX_DestroyPthreadMutexField(DLMutex* mtx) {
         }
         fnAssertLog(GX_VMA(0x493c20eULL), 0x57u, GX_VMA(0x493c2aeULL));
     }
-    mtx->initialized = 0u;
 }
 
 static inline void GX_DestroyDLMutex(DLMutex* mtx) {
@@ -1352,8 +1358,11 @@ void GXFallbackAllocator_BackFree(GXFallbackAllocatorBridge* /*self*/, void* ptr
 void* GXFallbackAllocator_BackReallocateAligned(
     GXFallbackAllocatorBridge* self, void* ptr, size_t size, size_t align)
 {
+    if (ptr && self->secondary && !self->primary->vptr->OwnsAllocation(self->primary, ptr)) {
+        return self->secondary->vptr->BackReallocateAligned(self->secondary, ptr, size, align);
+    }
     void* p = self->primary->vptr->BackReallocateAligned(self->primary, ptr, size, align);
-    if (!p && self->secondary) {
+    if (!p && !ptr && self->secondary) {
         p = self->secondary->vptr->BackReallocateAligned(self->secondary, ptr, size, align);
     }
     return p;
@@ -1363,8 +1372,11 @@ void* GXFallbackAllocator_BackReallocateAligned(
 void* GXFallbackAllocator_BackReallocate(
     GXFallbackAllocatorBridge* self, void* ptr, size_t size)
 {
+    if (ptr && self->secondary && !self->primary->vptr->OwnsAllocation(self->primary, ptr)) {
+        return self->secondary->vptr->BackReallocate(self->secondary, ptr, size);
+    }
     void* p = self->primary->vptr->BackReallocate(self->primary, ptr, size);
-    if (!p && self->secondary) {
+    if (!p && !ptr && self->secondary) {
         p = self->secondary->vptr->BackReallocate(self->secondary, ptr, size);
     }
     return p;
@@ -1416,8 +1428,11 @@ void GXFallbackAllocator_Free(GXFallbackAllocatorBridge* /*self*/, void* ptr) {
 void* GXFallbackAllocator_ReallocateAligned(
     GXFallbackAllocatorBridge* self, void* ptr, size_t size, size_t align)
 {
+    if (ptr && self->secondary && !self->primary->vptr->OwnsAllocation(self->primary, ptr)) {
+        return self->secondary->vptr->ReallocateAligned(self->secondary, ptr, size, align);
+    }
     void* p = self->primary->vptr->ReallocateAligned(self->primary, ptr, size, align);
-    if (!p && self->secondary) {
+    if (!p && !ptr && self->secondary) {
         p = self->secondary->vptr->ReallocateAligned(self->secondary, ptr, size, align);
     }
     return p;
@@ -1427,8 +1442,11 @@ void* GXFallbackAllocator_ReallocateAligned(
 void* GXFallbackAllocator_Reallocate(
     GXFallbackAllocatorBridge* self, void* ptr, size_t size)
 {
+    if (ptr && self->secondary && !self->primary->vptr->OwnsAllocation(self->primary, ptr)) {
+        return self->secondary->vptr->Reallocate(self->secondary, ptr, size);
+    }
     void* p = self->primary->vptr->Reallocate(self->primary, ptr, size);
-    if (!p && self->secondary) {
+    if (!p && !ptr && self->secondary) {
         p = self->secondary->vptr->Reallocate(self->secondary, ptr, size);
     }
     return p;
@@ -1626,7 +1644,7 @@ void GXFlipController_Finalize(GXFlipController* /*self*/) {}
 // ----------------------------------------------------------------------------
 void GXFlipController_Construct(GXFlipController* self) {
     self->pSwapChain = nullptr;
-    self->enableCpuFramePacer = 1;
+    self->enableCpuFramePacer = 0;
     self->displayRefreshRateHz = 0u;
     self->unkFlag10 = 1;
     self->lastPresentTimeUs = 0ULL;

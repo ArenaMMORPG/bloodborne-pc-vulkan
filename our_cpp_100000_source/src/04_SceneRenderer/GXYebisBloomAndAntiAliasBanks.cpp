@@ -170,8 +170,7 @@ inline void ReleaseParamFileHandle(void* handle) {
     if (!handle) {
         return;
     }
-    uint32_t& ref_count = DwordAt(handle, 0x38);
-    if (--ref_count == 0) {
+    if (__atomic_sub_fetch(&DwordAt(handle, 0x38), 1u, __ATOMIC_ACQ_REL) == 0) {
         void* str_alloc = *reinterpret_cast<void**>(GX_VMA(0x5540e10ULL));
         if (QwordAt(handle, 0x20) >= 8) {
             AllocatorFree(reinterpret_cast<void*>(QwordAt(handle, 0x28)),
@@ -560,11 +559,16 @@ void GXYebisBloomParamBank_SelectActiveEntry(void* /*self*/, uint32_t key0, uint
 
 // 0x21e5ed0 (698 B) - GXYebisBloomParamBank_PurgeEntriesForOuterKey
 void GXYebisBloomParamBank_PurgeEntriesForOuterKey(
-    void* self, uint32_t /*unused_rsi*/, uint32_t outer_key) {
+    void* self,
+    void* /*unused_rsi*/,
+    uint32_t outer_key,
+    uint32_t override_slot_idx,
+    float blend_time) {
     void* root_singleton = *reinterpret_cast<void**>(GX_VMA(0x5540dd8ULL));
     void* scene_mgr = *reinterpret_cast<void**>(PtrAt(root_singleton, 0x5ad0));
     uint32_t slot = DwordAt(scene_mgr, 0x3c);
-    CallVma<void, void*, uint32_t, uint32_t>(0x2185b50, scene_mgr, slot, outer_key);
+    CallVma<void, void*, uint32_t, uint32_t, uint32_t, float>(
+        0x2185b50, scene_mgr, slot, outer_key, override_slot_idx, blend_time);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     uint64_t hash = ComputeYebisParamHash(outer_key);
@@ -689,8 +693,8 @@ void GXYebisBloomParamBank_EnsureAndPopulateOuterKey(
                 void* sentinel = AllocatorAlloc(alloc, 0x20, 8);
                 if (sentinel) {
                     QwordAt(sentinel, 0x00) = reinterpret_cast<uint64_t>(sentinel);
+                    QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 }
-                QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 QwordAt(new_inner, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 QwordAt(new_inner, 0x38) = 0;
                 QwordAt(new_inner, 0x30) = 0;
@@ -730,26 +734,7 @@ void GXYebisBloomParamBank_EnsureAndPopulateOuterKey(
                 PtrAt(self, 0x08),
                 PtrAt(cur_front, 0x10),
                 YebisBucketIter{nullptr, nullptr, cur_front});
-
-            // Re-lookup newly inserted outer_node
-            uint64_t re_hash = ComputeYebisParamHash(outer_key);
-            uint64_t re_bucket = MapHashToBucket(re_hash, QwordAt(self, 0x50), QwordAt(self, 0x58));
-            outer_head = reinterpret_cast<void*>(QwordAt(self, 0x10));
-            outer_buckets = reinterpret_cast<void*>(QwordAt(self, 0x30));
-            void* cand = *reinterpret_cast<void**>(
-                PtrAt(outer_buckets, static_cast<ptrdiff_t>(re_bucket * 48 + 0x10)));
-            outer_node = outer_head;
-            if (cand != outer_head) {
-                void* end_ptr = *reinterpret_cast<void**>(
-                    PtrAt(outer_buckets, static_cast<ptrdiff_t>(((re_bucket * 2) | 1) * 24 + 0x10)));
-                void* end_node = *reinterpret_cast<void**>(end_ptr);
-                while (cand != end_node && DwordAt(cand, 0x10) < outer_key) {
-                    cand = *reinterpret_cast<void**>(cand);
-                }
-                if (cand != end_node && outer_key >= DwordAt(cand, 0x10)) {
-                    outer_node = cand;
-                }
-            }
+            outer_node = reinterpret_cast<void*>(ins_out[2]);
         }
 
         for (int32_t i = 0; i < count; ++i) {
@@ -783,12 +768,12 @@ void GXYebisBloomParamBank_EnsureAndPopulateOuterKey(
                 void* new_entry = AllocatorAlloc(alloc, 0x130, 0x10);
                 if (new_entry) {
                     CallVma<void, void*>(0xe6dd70, new_entry);
+                    CallVma<void, void*>(0xe6e070, new_entry);
+                    DwordAt(new_entry, 0x128) = inner_key;
+                    DwordAt(new_entry, 0x12c) = outer_key;
+                    CallVma<void, void*, uint32_t, float>(0xe6e380, new_entry, inner_key, 0.0f);
+                    CallVma<void, void*, void*>(0xe6e4f0, new_entry, alloc);
                 }
-                CallVma<void, void*>(0xe6e070, new_entry);
-                DwordAt(new_entry, 0x128) = inner_key;
-                DwordAt(new_entry, 0x12c) = outer_key;
-                CallVma<void, void*, uint32_t, float>(0xe6e380, new_entry, inner_key, 0.0f);
-                CallVma<void, void*, void*>(0xe6e4f0, new_entry, alloc);
 
                 inner_table = reinterpret_cast<void*>(QwordAt(outer_node, 0x18));
                 void* i_sentinel = reinterpret_cast<void*>(QwordAt(inner_table, 0x08));
@@ -929,11 +914,11 @@ bool GXYebisBloomParamBank_RegisterDebugGuiProperties(void* self) {
         star_enum_buf,
         1u);
 
-    // +0x164: Star MaxLines (int32 [-1, 16], step 1, prop_type 0x03)
+    // +0x164: Star MaxLines (int32 [-1, 16], step 1, prop_type 0x07)
     RegisterGuiScalarProp(
         reinterpret_cast<void*>(QwordAt(scene_mgr, 0x28)),
         group_id, GX_VMA(0x49c53aeULL), GX_VMA(0x49c4830ULL), PtrAt(self, 0x164),
-        0x03, 0x00, kBoolGetVtbl, kBoolSetVtbl,
+        0x07, 0x00, kIntGetVtbl, kIntSetVtbl,
         0xffffffffU, 0x00000010U, 0x00000001U, 0x3f800000U, 1u);
 
     // +0x168: Star Length (float [0.5, 8.5], step 0.01)
@@ -1041,10 +1026,10 @@ bool GXYebisBloomParamBank_RegisterDebugGuiProperties(void* self) {
         0x07, 0x00, kIntGetVtbl, kIntSetVtbl,
         0x00000000U, 0x0000000cU, 0x00000001U, 0x3f800000U, 1u);
 
-    // +0x1c0 (re-registered descriptor slot in binary): Afterimage TranslateDirection
+    // +0x1c8: Afterimage TranslateDirection
     RegisterGuiScalarProp(
         reinterpret_cast<void*>(QwordAt(scene_mgr, 0x28)),
-        group_id, GX_VMA(0x49c4e14ULL), GX_VMA(0x49c4e2aULL), PtrAt(self, 0x1c0),
+        group_id, GX_VMA(0x49c4e14ULL), GX_VMA(0x49c4e2aULL), PtrAt(self, 0x1c8),
         0x09, 0x00, kFloatGetVtbl, kFloatSetVtbl,
         0x00000000U, 0x41200000U, 0x3c23d70aU, 0x3f800000U, 1u);
 
@@ -1346,8 +1331,8 @@ void GXYebisBloomParamBank_Construct(void* self, void* allocator) {
     void* sentinel = AllocatorAlloc(allocator, 0x20, 8);
     if (sentinel) {
         QwordAt(sentinel, 0x00) = reinterpret_cast<uint64_t>(sentinel);
+        QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
     }
-    QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
     QwordAt(self, 0x10) = reinterpret_cast<uint64_t>(sentinel);
 
     QwordAt(self, 0x40) = 0;
@@ -1392,7 +1377,6 @@ void GXYebisBloomParamBank_Construct(void* self, void* allocator) {
     CallVma<void, void*>(0xe6dd70, default_entry);
     CallVma<void, void*>(0xe6e070, default_entry);
 
-    CallVma<void, void*>(0xe6d670, block_active);
     std::memcpy(block_backup, block_active, 0xc8);
     DwordAt(self, 0x210) = 0;
     CallVma<void, void*, const void*, uint64_t>(
@@ -2048,11 +2032,16 @@ void GXYebisAntiAliasParamBank_SelectActiveEntry(void* /*self*/, uint32_t key0, 
 
 // 0x21e10c0 (698 B) - GXYebisAntiAliasParamBank_PurgeEntriesForOuterKey
 void GXYebisAntiAliasParamBank_PurgeEntriesForOuterKey(
-    void* self, uint32_t /*unused_rsi*/, uint32_t outer_key) {
+    void* self,
+    void* /*unused_rsi*/,
+    uint32_t outer_key,
+    uint32_t override_slot_idx,
+    float blend_time) {
     void* root_singleton = *reinterpret_cast<void**>(GX_VMA(0x5540dd8ULL));
     void* scene_mgr = *reinterpret_cast<void**>(PtrAt(root_singleton, 0x5ad0));
     uint32_t slot = DwordAt(scene_mgr, 0x4c);
-    CallVma<void, void*, uint32_t, uint32_t>(0x2185b50, scene_mgr, slot, outer_key);
+    CallVma<void, void*, uint32_t, uint32_t, uint32_t, float>(
+        0x2185b50, scene_mgr, slot, outer_key, override_slot_idx, blend_time);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     uint64_t hash = ComputeYebisParamHash(outer_key);
@@ -2177,8 +2166,8 @@ void GXYebisAntiAliasParamBank_EnsureAndPopulateOuterKey(
                 void* sentinel = AllocatorAlloc(alloc, 0x20, 8);
                 if (sentinel) {
                     QwordAt(sentinel, 0x00) = reinterpret_cast<uint64_t>(sentinel);
+                    QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 }
-                QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 QwordAt(new_inner, 0x08) = reinterpret_cast<uint64_t>(sentinel);
                 QwordAt(new_inner, 0x38) = 0;
                 QwordAt(new_inner, 0x30) = 0;
@@ -2218,25 +2207,7 @@ void GXYebisAntiAliasParamBank_EnsureAndPopulateOuterKey(
                 PtrAt(self, 0x08),
                 PtrAt(cur_front, 0x10),
                 YebisBucketIter{nullptr, nullptr, cur_front});
-
-            uint64_t re_hash = ComputeYebisParamHash(outer_key);
-            uint64_t re_bucket = MapHashToBucket(re_hash, QwordAt(self, 0x50), QwordAt(self, 0x58));
-            outer_head = reinterpret_cast<void*>(QwordAt(self, 0x10));
-            outer_buckets = reinterpret_cast<void*>(QwordAt(self, 0x30));
-            void* cand = *reinterpret_cast<void**>(
-                PtrAt(outer_buckets, static_cast<ptrdiff_t>(re_bucket * 48 + 0x10)));
-            outer_node = outer_head;
-            if (cand != outer_head) {
-                void* end_ptr = *reinterpret_cast<void**>(
-                    PtrAt(outer_buckets, static_cast<ptrdiff_t>(((re_bucket * 2) | 1) * 24 + 0x10)));
-                void* end_node = *reinterpret_cast<void**>(end_ptr);
-                while (cand != end_node && DwordAt(cand, 0x10) < outer_key) {
-                    cand = *reinterpret_cast<void**>(cand);
-                }
-                if (cand != end_node && outer_key >= DwordAt(cand, 0x10)) {
-                    outer_node = cand;
-                }
-            }
+            outer_node = reinterpret_cast<void*>(ins_out[2]);
         }
 
         for (int32_t i = 0; i < count; ++i) {
@@ -2270,12 +2241,12 @@ void GXYebisAntiAliasParamBank_EnsureAndPopulateOuterKey(
                 void* new_entry = AllocatorAlloc(alloc, 0x80, 8);
                 if (new_entry) {
                     CallVma<void, void*>(0xe6c6f0, new_entry);
+                    CallVma<void, void*>(0xe6c7b0, new_entry);
+                    DwordAt(new_entry, 0x78) = inner_key;
+                    DwordAt(new_entry, 0x7c) = outer_key;
+                    CallVma<void, void*, uint32_t, float>(0xe6c9b0, new_entry, inner_key, 0.0f);
+                    CallVma<void, void*, void*>(0xe6cae0, new_entry, alloc);
                 }
-                CallVma<void, void*>(0xe6c7b0, new_entry);
-                DwordAt(new_entry, 0x78) = inner_key;
-                DwordAt(new_entry, 0x7c) = outer_key;
-                CallVma<void, void*, uint32_t, float>(0xe6c9b0, new_entry, inner_key, 0.0f);
-                CallVma<void, void*, void*>(0xe6cae0, new_entry, alloc);
 
                 inner_table = reinterpret_cast<void*>(QwordAt(outer_node, 0x18));
                 void* i_sentinel = reinterpret_cast<void*>(QwordAt(inner_table, 0x08));
@@ -2564,8 +2535,8 @@ void GXYebisAntiAliasParamBank_Construct(void* self, void* allocator) {
     void* sentinel = AllocatorAlloc(allocator, 0x20, 8);
     if (sentinel) {
         QwordAt(sentinel, 0x00) = reinterpret_cast<uint64_t>(sentinel);
+        QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
     }
-    QwordAt(sentinel, 0x08) = reinterpret_cast<uint64_t>(sentinel);
     QwordAt(self, 0x10) = reinterpret_cast<uint64_t>(sentinel);
 
     QwordAt(self, 0x40) = 0;

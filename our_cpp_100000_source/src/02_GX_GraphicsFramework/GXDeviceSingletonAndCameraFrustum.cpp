@@ -1423,15 +1423,17 @@ void GXDevice_ResetContextStateAndBindDefaultDisplayTargets(
 
         uint8_t* pMainDepthRes = *(uint8_t**)(pPrimaryOutput + 0x70);
         uint8_t* pMainDsv = nullptr;
-        if (*(void***)(pMainDepthRes + 0x60)) {
+        if (pMainDepthRes && *(void***)(pMainDepthRes + 0x60)) {
             auto fnGetMips = *(uint32_t(**)(void*))(*(uintptr_t*)pMainDepthRes + 0x40);
             if (fnGetMips(pMainDepthRes) != 0) {
                 pMainDsv = **(uint8_t***)(pMainDepthRes + 0x60);
             }
         }
-        uint8_t* pDepthTex = *(uint8_t**)(pMainDsv + 0x08);
-        sub_26b5f50(pLowLevelCtx, pMainDsv + 0x10, pDepthTex + 0x18, 0, 1, 1.0f);
-        sub_26af700(pLowLevelCtx + 0x10);
+        if (pMainDsv) {
+            uint8_t* pDepthTex = *(uint8_t**)(pMainDsv + 0x08);
+            sub_26b5f50(pLowLevelCtx, pMainDsv + 0x10, pDepthTex + 0x18, 0, 1, 1.0f);
+            sub_26af700(pLowLevelCtx + 0x10);
+        }
     }
 }
 
@@ -1608,10 +1610,10 @@ void GXDevice_BeginFrameAndSyncThreadAffinities(uint8_t* pDevice, uint8_t bSkipP
     uint32_t* pCachedWorkerMasks = reinterpret_cast<uint32_t*>(GX_VMA(0x56a6bf8ULL));
     for (size_t i = 0; i < 5; ++i) {
         uint32_t mask = GXDevice_PackSixCoreAffinityBools(pWorkerBoolRows + i * 6);
-        if (mask != pCachedWorkerMasks[i]) {
+        if (mask != 0 && mask != pCachedWorkerMasks[i]) {
             uint8_t* pWorkersArray = *reinterpret_cast<uint8_t**>(pDevice + 0x278);
             void* hWorkerThread = *reinterpret_cast<void**>(pWorkersArray + 0x5d8 + i * 0x530);
-            pfnSetAffinity(hWorkerThread, static_cast<uint64_t>(mask) & 0x3FULL);
+            pfnSetAffinity(hWorkerThread, static_cast<uint64_t>(mask));
             pCachedWorkerMasks[i] = mask;
         }
     }
@@ -1621,10 +1623,10 @@ void GXDevice_BeginFrameAndSyncThreadAffinities(uint8_t* pDevice, uint8_t bSkipP
         uint32_t rtMask = GXDevice_PackSixCoreAffinityBools(
             reinterpret_cast<const uint8_t*>(GX_VMA(0x56a6c0cULL)));
         uint32_t* pCachedRtMask = reinterpret_cast<uint32_t*>(GX_VMA(0x56a6c14ULL));
-        if (rtMask != *pCachedRtMask) {
+        if (rtMask != 0 && rtMask != *pCachedRtMask) {
             uint8_t* pRtThreadObj = *reinterpret_cast<uint8_t**>(pSync + 0x08);
             void* hRenderThread = *reinterpret_cast<void**>(pRtThreadObj + 0x18);
-            pfnSetAffinity(hRenderThread, static_cast<uint64_t>(rtMask) & 0x3FULL);
+            pfnSetAffinity(hRenderThread, static_cast<uint64_t>(rtMask));
             *pCachedRtMask = rtMask;
         }
     }
@@ -1633,9 +1635,9 @@ void GXDevice_BeginFrameAndSyncThreadAffinities(uint8_t* pDevice, uint8_t bSkipP
         uint32_t mainMask = GXDevice_PackSixCoreAffinityBools(
             reinterpret_cast<const uint8_t*>(GX_VMA(0x56a6c18ULL)));
         uint32_t* pCachedMainMask = reinterpret_cast<uint32_t*>(GX_VMA(0x56a6c20ULL));
-        if (mainMask != *pCachedMainMask) {
+        if (mainMask != 0 && mainMask != *pCachedMainMask) {
             void* hSelfThread = reinterpret_cast<void* (*)()>(GX_VMA(0x2bbfe78ULL))();
-            pfnSetAffinity(hSelfThread, static_cast<uint64_t>(mainMask) & 0x3FULL);
+            pfnSetAffinity(hSelfThread, static_cast<uint64_t>(mainMask));
             *pCachedMainMask = mainMask;
         }
     }
@@ -1878,29 +1880,24 @@ void GXDevice_DestroyAndShutdownSingleton() {
         // 2.3 Destroy global query/task manager (0x56a6c28)
         void** ppGlobalQueryMgr = reinterpret_cast<void**>(GX_VMA(0x56a6c28ULL));
         if (void* pQMgr = *ppGlobalQueryMgr) {
+            void* pHeap = *ppMainHeap;
             reinterpret_cast<void (*)(void*)>(GX_VMA(0x21b6d20ULL))(pQMgr);
-            pQMgr = *ppGlobalQueryMgr;
-            if (pQMgr != nullptr) {
-                void* pHeap = *ppMainHeap;
-                reinterpret_cast<void (*)(void*)>(GX_VMA(0x21b6d20ULL))(pQMgr);
-                GXDevice_HeapFreeBlock(pHeap, pQMgr);
-                *ppGlobalQueryMgr = nullptr;
-            }
+            GXDevice_HeapFreeBlock(pHeap, pQMgr);
+            *ppGlobalQueryMgr = nullptr;
         }
 
         // 2.4 Destroy per-buffer dynamic ring cursors (+0x3a0, count = *(uint32_t*)(pDevice + 0x18))
         uint32_t ringCount = *reinterpret_cast<uint32_t*>(pDevice + 0x18);
-        for (uint32_t i = 0; i < ringCount; ++i) {
-            void** pCursors = *reinterpret_cast<void***>(pDevice + 0x3a0);
-            if (void* pCur = pCursors[i]) {
-                void* pHeap = *ppMainHeap;
-                reinterpret_cast<void (*)(void*)>(GX_VMA(0x26d8000ULL))(pCur);
-                GXDevice_HeapFreeBlock(pHeap, pCur);
-                (*reinterpret_cast<void***>(pDevice + 0x3a0))[i] = nullptr;
+        if (void** pCursors = *reinterpret_cast<void***>(pDevice + 0x3a0)) {
+            for (uint32_t i = 0; i < ringCount; ++i) {
+                if (void* pCur = pCursors[i]) {
+                    void* pHeap = *ppMainHeap;
+                    reinterpret_cast<void (*)(void*)>(GX_VMA(0x26d8000ULL))(pCur);
+                    GXDevice_HeapFreeBlock(pHeap, pCur);
+                    pCursors[i] = nullptr;
+                }
             }
-        }
-        if (void* pCursorsArr = *reinterpret_cast<void**>(pDevice + 0x3a0)) {
-            GXDevice_HeapFreeBlock(*ppMainHeap, pCursorsArr);
+            GXDevice_HeapFreeBlock(*ppMainHeap, pCursors);
             *reinterpret_cast<void**>(pDevice + 0x3a0) = nullptr;
         }
 
@@ -1920,14 +1917,10 @@ void GXDevice_DestroyAndShutdownSingleton() {
 
         // 2.6 Destroy default shader pack (+0x388)
         if (void* pDefPack = *reinterpret_cast<void**>(pDevice + 0x388)) {
+            void* pHeap = *ppMainHeap;
             reinterpret_cast<void (*)(void*)>(GX_VMA(0x2191030ULL))(pDefPack);
-            pDefPack = *reinterpret_cast<void**>(pDevice + 0x388);
-            if (pDefPack != nullptr) {
-                void* pHeap = *ppMainHeap;
-                reinterpret_cast<void (*)(void*)>(GX_VMA(0x2191030ULL))(pDefPack);
-                GXDevice_HeapFreeBlock(pHeap, pDefPack);
-                *reinterpret_cast<void**>(pDevice + 0x388) = nullptr;
-            }
+            GXDevice_HeapFreeBlock(pHeap, pDefPack);
+            *reinterpret_cast<void**>(pDevice + 0x388) = nullptr;
         }
 
         // 2.7 Destroy deferred release / async queue (+0x660)
@@ -1938,9 +1931,6 @@ void GXDevice_DestroyAndShutdownSingleton() {
                 GXDevice_DestroyPthreadMutexWithLog(p660 + 0x30, p660 + 0x38);
             }
             *reinterpret_cast<void**>(p660 + 0x28) = reinterpret_cast<void*>(GX_VMA(0x53b2fa0ULL));
-            if (p660[0x38] != 0u) {
-                GXDevice_DestroyPthreadMutexWithLog(p660 + 0x30, p660 + 0x38);
-            }
             if (void* pBuf = *reinterpret_cast<void**>(p660 + 0x08)) {
                 GXDevice_HeapFreeBlock(*reinterpret_cast<void**>(p660 + 0x20), pBuf);
                 memset(p660 + 0x08, 0, 24u);
@@ -2120,15 +2110,14 @@ void GXDevice_DestroyAndShutdownSingleton() {
             GXDevice_HeapFreeBlock(pHeap, pTexReg);
             *reinterpret_cast<void**>(pDevice + 0x240) = nullptr;
         }
-        for (uint32_t i = 0; i < 16u; ++i) {
-            uint8_t** ppDefTexArr = *reinterpret_cast<uint8_t***>(pDevice + 0x238);
-            if (uint8_t* pTex = ppDefTexArr[i]) {
-                GXDevice_ReleaseSimpleRef8(pTex);
-                (*reinterpret_cast<void***>(pDevice + 0x238))[i] = nullptr;
+        if (uint8_t** ppDefTexArr = *reinterpret_cast<uint8_t***>(pDevice + 0x238)) {
+            for (uint32_t i = 0; i < 16u; ++i) {
+                if (uint8_t* pTex = ppDefTexArr[i]) {
+                    GXDevice_ReleaseSimpleRef8(pTex);
+                    ppDefTexArr[i] = nullptr;
+                }
             }
-        }
-        if (uint8_t* pDefTexArr = *reinterpret_cast<uint8_t**>(pDevice + 0x238)) {
-            GXDevice_HeapFreeBlock(*ppMainHeap, *reinterpret_cast<void**>(pDefTexArr - 0x10));
+            GXDevice_HeapFreeBlock(*ppMainHeap, *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ppDefTexArr) - 0x10));
             *reinterpret_cast<void**>(pDevice + 0x238) = nullptr;
         }
         if (uint8_t* pTex230 = *reinterpret_cast<uint8_t**>(pDevice + 0x230)) {
@@ -3834,7 +3823,9 @@ void GXCameraMatrixBlock_UpdateMatricesAndFrustumPlanes(uint8_t* pBlock, const u
     float halfFov    = fovY * (*reinterpret_cast<const float*>(GX_VMA(0x49295c8ULL))); // 0.5f
     float tanHalfFov = sub_2bbe648(halfFov);
     float tanRefFov  = sub_2bbe648(*reinterpret_cast<const float*>(GX_VMA(0x49295ccULL))); // 0.47996554f
-    float heightNorm = static_cast<float>(static_cast<int64_t>(*reinterpret_cast<const uint32_t*>(pBlock + 0x114)))
+    const uint32_t rawHeight = *reinterpret_cast<const uint32_t*>(pBlock + 0x114);
+    const uint32_t lodRefHeight = (rawHeight > 1080u) ? 1080u : ((rawHeight != 0u) ? rawHeight : 1080u);
+    float heightNorm = static_cast<float>(static_cast<int64_t>(lodRefHeight))
                      / (*reinterpret_cast<const float*>(GX_VMA(0x49295d0ULL))); // 720.0f
     float lodScale   = (tanHalfFov / tanRefFov) / heightNorm;
     _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x130), _mm_mul_ps(viewColZ, _mm_set1_ps(lodScale)));
@@ -3845,19 +3836,11 @@ void GXCameraMatrixBlock_UpdateMatricesAndFrustumPlanes(uint8_t* pBlock, const u
     _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x0f0), GXSimdMulVec4Mat4Rows(viewRows[2], projRows));
     _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x100), GXSimdMulVec4Mat4Rows(viewRows[3], projRows));
 
-    // 6. Invert View (+0x10..+0x40) -> InvView (+0x50..+0x80)
-    __m128 storedViewRows[4] = {
-        _mm_load_ps(reinterpret_cast<const float*>(pBlock + 0x10)),
-        _mm_load_ps(reinterpret_cast<const float*>(pBlock + 0x20)),
-        _mm_load_ps(reinterpret_cast<const float*>(pBlock + 0x30)),
-        _mm_load_ps(reinterpret_cast<const float*>(pBlock + 0x40)),
-    };
-    __m128 invViewRows[4];
-    GXSimdInvert4x4(storedViewRows, invViewRows);
-    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x50), invViewRows[0]);
-    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x60), invViewRows[1]);
-    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x70), invViewRows[2]);
-    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x80), invViewRows[3]);
+    // 6. Store camera world matrix directly into InvView (+0x50..+0x80) (Inv(View) == srcRows)
+    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x50), srcRows[0]);
+    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x60), srcRows[1]);
+    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x70), srcRows[2]);
+    _mm_store_ps(reinterpret_cast<float*>(pBlock + 0x80), srcRows[3]);
 
     // 7. Extract 6 view-space frustum planes (+0x1b0..+0x200) from Projection columns
     __m128 pLo01 = _mm_movelh_ps(projRows[0], projRows[1]);
@@ -3924,6 +3907,7 @@ void GXCameraMatrixBlock_Construct(uint8_t* pBlock, uint8_t* pOwnerContext) {
     };
     memcpy(pBlock + 0xd0, kIdentity4x4, sizeof(kIdentity4x4));
     memcpy(pBlock + 0x90, kIdentity4x4, sizeof(kIdentity4x4));
+    memcpy(pBlock + 0x50, kIdentity4x4, sizeof(kIdentity4x4));
     memcpy(pBlock + 0x10, kIdentity4x4, sizeof(kIdentity4x4));
 
     *(void**)(pBlock + 0x210) = nullptr;
@@ -4111,7 +4095,7 @@ uint32_t GXDeferredDeleterType7_GetTypeId() { return 7; }
  * VMA: 0x21928c0 (66 bytes)
  */
 void GXDeferredDeleterType7_DestroyPayload(void* /*pThis*/, uint8_t* pPayload) {
-    if (__sync_fetch_and_add((int32_t*)(pPayload + 0x10), -1) == 1 && pPayload) {
+    if (pPayload && __sync_fetch_and_add((int32_t*)(pPayload + 0x10), -1) == 1) {
         void* pAlloc = *(void**)(pPayload + 0x08);
         void (**vtable)(void*) = *(void (***)(void*))pPayload;
         vtable[0](pPayload);
@@ -4145,8 +4129,10 @@ uint32_t GXDeferredDeleterType8_GetTypeId() { return 8; }
  * VMA: 0x2192870 (23 bytes)
  */
 void GXDeferredDeleterType8_DestroyPayload(void* /*pThis*/, uint8_t* pPayload) {
-    int32_t oldRef = *(int32_t*)(pPayload + 0x08);
-    *(int32_t*)(pPayload + 0x08) = oldRef - 1;
+    if (!pPayload) {
+        return;
+    }
+    int32_t oldRef = __sync_fetch_and_add((int32_t*)(pPayload + 0x08), -1);
     if (oldRef <= 1) {
         void (**vtable)(void*) = *(void (***)(void*))pPayload;
         vtable[0](pPayload);
@@ -4176,7 +4162,7 @@ uint8_t GXDeferredDeleter_EnqueueRefCountedResource(uint8_t* pResource) {
     if (!pResource) {
         return 0;
     }
-    *(int32_t*)(pResource + 0x08) += 1;
+    __sync_fetch_and_add((int32_t*)(pResource + 0x08), 1);
 #undef g_pGXDeviceSingleton_55406c8
 #define g_pGXDeviceSingleton_55406c8 (*reinterpret_cast<uint8_t**>(GX_VMA(0x55406c8ULL)))
 #undef g_deleterDesc_53bf1e0
@@ -4243,6 +4229,9 @@ uint8_t GXDeferredDeleter_EnqueueResourceC0(void* pResource) {
  * VMA: 0x2192660 (84 bytes)
  */
 uint8_t GXDeferredDeleter_EnqueueBufferOrTextureResource(uint8_t* pResource) {
+    if (!pResource) {
+        return 0;
+    }
 #undef g_pGXDeviceSingleton_55406c8
 #define g_pGXDeviceSingleton_55406c8 (*reinterpret_cast<uint8_t**>(GX_VMA(0x55406c8ULL)))
 #undef g_deleterDesc_53bf1b8
@@ -4264,10 +4253,10 @@ uint8_t GXDeferredDeleter_EnqueueBufferOrTextureResource(uint8_t* pResource) {
 static inline void MarkConstantBufferStageSlotMask(void** ppLowLevelCB, uint64_t stageBit, uint64_t slotBit) {
     uint8_t* pBuf = reinterpret_cast<uint8_t*>(ppLowLevelCB[0]);
     if (pBuf) {
-        const uint64_t reqMask = stageBit | slotBit;
-        const uint64_t curLow  = *reinterpret_cast<const uint32_t*>(pBuf + 0x44);
+        const uint32_t reqMask = static_cast<uint32_t>(stageBit | slotBit);
+        const uint32_t curLow  = *reinterpret_cast<const uint32_t*>(pBuf + 0x44);
         if ((curLow & reqMask) != reqMask) {
-            __atomic_fetch_or(reinterpret_cast<uint64_t*>(pBuf + 0x44), reqMask, __ATOMIC_SEQ_CST);
+            __atomic_fetch_or(reinterpret_cast<uint32_t*>(pBuf + 0x44), reqMask, __ATOMIC_SEQ_CST);
         }
     }
 }

@@ -47,7 +47,7 @@ void sub_1071270_initDrawCommandBuffer(void* dcb, void* buf, uint32_t size, void
 void sub_10783c0_insertNop(void* dcb, uint32_t num_dwords); // 0x10783c0
 int32_t sub_1089a30_sceGnmValidateCommandBuffers(uint32_t count, void* dcb_addrs, void* dcb_sizes, void* ccb_addrs, void* ccb_sizes); // 0x1089a30
 int32_t sub_1089a10_sceGnmSubmitCommandBuffers(uint32_t count, void* dcb_addrs, void* dcb_sizes, void* ccb_addrs, void* ccb_sizes); // 0x1089a10
-void sub_10778f0_writeAtEndOfPipe(void* gnmx_ctx, uint32_t event_type, uint32_t dst_sel, void* dst_gpu_addr, uint32_t val_sel, uint64_t imm_val, uint32_t cache_action); // 0x10778f0
+void sub_10778f0_writeAtEndOfPipe(void* gnmx_ctx, uint32_t event_type, uint32_t dst_sel, void* dst_gpu_addr, uint32_t val_sel, uint64_t imm_val, uint32_t int_sel, uint32_t wr_confirm); // 0x10778f0
 void sub_1072870_waitOnAddress(void* gnmx_ctx, void* gpu_addr, uint32_t mask, uint32_t cmp_func, uint32_t ref_val); // 0x1072870
 void sub_1070960_initAsConstantBuffer(void* out_vsharp, const void* base_addr, uint32_t size_bytes); // 0x1070960
 
@@ -268,8 +268,11 @@ struct CGCommandListChainGnm {
 // and byte sizes (`[entry+0x10] - [entry+0x00]`), and submits them all in one batch via
 // `sceGnmSubmitCommandBuffers` (`0x1089a10`).
 void CGCommandListChainGnm_SubmitAllChunks(CGCommandListChainGnm* self) {
+    if (self->head_chunk == nullptr) {
+        return;
+    }
     uint32_t total_entries = 0;
-    if (self->head_chunk != nullptr) {
+    {
         const uint32_t cap = self->entries_per_chunk;
         const uint64_t next_ptr_offset = static_cast<uint64_t>(cap) << 6;
         for (uint8_t* chunk = *reinterpret_cast<uint8_t**>(self->head_chunk + next_ptr_offset);
@@ -297,7 +300,7 @@ void CGCommandListChainGnm_SubmitAllChunks(CGCommandListChainGnm* self) {
         fallback_alloc = self->allocator;
     }
 
-    if (self->head_chunk != nullptr) {
+    if (self->head_chunk != nullptr && buf != nullptr) {
         void** dcb_addrs = reinterpret_cast<void**>(buf);
         uint32_t* dcb_sizes = reinterpret_cast<uint32_t*>(buf + (static_cast<size_t>(total_entries) * 8u));
         const uint32_t cap = self->entries_per_chunk;
@@ -344,7 +347,7 @@ void CGCommandBufferGnm_WriteEndOfPipeCounter(
     void* dst_gpu_addr,
     uint32_t cache_action)
 {
-    sub_10778f0_writeAtEndOfPipe(gnmx_ctx, event_type, 0, dst_gpu_addr, 3, cache_action, 0);
+    sub_10778f0_writeAtEndOfPipe(gnmx_ctx, event_type, 0, dst_gpu_addr, 3, 0, cache_action, 0);
 }
 
 // VMA: 0x26bb6d0 (48 B)
@@ -356,7 +359,7 @@ void CGCommandBufferGnm_WriteEndOfPipeImmediate(
     uint64_t imm_value,
     uint32_t cache_action)
 {
-    sub_10778f0_writeAtEndOfPipe(gnmx_ctx, event_type, 0, dst_gpu_addr, 2, imm_value, cache_action);
+    sub_10778f0_writeAtEndOfPipe(gnmx_ctx, event_type, 0, dst_gpu_addr, 2, imm_value, cache_action, 0);
 }
 
 // VMA: 0x26bb6c0 (5 B)
@@ -560,7 +563,7 @@ int32_t CGTextureGnm_CreateSubresourceViewTSharp(
         }
         const uint32_t mip_level = sub_2164d60_CalcMipLevel(subresource_idx, mip_count);
         const uint32_t array_slice = sub_2164d50_CalcArraySlice(subresource_idx, mip_count);
-        if ((mip_count * array_slices - 1u) < subresource_idx) {
+        if (subresource_idx >= (mip_count * array_slices)) {
             return 8;
         }
         uint32_t gnm_fmt = 0;
@@ -633,7 +636,7 @@ int32_t CGTextureGnm_CreateSubresourceViewTSharp(
             *reinterpret_cast<const uint16_t*>(tex_desc + 0x34),
             *reinterpret_cast<const uint16_t*>(tex_desc + 0x36),
             ((*reinterpret_cast<const uint32_t*>(tex_desc + 0x24) >> 10) & 1u) != 0);
-        if ((total_subres - 1u) < subresource_idx) {
+        if (subresource_idx >= total_subres) {
             return 8;
         }
         uint32_t gnm_fmt = 0;
@@ -690,7 +693,7 @@ int32_t CGTextureGnm_CreateSubresourceViewTSharp(
                 *reinterpret_cast<const uint16_t*>(tex_desc + 0x2e),
                 *reinterpret_cast<const uint16_t*>(tex_desc + 0x30));
         }
-        if ((mip_count - 1u) < subresource_idx) {
+        if (subresource_idx >= mip_count) {
             return 8;
         }
         uint32_t gnm_fmt = 0;
@@ -887,6 +890,7 @@ int32_t CreateStageShaderCommon(
         allocator);
     if (err != 0) {
         reinterpret_cast<FreeFn>(vtbl[0x70 / 8])(allocator, mem);
+        *out_hw_shader_clone = nullptr;
         sub_10a3bf0_ShaderContainer_Destroy(container);
         return err;
     }
@@ -1124,7 +1128,7 @@ void CGSurfaceSyncTrackerGnm_RecordRange(
         } else {
             self->cache_sync_mode |= 0x02u;
             const uint32_t start_256 = CGGpuAddressGnm_Pack256ByteAlignedB(gpu_addr);
-            const uint32_t end_256 = start_256 + CGGpuAddressGnm_Pack256ByteAlignedA(byte_size);
+            const uint32_t end_256 = start_256 + CGGpuAddressGnm_Pack256ByteAlignedA(byte_size + 255ULL);
             if (start_256 < self->gfx_min_addr_256) self->gfx_min_addr_256 = start_256;
             if (end_256 > self->gfx_max_addr_256)   self->gfx_max_addr_256 = end_256;
             self->target_mask_flags |= target_mask;
@@ -1136,7 +1140,7 @@ void CGSurfaceSyncTrackerGnm_RecordRange(
         } else {
             self->cache_sync_mode |= 0x02u;
             const uint32_t start_256 = CGGpuAddressGnm_Pack256ByteAlignedB(gpu_addr);
-            const uint32_t end_256 = start_256 + CGGpuAddressGnm_Pack256ByteAlignedA(byte_size);
+            const uint32_t end_256 = start_256 + CGGpuAddressGnm_Pack256ByteAlignedA(byte_size + 255ULL);
             if (start_256 < self->cs_min_addr_256) self->cs_min_addr_256 = start_256;
             if (end_256 > self->cs_max_addr_256)   self->cs_max_addr_256 = end_256;
             self->target_mask_flags |= 0x100u;

@@ -492,15 +492,12 @@ bool GXMtdParameterAccessor_SetBoolComponents(
     vf->dataPtr[0] = c0;
 
     if (compCount >= 2) {
-        UnshareAndCommitBlockField(vf);
         vf->dataPtr[1] = c1;
     }
     if (compCount >= 3) {
-        UnshareAndCommitBlockField(vf);
         vf->dataPtr[2] = c2;
     }
     if (compCount >= 4) {
-        UnshareAndCommitBlockField(vf);
         vf->dataPtr[3] = c3;
     }
     return true;
@@ -541,19 +538,17 @@ bool GXMtdParameterAccessor_SetFloatComponents(
 
     GXMtdBlockField* vf = &valBlock->valueField;
     UnshareAndCommitBlockField(vf);
-    reinterpret_cast<float*>(vf->dataPtr)[0] = c0;
+    float* dst = reinterpret_cast<float*>(vf->dataPtr);
+    dst[0] = c0;
 
     if (compCount >= 2) {
-        UnshareAndCommitBlockField(vf);
-        reinterpret_cast<float*>(vf->dataPtr)[1] = c1;
+        dst[1] = c1;
     }
     if (compCount >= 3) {
-        UnshareAndCommitBlockField(vf);
-        reinterpret_cast<float*>(vf->dataPtr)[2] = c2;
+        dst[2] = c2;
     }
     if (compCount >= 4) {
-        UnshareAndCommitBlockField(vf);
-        reinterpret_cast<float*>(vf->dataPtr)[3] = c3;
+        dst[3] = c3;
     }
     return true;
 }
@@ -568,7 +563,7 @@ bool GXMtdParameterAccessor_SetValueFromBuffer4(
     const void* pValues4)
 {
     GXMtdParameterNode* paramNode = self->paramNode;
-    if (paramNode == nullptr) {
+    if (paramNode == nullptr || pValues4 == nullptr) {
         return false;
     }
 
@@ -606,15 +601,12 @@ bool GXMtdParameterAccessor_SetValueFromBuffer4(
             UnshareAndCommitBlockField(vf);
             vf->dataPtr[0] = static_cast<uint8_t>(v0);
             if (compCount >= 2) {
-                UnshareAndCommitBlockField(vf);
                 vf->dataPtr[1] = static_cast<uint8_t>(v1);
             }
             if (compCount >= 3) {
-                UnshareAndCommitBlockField(vf);
                 vf->dataPtr[2] = static_cast<uint8_t>(v2);
             }
             if (compCount >= 4) {
-                UnshareAndCommitBlockField(vf);
                 vf->dataPtr[3] = static_cast<uint8_t>(v3);
             }
         }
@@ -645,18 +637,16 @@ bool GXMtdParameterAccessor_SetValueFromBuffer4(
         if (compCount > 0) {
             GXMtdBlockField* vf = &valBlock->valueField;
             UnshareAndCommitBlockField(vf);
-            reinterpret_cast<uint32_t*>(vf->dataPtr)[0] = v0;
+            uint32_t* dst = reinterpret_cast<uint32_t*>(vf->dataPtr);
+            dst[0] = v0;
             if (compCount >= 2) {
-                UnshareAndCommitBlockField(vf);
-                reinterpret_cast<uint32_t*>(vf->dataPtr)[1] = v1;
+                dst[1] = v1;
             }
             if (compCount >= 3) {
-                UnshareAndCommitBlockField(vf);
-                reinterpret_cast<uint32_t*>(vf->dataPtr)[2] = v2;
+                dst[2] = v2;
             }
             if (compCount >= 4) {
-                UnshareAndCommitBlockField(vf);
-                reinterpret_cast<uint32_t*>(vf->dataPtr)[3] = v3;
+                dst[3] = v3;
             }
         }
         return true;
@@ -898,22 +888,21 @@ bool GXMtdParameterAccessor_GetIntComponents(
 
     int32_t compCount = valBlock->valueField.elementCount;
     GXMtdBlockField* vf = &valBlock->valueField;
-
-    if (out0 != nullptr && compCount > 0) {
+    if (compCount > 0 && (out0 != nullptr || out1 != nullptr || out2 != nullptr || out3 != nullptr)) {
         UnshareBlockFieldForRead(vf);
-        *out0 = reinterpret_cast<const int32_t*>(vf->dataPtr)[0];
-    }
-    if (out1 != nullptr && compCount >= 2) {
-        UnshareBlockFieldForRead(vf);
-        *out1 = reinterpret_cast<const int32_t*>(vf->dataPtr)[1];
-    }
-    if (out2 != nullptr && compCount >= 3) {
-        UnshareBlockFieldForRead(vf);
-        *out2 = reinterpret_cast<const int32_t*>(vf->dataPtr)[2];
-    }
-    if (out3 != nullptr && compCount >= 4) {
-        UnshareBlockFieldForRead(vf);
-        *out3 = reinterpret_cast<const int32_t*>(vf->dataPtr)[3];
+        const int32_t* src = reinterpret_cast<const int32_t*>(vf->dataPtr);
+        if (out0 != nullptr) {
+            *out0 = src[0];
+        }
+        if (out1 != nullptr && compCount >= 2) {
+            *out1 = src[1];
+        }
+        if (out2 != nullptr && compCount >= 3) {
+            *out2 = src[2];
+        }
+        if (out3 != nullptr && compCount >= 4) {
+            *out3 = src[3];
+        }
     }
     return true;
 }
@@ -948,22 +937,20 @@ bool GXMtdParameterAccessor_GetBoolComponents(
 
     int32_t compCount = valBlock->valueField.elementCount;
     GXMtdBlockField* vf = &valBlock->valueField;
-
-    if (out0 != nullptr && compCount > 0) {
+    if (compCount > 0 && (out0 != nullptr || out1 != nullptr || out2 != nullptr || out3 != nullptr)) {
         UnshareBlockFieldForRead(vf);
-        *out0 = (vf->dataPtr[0] != 0);
-    }
-    if (out1 != nullptr && compCount >= 2) {
-        UnshareBlockFieldForRead(vf);
-        *out1 = (vf->dataPtr[1] != 0);
-    }
-    if (out2 != nullptr && compCount >= 3) {
-        UnshareBlockFieldForRead(vf);
-        *out2 = (vf->dataPtr[2] != 0);
-    }
-    if (out3 != nullptr && compCount >= 4) {
-        UnshareBlockFieldForRead(vf);
-        *out3 = (vf->dataPtr[3] != 0);
+        if (out0 != nullptr) {
+            *out0 = (vf->dataPtr[0] != 0);
+        }
+        if (out1 != nullptr && compCount >= 2) {
+            *out1 = (vf->dataPtr[1] != 0);
+        }
+        if (out2 != nullptr && compCount >= 3) {
+            *out2 = (vf->dataPtr[2] != 0);
+        }
+        if (out3 != nullptr && compCount >= 4) {
+            *out3 = (vf->dataPtr[3] != 0);
+        }
     }
     return true;
 }
@@ -998,22 +985,21 @@ bool GXMtdParameterAccessor_GetFloatComponents(
 
     int32_t compCount = valBlock->valueField.elementCount;
     GXMtdBlockField* vf = &valBlock->valueField;
-
-    if (out0 != nullptr && compCount > 0) {
+    if (compCount > 0 && (out0 != nullptr || out1 != nullptr || out2 != nullptr || out3 != nullptr)) {
         UnshareBlockFieldForRead(vf);
-        *out0 = reinterpret_cast<const float*>(vf->dataPtr)[0];
-    }
-    if (out1 != nullptr && compCount >= 2) {
-        UnshareBlockFieldForRead(vf);
-        *out1 = reinterpret_cast<const float*>(vf->dataPtr)[1];
-    }
-    if (out2 != nullptr && compCount >= 3) {
-        UnshareBlockFieldForRead(vf);
-        *out2 = reinterpret_cast<const float*>(vf->dataPtr)[2];
-    }
-    if (out3 != nullptr && compCount >= 4) {
-        UnshareBlockFieldForRead(vf);
-        *out3 = reinterpret_cast<const float*>(vf->dataPtr)[3];
+        const float* src = reinterpret_cast<const float*>(vf->dataPtr);
+        if (out0 != nullptr) {
+            *out0 = src[0];
+        }
+        if (out1 != nullptr && compCount >= 2) {
+            *out1 = src[1];
+        }
+        if (out2 != nullptr && compCount >= 3) {
+            *out2 = src[2];
+        }
+        if (out3 != nullptr && compCount >= 4) {
+            *out3 = src[3];
+        }
     }
     return true;
 }
@@ -1028,7 +1014,7 @@ bool GXMtdParameterAccessor_GetValueToBuffer4(
     void* outValues4)
 {
     GXMtdParameterNode* paramNode = self->paramNode;
-    if (paramNode == nullptr) {
+    if (paramNode == nullptr || outValues4 == nullptr) {
         return false;
     }
 
@@ -1057,21 +1043,18 @@ bool GXMtdParameterAccessor_GetValueToBuffer4(
 
         int32_t compCount = valBlock->valueField.elementCount;
         GXMtdBlockField* vf = &valBlock->valueField;
-        if (dstWords != nullptr && compCount > 0) {
+        if (compCount > 0) {
             UnshareBlockFieldForRead(vf);
             dstWords[0] = static_cast<uint32_t>(vf->dataPtr[0]);
-        }
-        if (compCount >= 2) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[1] = static_cast<uint32_t>(vf->dataPtr[1]);
-        }
-        if (compCount >= 3) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[2] = static_cast<uint32_t>(vf->dataPtr[2]);
-        }
-        if (compCount >= 4) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[3] = static_cast<uint32_t>(vf->dataPtr[3]);
+            if (compCount >= 2) {
+                dstWords[1] = static_cast<uint32_t>(vf->dataPtr[1]);
+            }
+            if (compCount >= 3) {
+                dstWords[2] = static_cast<uint32_t>(vf->dataPtr[2]);
+            }
+            if (compCount >= 4) {
+                dstWords[3] = static_cast<uint32_t>(vf->dataPtr[3]);
+            }
         }
         return true;
     }
@@ -1093,21 +1076,19 @@ bool GXMtdParameterAccessor_GetValueToBuffer4(
 
         int32_t compCount = valBlock->valueField.elementCount;
         GXMtdBlockField* vf = &valBlock->valueField;
-        if (dstWords != nullptr && compCount > 0) {
+        if (compCount > 0) {
             UnshareBlockFieldForRead(vf);
-            dstWords[0] = reinterpret_cast<const uint32_t*>(vf->dataPtr)[0];
-        }
-        if (compCount >= 2) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[1] = reinterpret_cast<const uint32_t*>(vf->dataPtr)[1];
-        }
-        if (compCount >= 3) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[2] = reinterpret_cast<const uint32_t*>(vf->dataPtr)[2];
-        }
-        if (compCount >= 4) {
-            UnshareBlockFieldForRead(vf);
-            dstWords[3] = reinterpret_cast<const uint32_t*>(vf->dataPtr)[3];
+            const uint32_t* src = reinterpret_cast<const uint32_t*>(vf->dataPtr);
+            dstWords[0] = src[0];
+            if (compCount >= 2) {
+                dstWords[1] = src[1];
+            }
+            if (compCount >= 3) {
+                dstWords[2] = src[2];
+            }
+            if (compCount >= 4) {
+                dstWords[3] = src[3];
+            }
         }
         return true;
     }
@@ -1302,6 +1283,7 @@ void GXMtdNodePtrVector_Reallocate(
             return;
         }
         DLDebug_LogContainerHeapError(0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+        return;
     }
 
     GXMtdParameterNode** oldBegin = vec->begin;
@@ -1424,7 +1406,6 @@ bool GXMtdMaterialContainer_SyncTextureSlotsFromDescriptorList(
 
         const char* curTypeName = reinterpret_cast<const char*>(GX_VMA(0x48715c4ULL));
         if (tf->dataPtr != nullptr) {
-            UnshareAndCommitBlockField(tf);
             curTypeName = reinterpret_cast<const char*>(tf->dataPtr);
         }
 
@@ -1544,6 +1525,7 @@ void GXMtdParamSyncPairVector_ResizeDefault(
                     return;
                 }
                 DLDebug_LogContainerHeapError(0, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                return;
             }
 
             GXMtdParamSyncPair* oldBegin = vec->begin;
@@ -1911,69 +1893,35 @@ int32_t GXMtdMaterialContainer_FindParameterIndexByNameAscii(
     const GXMtdMaterialContainer* self,
     const DLStringA* paramName)
 {
-    uint32_t paramCount = 0;
-    if (self->rootBlock != nullptr) {
-        GXMtdBlockArray* listsArr = &self->rootBlock->dataBlock->listsBlockArray;
-        if (GXMtdBlockArray_GetCount(listsArr) != 0) {
-            GXMtdListsBlock* listsBlock = static_cast<GXMtdListsBlock*>(GXMtdBlockArray_GetAt(listsArr, 0));
-            if (listsBlock != nullptr) {
-                paramCount = static_cast<uint32_t>(GXMtdBlockArray_GetCount(&listsBlock->paramNodes));
-            }
-        }
+    if (self == nullptr || paramName == nullptr || self->rootBlock == nullptr) {
+        return -1;
     }
 
-    DLAllocator* alloc = g_pCachedDefaultStringAllocator;
-    if (alloc == nullptr) {
-        alloc = DLSystem_GetDefaultStringAllocator();
-        g_pCachedDefaultStringAllocator = alloc;
+    GXMtdBlockArray* listsArr = &self->rootBlock->dataBlock->listsBlockArray;
+    if (GXMtdBlockArray_GetCount(listsArr) == 0) {
+        return -1;
     }
 
-    uint32_t caps[8]{};
-    alloc->vptr->getCapabilities(caps, alloc, 0);
-    if ((caps[0] & 0x20u) == 0) {
-        DLDebug_LogContainerHeapError(0, 0x3E, reinterpret_cast<const char*>(GX_VMA(0x4737dc0ULL)));
+    GXMtdListsBlock* listsBlock = static_cast<GXMtdListsBlock*>(GXMtdBlockArray_GetAt(listsArr, 0));
+    if (listsBlock == nullptr) {
+        return -1;
     }
 
-    DLStringA curName{};
-    curName.allocator  = alloc;
-    curName.capacity   = 15;
-    curName.length     = 0;
-    curName.buf.sso[0] = '\0';
-    curName.fillChar   = '\0';
+    uint32_t paramCount = static_cast<uint32_t>(GXMtdBlockArray_GetCount(&listsBlock->paramNodes));
+    const char* targetName = paramName->c_str();
 
-    int32_t matchedIndex = -1;
     for (uint32_t i = 0; i < paramCount; ++i) {
-        GXMtdParameterAccessor acc{};
-        GXMtdParameterAccessor_CtorConst(&acc);
-
-        GXMtdParameterNode* node = nullptr;
-        if (self->rootBlock != nullptr) {
-            GXMtdBlockArray* listsArr = &self->rootBlock->dataBlock->listsBlockArray;
-            if (GXMtdBlockArray_GetCount(listsArr) != 0) {
-                GXMtdListsBlock* lb = static_cast<GXMtdListsBlock*>(GXMtdBlockArray_GetAt(listsArr, 0));
-                if (lb != nullptr && i < static_cast<uint32_t>(GXMtdBlockArray_GetCount(&lb->paramNodes))) {
-                    node = static_cast<GXMtdParameterNode*>(
-                        GXMtdBlockArray_GetAt(&lb->paramNodes, static_cast<int32_t>(i)));
-                }
+        GXMtdParameterNode* node = static_cast<GXMtdParameterNode*>(
+            GXMtdBlockArray_GetAt(&listsBlock->paramNodes, static_cast<int32_t>(i)));
+        if (node != nullptr) {
+            UnshareAndCommitBlockField(&node->nameField);
+            const char* nameStr = reinterpret_cast<const char*>(node->nameField.dataPtr);
+            if (nameStr != nullptr && DLCharTraitsA_Compare(nameStr, targetName) == 0) {
+                return static_cast<int32_t>(i);
             }
         }
-        GXMtdParameterAccessor_BindNode(&acc, node);
-
-        if (acc.paramNode != nullptr) {
-            GXMtdParameterAccessor_GetNameAscii(&acc, &curName);
-            if (DLCharTraitsA_Compare(curName.c_str(), paramName->c_str()) == 0) {
-                GXMtdParameterAccessor_Dtor(&acc);
-                matchedIndex = static_cast<int32_t>(i);
-                break;
-            }
-        }
-        GXMtdParameterAccessor_Dtor(&acc);
     }
-
-    if (curName.capacity >= 16) {
-        curName.allocator->vptr->deallocate(curName.allocator, curName.buf.ptr);
-    }
-    return matchedIndex;
+    return -1;
 }
 
 // ============================================================================
@@ -2358,9 +2306,9 @@ bool GXMtdMaterialContainer_SaveToFileAscii(
     }
 
     const char kMtdMagic[4] = { 'M', 'T', 'D', ' ' };
+    GXMtdHeaderBlock* hdr = self->rootBlock->headerBlock;
+    UnshareAndCommitBlockField(&hdr->magicField);
     for (int i = 0; i < 4; ++i) {
-        GXMtdHeaderBlock* hdr = self->rootBlock->headerBlock;
-        UnshareAndCommitBlockField(&hdr->magicField);
         hdr->magicField.dataPtr[i] = static_cast<uint8_t>(kMtdMagic[i]);
     }
 
@@ -2448,7 +2396,6 @@ bool GXMtdMaterialContainer_LoadFromMemoryBuffer(
             g_pfnMtdBlockDeallocate(self->rootBlock);
             self->rootBlock = nullptr;
         }
-        self->lastError = 0;
     }
 
     DLMemoryReadStream_Dtor(memStream);
@@ -2614,7 +2561,6 @@ GXMtdMaterialContainer* GXMtdMaterialContainer_CopyAssign(
     const GXMtdMaterialContainer* rhs)
 {
     if (self != rhs) {
-        self->lastError = rhs->lastError;
         if (self->rootBlock != nullptr) {
             self->rootBlock->vptr->dtor(self->rootBlock);
             g_pfnMtdBlockDeallocate(self->rootBlock);
@@ -2623,6 +2569,9 @@ GXMtdMaterialContainer* GXMtdMaterialContainer_CopyAssign(
         self->lastError = 0;
         if (rhs->rootBlock != nullptr) {
             self->rootBlock = static_cast<GXMtdRootBlock*>(GXMtdBlockObject_Clone(rhs->rootBlock));
+            if (self->rootBlock == nullptr) {
+                self->lastError = 2;
+            }
         }
     }
     return self;

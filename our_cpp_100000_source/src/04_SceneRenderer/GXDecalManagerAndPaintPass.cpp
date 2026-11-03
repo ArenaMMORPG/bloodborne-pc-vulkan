@@ -1676,42 +1676,34 @@ extern "C" void GXDecalManager_ExecutePaintDecalPass(
     }
 
     // 4. Execute up to g_GXPaintDecalCountPerFrame queued paint commands
-    initPaintCtx(paintRenderCtx, pRenderDeviceCtx, passIndex, 0u, localViewParams, 0u, 0u, 0u, 0u, 0u);
-
     GXPaintDecalCommand* pCmdBegin = *reinterpret_cast<GXPaintDecalCommand**>(self + 0x20);
     GXPaintDecalCommand* pCmdEnd   = *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28);
     if (pCmdBegin != pCmdEnd) {
+        initPaintCtx(paintRenderCtx, pRenderDeviceCtx, passIndex, 0u, localViewParams, 0u, 0u, 0u, 0u, 0u);
         uint32_t maxPerFrame = *reinterpret_cast<const uint32_t*>(ResolveVMA(0x513acbc));
         if (maxPerFrame != 0u) {
+            GXPaintDecalCommand* pCur = pCmdBegin;
             uint32_t processed = 0u;
             do {
                 execPaintCmd(
-                    pCmdBegin->pPaintTarget,
+                    pCur->pPaintTarget,
                     paintRenderCtx,
-                    pCmdBegin->decalHandle,
-                    pCmdBegin->cmdType,
-                    &pCmdBegin->param0);
-
-                pCmdEnd = *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28);
-                GXPaintDecalCommand* pNext = pCmdBegin + 1;
-                if (pNext != pCmdEnd) {
-                    GXPaintDecalCommand* pDst = pCmdBegin;
-                    for (GXPaintDecalCommand* pSrc = pNext; pSrc != pCmdEnd; ++pSrc, ++pDst) {
-                        *pDst = *pSrc;
-                    }
-                    pCmdEnd = *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28);
-                }
-                --pCmdEnd;
-                *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28) = pCmdEnd;
-                if (pCmdBegin == pCmdEnd) {
-                    break;
-                }
+                    pCur->decalHandle,
+                    pCur->cmdType,
+                    &pCur->param0);
+                ++pCur;
                 ++processed;
-            } while (processed < maxPerFrame);
-        }
-    }
+            } while (pCur != pCmdEnd && processed < maxPerFrame);
 
-    endPaintCtx(paintRenderCtx);
+            pCmdEnd = *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28);
+            const size_t remainingCount = static_cast<size_t>(pCmdEnd - pCur);
+            if (remainingCount != 0u) {
+                std::memmove(pCmdBegin, pCur, remainingCount * sizeof(GXPaintDecalCommand));
+            }
+            *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28) = pCmdBegin + remainingCount;
+        }
+        endPaintCtx(paintRenderCtx);
+    }
 }
 
 // ============================================================================
@@ -1809,18 +1801,26 @@ extern "C" void GXDecalManager_EnqueueApplyPaintDecalCommand(
     if (decalHandle == 0xFFFFFFFFu) {
         return;
     }
+
+    uint8_t* pMutex = self + 0x880;
+    void** mutexVtbl = *reinterpret_cast<void***>(pMutex);
+    using LockFn = void (*)(uint8_t*, uint32_t);
+    using UnlockFn = void (*)(uint8_t*);
+    reinterpret_cast<LockFn>(mutexVtbl[3])(pMutex, 0xFFFFFFFFu);
+
     uint32_t slotIdx = decalHandle & 0xFFFFu;
     uint8_t** pSlotTable = *reinterpret_cast<uint8_t***>(self + 0x850);
     uint8_t* pDecal = pSlotTable[slotIdx];
     if (!pDecal) {
+        mutexVtbl = *reinterpret_cast<void***>(pMutex);
+        reinterpret_cast<UnlockFn>(mutexVtbl[5])(pMutex);
         return;
     }
     uint16_t gen = static_cast<uint16_t>(decalHandle >> 16);
     const uint16_t* pGenTable = *reinterpret_cast<const uint16_t**>(self + 0x858);
-    if (gen != pGenTable[slotIdx]) {
-        return;
-    }
-    if (*reinterpret_cast<const uint32_t*>(pDecal + 0x50) != 1u) {
+    if (gen != pGenTable[slotIdx] || *reinterpret_cast<const uint32_t*>(pDecal + 0x50) != 1u) {
+        mutexVtbl = *reinterpret_cast<void***>(pMutex);
+        reinterpret_cast<UnlockFn>(mutexVtbl[5])(pMutex);
         return;
     }
 
@@ -1855,6 +1855,9 @@ extern "C" void GXDecalManager_EnqueueApplyPaintDecalCommand(
         }
     }
     *reinterpret_cast<GXPaintDecalCommand**>(self + 0x28) = pEnd + 1;
+
+    mutexVtbl = *reinterpret_cast<void***>(pMutex);
+    reinterpret_cast<UnlockFn>(mutexVtbl[5])(pMutex);
 }
 
 // ============================================================================
@@ -1996,32 +1999,33 @@ extern "C" bool GXDecalManager_UpdateOrDestroyDecalByHandle(
     uint32_t decalHandle,
     float fadeDuration)
 {
-    if (fadeDuration > 0.0f) {
-        if (decalHandle == 0xFFFFFFFFu) {
-            return false;
-        }
-        uint32_t slotIdx = decalHandle & 0xFFFFu;
-        uint8_t** pSlotTable = *reinterpret_cast<uint8_t***>(self + 0x850);
-        uint8_t* pDecal = pSlotTable[slotIdx];
-        if (!pDecal) {
-            return false;
-        }
-        uint16_t gen = static_cast<uint16_t>(decalHandle >> 16);
-        const uint16_t* pGenTable = *reinterpret_cast<const uint16_t**>(self + 0x858);
-        if (gen != pGenTable[slotIdx]) {
-            return false;
-        }
-        void** vtbl = *reinterpret_cast<void***>(pDecal);
-        using StartFadeOutFn = void (*)(uint8_t*, float);
-        reinterpret_cast<StartFadeOutFn>(vtbl[7])(pDecal, fadeDuration);
-        return true;
-    }
-
     uint8_t* pMutex = self + 0x880;
     void** mutexVtbl = *reinterpret_cast<void***>(pMutex);
     using LockFn = void (*)(uint8_t*, uint32_t);
     using UnlockFn = void (*)(uint8_t*);
     reinterpret_cast<LockFn>(mutexVtbl[3])(pMutex, 0xFFFFFFFFu);
+
+    if (fadeDuration > 0.0f) {
+        bool okFade = false;
+        if (decalHandle != 0xFFFFFFFFu) {
+            uint32_t slotIdx = decalHandle & 0xFFFFu;
+            uint8_t** pSlotTable = *reinterpret_cast<uint8_t***>(self + 0x850);
+            uint8_t* pDecal = pSlotTable[slotIdx];
+            if (pDecal != nullptr) {
+                uint16_t gen = static_cast<uint16_t>(decalHandle >> 16);
+                const uint16_t* pGenTable = *reinterpret_cast<const uint16_t**>(self + 0x858);
+                if (gen == pGenTable[slotIdx]) {
+                    void** vtbl = *reinterpret_cast<void***>(pDecal);
+                    using StartFadeOutFn = void (*)(uint8_t*, float);
+                    reinterpret_cast<StartFadeOutFn>(vtbl[7])(pDecal, fadeDuration);
+                    okFade = true;
+                }
+            }
+        }
+        mutexVtbl = *reinterpret_cast<void***>(pMutex);
+        reinterpret_cast<UnlockFn>(mutexVtbl[5])(pMutex);
+        return okFade;
+    }
 
     bool ok = false;
     if (decalHandle != 0xFFFFFFFFu) {
@@ -2166,6 +2170,9 @@ extern "C" uint32_t GXDecalManager_SpawnDecal(
     auto makeHandleForSlot = [&](uint32_t slot) -> uint32_t {
         uint16_t* pGenTable = *reinterpret_cast<uint16_t**>(self + 0x858);
         uint16_t newGen = static_cast<uint16_t>(pGenTable[slot] + 1u);
+        if (slot == 0u && newGen == 0u) {
+            newGen = 1u;
+        }
         pGenTable[slot] = newGen;
         return (static_cast<uint32_t>(newGen) << 16) | (slot & 0xFFFFu);
     };
@@ -2259,6 +2266,7 @@ extern "C" uint32_t GXDecalManager_SpawnDecal(
                 using InitPaintDecalFn = bool (*)(uint8_t*, uint8_t*, const uint8_t*, uint32_t);
                 if (!reinterpret_cast<InitPaintDecalFn>(ResolveVMA(0x2218530))(
                         pPaintDecal, self, pSpawnDesc, allocatedHandle)) {
+                    pAlloc->vptr->deallocate(pAlloc, pPaintDecal);
                     allocFailed = true;
                 } else {
                     pCreatedDecal = pPaintDecal;
@@ -2465,6 +2473,12 @@ extern "C" void GXDecalManager_PrepareDeferredDecalPrePass(
     uint8_t* pWorkItem = reinterpret_cast<AllocFrameWorkFn>(ResolveVMA(0xe45560))(
         pFrameHeap, 0x10u, 0x04u);
 
+    uint8_t* pMutex = self + 0x880;
+    void** mutexVtbl = *reinterpret_cast<void***>(pMutex);
+    using LockFn = void (*)(uint8_t*, uint32_t);
+    using UnlockFn = void (*)(uint8_t*);
+    reinterpret_cast<LockFn>(mutexVtbl[3])(pMutex, 0xFFFFFFFFu);
+
     uint8_t** pDecalBegin = *reinterpret_cast<uint8_t***>(self + 0x78);
     uint8_t** pDecalEnd   = *reinterpret_cast<uint8_t***>(self + 0x80);
     uint8_t hasPomDecal = 0;
@@ -2490,6 +2504,9 @@ extern "C" void GXDecalManager_PrepareDeferredDecalPrePass(
             }
         }
     }
+
+    mutexVtbl = *reinterpret_cast<void***>(pMutex);
+    reinterpret_cast<UnlockFn>(mutexVtbl[5])(pMutex);
 
     pWorkItem[0x08] = hasPomDecal & 1u;
     *reinterpret_cast<void**>(pWorkItem + 0x00) = pPassTag;
@@ -3109,11 +3126,6 @@ extern "C" void GXDecalManager_Destroy(uint8_t* self) {
 
     // Reset embedded mutex vptr (+0x880)
     *reinterpret_cast<uintptr_t*>(self + 0x880) = ResolveVMA(0x52ef3b0) + 0x10u;
-
-    // Ensure all 56 vertex input layout slots (+0x740 down to +0x588) are destroyed
-    for (intptr_t rel = 0; rel != -0x1C0; rel -= 8) {
-        DestroyVertexInputLayoutPtr(reinterpret_cast<uint8_t**>(self + 0x740 + rel));
-    }
 
     // Free internal vector buffers (+0x78, +0x48, +0x20)
     void* pVec78 = *reinterpret_cast<void**>(self + 0x78);

@@ -216,7 +216,7 @@ GpuRangeNode* GpuRangeHeap_AllocateFromTree(GpuRangeAllocator* alloc, uint64_t s
 // maintaining 16 power-of-two remainder buckets (`+0x08..+0x87`) and bitmask (`+0x90`).
 // ----------------------------------------------------------------------------
 uint8_t* StagingPool_Suballocate64K(StagingPool64K* pool, void* fence_ctx, uint64_t size) {
-    if (size > 0x10000ull) {
+    if (size == 0ull || size > 0x10000ull) {
         return nullptr;
     }
     const uint32_t req = static_cast<uint32_t>(size);
@@ -1253,6 +1253,9 @@ int32_t MapDynamicBuffer_B_Impl(
 // non-filtered updates into `CopyRecord[]`, and dispatches `GpuUtil_ScatterGatherCopy` (`0x26b2810`).
 // ----------------------------------------------------------------------------
 void FlushBufferUpdates_B(PendingUpdateQueueB* queue_b, GnmxContextCore* ctx) {
+    if (!queue_b->head_chunk) {
+        return;
+    }
     auto* gfxc = reinterpret_cast<uint8_t*>(ctx);
     uint8_t* outer_ctx = *reinterpret_cast<uint8_t**>(gfxc + 0xb490);
     void* dyn_heap = *reinterpret_cast<void**>(outer_ctx + 0x08);

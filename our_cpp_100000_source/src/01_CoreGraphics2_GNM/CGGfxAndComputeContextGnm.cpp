@@ -669,14 +669,25 @@ void CGGfxContextGnm_ResetCommandChunks(uint8_t* self) {
         }
     }
 
+    if (*reinterpret_cast<IAllocator**>(self + 0xb4d0) != nullptr) {
+        size_t nextLabelOff = static_cast<size_t>(*reinterpret_cast<uint32_t*>(self + 0xb4e8)) * 8ULL;
+        uint8_t* lnode = *reinterpret_cast<uint8_t**>(self + 0xb4d8);
+        while (lnode) {
+            uint8_t* nextLnode = *reinterpret_cast<uint8_t**>(lnode + nextLabelOff);
+            IAllocator* lalloc = *reinterpret_cast<IAllocator**>(self + 0xb4d0);
+            lalloc->vtable->deallocate(lalloc, lnode);
+            lnode = nextLnode;
+        }
+    }
+
     self[0xb4f0] = 0;
     *reinterpret_cast<uint64_t*>(self + 0xb490) = 0;
     *reinterpret_cast<uint64_t*>(self + 0xb4a8) = 0;
     *reinterpret_cast<uint64_t*>(self + 0xb4a0) = 0;
-    *reinterpret_cast<uint32_t*>(self + 0xb4cc) = 0;
-    *reinterpret_cast<uint64_t*>(self + 0xb4c4) = 0;
-    *reinterpret_cast<uint64_t*>(self + 0xb4bc) = 0;
-    *reinterpret_cast<uint64_t*>(self + 0xb4b4) = 0;
+    *reinterpret_cast<uint32_t*>(self + 0xb4b4) = 0;
+    *reinterpret_cast<uint64_t*>(self + 0xb4d8) = 0;
+    *reinterpret_cast<uint64_t*>(self + 0xb4e0) = 0;
+    *reinterpret_cast<uint32_t*>(self + 0xb4ec) = 0;
 }
 
 // 0x026af6e0 (20 bytes)
@@ -1321,6 +1332,9 @@ void CGGfxContextGnm_AllocateScratchFromCommandBuffer(
     }
     uint64_t* labelPtr = static_cast<uint64_t*>(
         CGGfxContextGnm_AllocateFromCommandBufferAligned(self, 8, 8));
+    if (!labelPtr) {
+        return;
+    }
     *labelPtr = 0;
     reinterpret_cast<void(*)(void*, uint32_t, void*, uint64_t)>(GX_VMA(0x1078320ULL))(
         self, eventType, labelPtr, 1ULL);
@@ -1349,6 +1363,9 @@ void CGGfxContextGnm_FlushShaderCachesAndWait(
     }
     uint64_t* labelPtr = static_cast<uint64_t*>(
         CGGfxContextGnm_AllocateFromCommandBufferAligned(self, 8, 8));
+    if (!labelPtr) {
+        return;
+    }
     *labelPtr = 0;
     reinterpret_cast<void(*)(void*, uint32_t, void*, uint64_t, uint32_t)>(GX_VMA(0x26bb6d0ULL))(
         self, eventType, labelPtr, 1ULL, cacheAction);
@@ -2016,6 +2033,9 @@ void CGComputeContextGnm_WriteReleaseMemEventAndWait(
 {
     uint64_t* labelPtr = static_cast<uint64_t*>(
         CGComputeContextGnm_AllocateScratchFromDcb(self, 8, 8));
+    if (!labelPtr) {
+        return;
+    }
     *labelPtr = 0;
 
     reinterpret_cast<void(*)(void*, uint32_t, uint32_t, void*, uint32_t, uint32_t, uint32_t, uint32_t)>(
@@ -2149,8 +2169,8 @@ void CGGpuCopyGnm_UploadCpuToGpuViaComputeShader(
             const uint64_t availA = reinterpret_cast<uint64_t(*)(void*)>(GX_VMA(0x26af6e0ULL))(ctx);
             uint64_t usableA = (availA > 0x100ULL) ? ((availA - 0x100ULL) & ~0x3FULL) : 0ULL;
 
-            const uint64_t availB = CGGfxContextGnm_GetAvailableDcbBytesAligned(ctx, 0x40);
-            uint64_t usableB = (availB > 0x100ULL) ? ((availB - 0x100ULL) & ~0x3FULL) : 0ULL;
+            const int64_t availB = CGGfxContextGnm_GetAvailableDcbBytesAligned(ctx, 0x40);
+            uint64_t usableB = (availB > 0x100) ? (static_cast<uint64_t>(availB - 0x100) & ~0x3FULL) : 0ULL;
 
             if (usableA > reqWithCb) {
                 usableA = reqWithCb;
@@ -2386,6 +2406,9 @@ void CGGpuCopyGnm_CopyCpuToGpuViaDynamicScratch(
         } else {
             scratch = CGGfxContextGnm_AllocateFromCommandBufferAligned(gfxCtx, targetChunk, 0x40);
             actualChunk = scratch ? targetChunk : 0ULL;
+        }
+        if (!scratch || actualChunk == 0ULL) {
+            break;
         }
 
         std::memcpy(scratch, srcCpuAddr, actualChunk);

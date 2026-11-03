@@ -319,7 +319,7 @@ bool sub_21ce5d0(void* flverContainer, void* rawFlverData) {
     }
 
     uint32_t faceSetStride = (version > 0x20008u) ? 0x20u : 0x10u;
-    uint32_t textureStride = (version < 0x20004u) ? 0x10u : 0x20u;
+    uint32_t textureStride = (version <= 0x20002u) ? 0x10u : 0x20u;
 
     uint8_t* pDummies = hdr + 0x80;
     *reinterpret_cast<uint8_t**>(cont + 0x08) = pDummies;
@@ -984,12 +984,6 @@ void sub_21cda20(void* self) {
     *reinterpret_cast<uintptr_t*>(s + 0x00) = GX_VMA(0x53b6f20ULL);
 
     uint64_t iterOut[4] = {};
-    void* vecEnd1 = *reinterpret_cast<void**>(s + 0x20);
-    sub_21ce1b0(iterOut, s + 0x10,
-                vecEnd1,
-                0, 0, 0, 0, 0,
-                *reinterpret_cast<void**>(s + 0x18),
-                0, 0, vecEnd1);
 
     uint8_t* slots = *reinterpret_cast<uint8_t**>(s + 0x50);
     if (slots != nullptr) {
@@ -1274,13 +1268,6 @@ void sub_21cd130(void* dstVec, const void* srcVec) {
         *reinterpret_cast<uint64_t*>(dst + 0x08) = 0ULL;
     }
 
-    void* dstAlloc1 = *reinterpret_cast<void**>(dst + 0x20);
-    void* srcAlloc1 = *reinterpret_cast<void* const*>(src + 0x20);
-    auto* vtblD1    = *reinterpret_cast<uintptr_t**>(dstAlloc1);
-    reinterpret_cast<uint32_t (*)(void*)>(vtblD1[0x10 / 8])(dstAlloc1);
-    auto* vtblS1    = *reinterpret_cast<uintptr_t**>(srcAlloc1);
-    reinterpret_cast<uint32_t (*)(void*)>(vtblS1[0x10 / 8])(srcAlloc1);
-
     void* dstAlloc2 = *reinterpret_cast<void**>(dst + 0x20);
     void* srcAlloc2 = *reinterpret_cast<void* const*>(src + 0x20);
     auto* vtblD2    = *reinterpret_cast<uintptr_t**>(dstAlloc2);
@@ -1478,13 +1465,6 @@ void sub_21ccbc0(void* dstVec, const void* srcVec) {
         *reinterpret_cast<uint64_t*>(dst + 0x10) = 0ULL;
         *reinterpret_cast<uint64_t*>(dst + 0x08) = 0ULL;
     }
-
-    void* dstAlloc1 = *reinterpret_cast<void**>(dst + 0x20);
-    void* srcAlloc1 = *reinterpret_cast<void* const*>(src + 0x20);
-    auto* vtblD1    = *reinterpret_cast<uintptr_t**>(dstAlloc1);
-    reinterpret_cast<uint32_t (*)(void*)>(vtblD1[0x10 / 8])(dstAlloc1);
-    auto* vtblS1    = *reinterpret_cast<uintptr_t**>(srcAlloc1);
-    reinterpret_cast<uint32_t (*)(void*)>(vtblS1[0x10 / 8])(srcAlloc1);
 
     void* dstAlloc2 = *reinterpret_cast<void**>(dst + 0x20);
     void* srcAlloc2 = *reinterpret_cast<void* const*>(src + 0x20);
@@ -1815,7 +1795,22 @@ void sub_21cc6c0(void* ownerPtr, void* debugGuiCtx) {
 // ============================================================================
 // 42. 0x21cc5e0 (222 B) - GXSkinningMatricesUpdater_UnregisterSkinningTarget
 // ============================================================================
+namespace {
+static volatile uint32_t g_skinningEntriesSpinLock = 0u;
+struct SkinningEntriesLockGuard {
+    SkinningEntriesLockGuard() noexcept {
+        while (__atomic_exchange_n(&g_skinningEntriesSpinLock, 1u, __ATOMIC_ACQUIRE) != 0u) {
+            __builtin_ia32_pause();
+        }
+    }
+    ~SkinningEntriesLockGuard() noexcept {
+        __atomic_store_n(&g_skinningEntriesSpinLock, 0u, __ATOMIC_RELEASE);
+    }
+};
+} // namespace
+
 void sub_21cc5e0(void* ownerPtr, void* target) {
+    SkinningEntriesLockGuard lockGuard{};
     auto* updater = *reinterpret_cast<uint8_t**>(ownerPtr);
     uint8_t* cur  = *reinterpret_cast<uint8_t**>(updater + 0x10);
     uint8_t* end  = *reinterpret_cast<uint8_t**>(updater + 0x18);
@@ -1863,6 +1858,7 @@ bool sub_21cba80(void* ownerPtr, void* target, const void* srcMatrices0, const v
         return true;
     }
 
+    SkinningEntriesLockGuard lockGuard{};
     auto* updater = *reinterpret_cast<uint8_t**>(ownerPtr);
     uint8_t* entryVec = updater + 0x08;
     uint8_t* cur      = *reinterpret_cast<uint8_t**>(updater + 0x10);
@@ -1872,66 +1868,6 @@ bool sub_21cba80(void* ownerPtr, void* target, const void* srcMatrices0, const v
         void* biHeap = updater + 0x508;
         auto* biVtbl = *reinterpret_cast<uintptr_t**>(biHeap);
         void* mem = reinterpret_cast<void* (*)(void*, uint64_t)>(biVtbl[0x50 / 8])(biHeap, byteSize);
-
-        void* biMutex = updater + 0x5d8;
-        auto* bmVtbl1 = *reinterpret_cast<uintptr_t**>(biMutex);
-        reinterpret_cast<void (*)(void*, uint32_t)>(bmVtbl1[0x18 / 8])(biMutex, 0xFFFFFFFFu);
-        uint32_t biFree = *reinterpret_cast<const uint32_t*>(updater + 0x5d0);
-        auto* bmVtbl2 = *reinterpret_cast<uintptr_t**>(biMutex);
-        reinterpret_cast<void (*)(void*)>(bmVtbl2[0x28 / 8])(biMutex);
-        *reinterpret_cast<uint32_t*>(updater + 0x5fc) = biFree;
-
-        auto* bmVtbl3 = *reinterpret_cast<uintptr_t**>(biMutex);
-        reinterpret_cast<void (*)(void*, uint32_t)>(bmVtbl3[0x18 / 8])(biMutex, 0xFFFFFFFFu);
-        uint8_t* biSentinel = updater + 0x580;
-        uint8_t* biNode     = *reinterpret_cast<uint8_t**>(updater + 0x5a0);
-        uint64_t maxBiBlock = 0ULL;
-        while (biNode != biSentinel) {
-            uint8_t* nextGeo = *reinterpret_cast<uint8_t**>(biNode + 0x10);
-            if (nextGeo == nullptr) {
-                reinterpret_cast<FnLogWarning>(GX_VMA(0x20b55b0ULL))(
-                    reinterpret_cast<const char*>(GX_VMA(0x493c8e8ULL)), 0x310u,
-                    reinterpret_cast<const char*>(GX_VMA(0x493cb05ULL)));
-            }
-            uint64_t span = static_cast<uint64_t>(
-                *reinterpret_cast<uint64_t*>(nextGeo) - *reinterpret_cast<uint64_t*>(biNode));
-            if (maxBiBlock < span) {
-                maxBiBlock = span;
-            }
-            biNode = *reinterpret_cast<uint8_t**>(biNode + 0x20);
-        }
-        auto* bmVtbl4 = *reinterpret_cast<uintptr_t**>(biMutex);
-        reinterpret_cast<void (*)(void*)>(bmVtbl4[0x28 / 8])(biMutex);
-        *reinterpret_cast<uint32_t*>(updater + 0x600) = static_cast<uint32_t>(maxBiBlock);
-
-        void* segMutex = updater + 0x4d0;
-        auto* smVtbl1  = *reinterpret_cast<uintptr_t**>(segMutex);
-        reinterpret_cast<void (*)(void*, uint32_t)>(smVtbl1[0x18 / 8])(segMutex, 0xFFFFFFFFu);
-        uint32_t segFree = *reinterpret_cast<const uint32_t*>(updater + 0xa8);
-        auto* smVtbl2  = *reinterpret_cast<uintptr_t**>(segMutex);
-        reinterpret_cast<void (*)(void*)>(smVtbl2[0x28 / 8])(segMutex);
-        *reinterpret_cast<uint32_t*>(updater + 0x608) = segFree;
-
-        auto* smVtbl3  = *reinterpret_cast<uintptr_t**>(segMutex);
-        reinterpret_cast<void (*)(void*, uint32_t)>(smVtbl3[0x18 / 8])(segMutex, 0xFFFFFFFFu);
-        uint64_t bitmask = *reinterpret_cast<const uint64_t*>(updater + 0x90);
-        uint64_t maxSegBlock = 0ULL;
-        if (bitmask != 0ULL) {
-            uint64_t binIdx = 63ULL - static_cast<uint64_t>(__builtin_clzll(bitmask));
-            uint8_t* binHead = updater + (binIdx << 4) + 0xa8;
-            uint8_t* segNode = *reinterpret_cast<uint8_t**>(updater + (binIdx << 4) + 0xc0);
-            while (segNode != binHead) {
-                uint64_t rawNext = *reinterpret_cast<const uint64_t*>(segNode + 0x08) & ~3ULL;
-                uint64_t segSize = (rawNext - reinterpret_cast<uintptr_t>(segNode)) - 8ULL;
-                if (maxSegBlock < segSize) {
-                    maxSegBlock = segSize;
-                }
-                segNode = *reinterpret_cast<uint8_t**>(segNode + 0x18);
-            }
-        }
-        auto* smVtbl4 = *reinterpret_cast<uintptr_t**>(segMutex);
-        reinterpret_cast<void (*)(void*)>(smVtbl4[0x28 / 8])(segMutex);
-        *reinterpret_cast<uint32_t*>(updater + 0x60c) = static_cast<uint32_t>(maxSegBlock);
         ++(*reinterpret_cast<uint32_t*>(updater + 0x614));
         return mem;
     };

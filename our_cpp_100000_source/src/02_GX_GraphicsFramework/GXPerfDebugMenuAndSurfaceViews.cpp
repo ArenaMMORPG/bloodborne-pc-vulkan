@@ -1084,7 +1084,9 @@ extern "C" void GXPerfDebugMenu_ExecutePendingScreenCapture(GXPerfDebugMenu* pTh
         wchar_t tempPathBuf[264] = {};
         const wchar_t* pBaseForFmt = pInputChars;
         if (WidePath_HasExtension(pInputChars) != nullptr) {
-            WideString_CopyCount(tempPathBuf, pInputChars, rawInputStr.m_length);
+            size_t copyChars = (rawInputStr.m_length < 263u) ? rawInputStr.m_length : 263u;
+            WideString_CopyCount(tempPathBuf, pInputChars, copyChars);
+            tempPathBuf[copyChars] = L'\0';
             wchar_t* pLastDot   = WideString_FindLastChar(tempPathBuf, L'.');
             wchar_t* pLastSlash = WideString_FindLastChar(tempPathBuf, L'/');
             wchar_t* pLastBack  = WideString_FindLastChar(tempPathBuf, L'\\');
@@ -1101,7 +1103,7 @@ extern "C" void GXPerfDebugMenu_ExecutePendingScreenCapture(GXPerfDebugMenu* pTh
         uint32_t hour  = static_cast<uint32_t>((packed >> 34) & 0x1Fu);
         uint32_t min   = static_cast<uint32_t>((packed >> 39) & 0x3Fu);
         uint32_t sec   = static_cast<uint32_t>((packed >> 45) & 0x3Fu);
-        FormatScreenshotPath(&rawInputStr, L"%s_%04d%02d%02d_%02d%02d%02d",
+        FormatScreenshotPath(&formattedStr, L"%s_%04d%02d%02d_%02d%02d%02d",
                              pBaseForFmt, year, month, day, hour, min, sec);
         pFinalPath = (formattedStr.m_capacity >= 8)
             ? formattedStr.m_pBuf
@@ -1661,6 +1663,8 @@ extern "C" int GXGnmSurfaceView_InitDepthRenderTargetView(
         *reinterpret_cast<uint32_t*>(pOutDepthView + 0x3C) = pViewDesc->m_firstSlice10;
         *reinterpret_cast<uint64_t*>(pOutDepthView + 0x34) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_firstElem08);
         *reinterpret_cast<uint64_t*>(pOutDepthView + 0x2C) = *reinterpret_cast<const uint64_t*>(&pViewDesc->m_format00);
+        gx_direct_vk::RegisterDirectDepthTarget(
+            pOutDepthView, nullptr, pViewDesc->m_firstElem08, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10);
     }
     return res;
 }
@@ -1678,7 +1682,7 @@ extern "C" void GXGnmSurfaceView_GetRenderTargetViewDesc(const uint8_t* pViewObj
 extern "C" void GXGnmSurfaceView_ReleaseRenderTargetView() {}
 
 // [VMA: 0x217a210 - 0x217a3e1] (465 B)
-// Initializes a GNM DepthRenderTarget view and optionally clears its HTile buffer to 0x0000000F (fast-clear state).
+// Initializes a GNM RenderTarget view and optionally clears its CMask buffer to 0x0000000F (fast-clear state).
 extern "C" int GXGnmSurfaceView_InitRenderTargetViewAndClearCMask(
     uint8_t* pOutRtView,
     void* /*pUnused*/,
@@ -1717,18 +1721,18 @@ extern "C" int GXGnmSurfaceView_InitRenderTargetViewAndClearCMask(
 
     sceGnmRenderTargetSetCmaskClearColor(pOutRtView, ((rtFlags & 0x04u) != 0) ? 0u : 1u);
     if (!sceGnmRenderTargetGetCmaskFastClearEnable(pOutRtView)) {
-        gx_direct_vk::RegisterDirectDepthTarget(
+        gx_direct_vk::RegisterDirectColorTarget(
             pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
         return 0;
     }
     if ((rtFlags & 0x08u) == 0) {
-        gx_direct_vk::RegisterDirectDepthTarget(
+        gx_direct_vk::RegisterDirectColorTarget(
             pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
         return 0;
     }
 
     sceGnmRenderTargetSetCmaskFastClearEnable(pOutRtView, 1u);
-    gx_direct_vk::RegisterDirectDepthTarget(
+    gx_direct_vk::RegisterDirectColorTarget(
         pOutRtView, nullptr, pViewDesc->m_numElems0C, pViewDesc->m_firstSlice10, pViewDesc->m_numSlices14);
     uintptr_t cmaskBase = static_cast<uintptr_t>(sceGnmRenderTargetGetCmaskAddress256ByteBlocks(pOutRtView)) << 8;
     uint32_t cmaskSliceBytes = sceGnmRenderTargetGetCmaskSliceSizeInBytes(pOutRtView);
@@ -1835,10 +1839,10 @@ extern "C" void GXCommandPacket64_TypeB_Construct(
         __sync_fetch_and_add(&pOwner->m_refCount10, 1);
     }
     pThis->vptr = &g_vtable_GXCommandPacket64_TypeB;
-    __m128 v0 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 0));
-    __m128 v1 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 1));
-    __m128 v2 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 2));
-    __m128 v3 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 3));
+    __m128 v0 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 0));
+    __m128 v1 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 1));
+    __m128 v2 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 2));
+    __m128 v3 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 3));
     pThis->m_payload10[0] = v0;
     pThis->m_payload10[1] = v1;
     pThis->m_payload10[2] = v2;
@@ -1870,10 +1874,10 @@ extern "C" void GXCommandPacket64_TypeA_Construct(
         __sync_fetch_and_add(&pOwner->m_refCount10, 1);
     }
     pThis->vptr = &g_vtable_GXCommandPacket64_TypeA;
-    __m128 v0 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 0));
-    __m128 v1 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 1));
-    __m128 v2 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 2));
-    __m128 v3 = _mm_load_ps(reinterpret_cast<const float*>(pSrcPayload64 + 3));
+    __m128 v0 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 0));
+    __m128 v1 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 1));
+    __m128 v2 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 2));
+    __m128 v3 = _mm_loadu_ps(reinterpret_cast<const float*>(pSrcPayload64 + 3));
     pThis->m_payload10[0] = v0;
     pThis->m_payload10[1] = v1;
     pThis->m_payload10[2] = v2;
@@ -1991,7 +1995,7 @@ extern "C" uint32_t GXRichText_DecodeNextCodepointAndColorMarkup(
 
     uint32_t hexLen = 0;
     while (true) {
-        if (hexLen > 8u) {
+        if (hexLen > 8u || pNext[2 + hexLen] == 0u) {
             return 0x23u;
         }
         if (pNext[2 + hexLen] == 0x5Du) { // ']'
@@ -3063,7 +3067,7 @@ static inline void GXSortTempBuffer_EnsureAllocated(GXSortTempBuffer* pBuf)
     }
     pBuf->m_pBase00    = pMem;
     pBuf->m_pCur08     = pMem;
-    pBuf->m_pEnd10     = pMem;
+    pBuf->m_pEnd10     = pMem ? (pMem + reqCount) : nullptr;
     pBuf->m_capacity18 = reqCount;
 }
 
@@ -3269,7 +3273,7 @@ extern "C" void GXVertexElementSort_InPlaceMerge(
                     b = rem;
                 }
                 if (a < totalSpan && a > 0) {
-                    for (int64_t cycle = a; cycle > 0; --cycle) {
+                    for (int64_t cycle = a - 1; cycle >= 0; --cycle) {
                         uint32_t* pStart = pCut1 + cycle;
                         uint32_t* pNext  = pCut1 + cycle + leftSpan;
                         if (pNext == pCut2) {

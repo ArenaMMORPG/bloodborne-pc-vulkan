@@ -113,6 +113,11 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
     int32_t fmtErr = reinterpret_cast<int32_t(*)(uint32_t*, uint32_t)>(GX_VMA(0x26b7310ULL))(
         &gnmFmt, *reinterpret_cast<const uint32_t*>(desc + 0x10));
     if (fmtErr != 0) {
+        if (*out_sub_obj) {
+            reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(*out_sub_obj);
+            cpu_alloc->vtbl->Free(cpu_alloc, *out_sub_obj);
+            *out_sub_obj = nullptr;
+        }
         return fmtErr;
     }
 
@@ -121,6 +126,11 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
         &tileMode, 1u, gnmFmt, 1u);
     if (tmErr != 0) {
         reinterpret_cast<void(*)(int32_t)>(GX_VMA(0x26bb4a0ULL))(tmErr);
+        if (*out_sub_obj) {
+            reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(*out_sub_obj);
+            cpu_alloc->vtbl->Free(cpu_alloc, *out_sub_obj);
+            *out_sub_obj = nullptr;
+        }
         return 8;
     }
 
@@ -140,10 +150,18 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
         GX_VMA(0x1085f90ULL))(
         rtProto, width, height, 1u, gnmFmt, tileMode, samplesLog2, fragsLog2, nullptr, nullptr);
     if (static_cast<uint32_t>(sizeAlignPair) == 0u) {
+        if (*out_sub_obj) {
+            reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(*out_sub_obj);
+            cpu_alloc->vtbl->Free(cpu_alloc, *out_sub_obj);
+            *out_sub_obj = nullptr;
+        }
         return 5;
     }
 
     uint32_t bufCount = *reinterpret_cast<const uint32_t*>(desc + 0x28);
+    if (bufCount > 16u) {
+        bufCount = 16u;
+    }
     for (uint32_t i = 0; i < bufCount; ++i) {
         std::memcpy(self + static_cast<size_t>(i) * 0x2cULL, rtProto, 0x2c);
     }
@@ -158,6 +176,7 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
         if (*out_sub_obj) {
             reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(*out_sub_obj);
             cpu_alloc->vtbl->Free(cpu_alloc, *out_sub_obj);
+            *out_sub_obj = nullptr;
         }
         return 9;
     }
@@ -167,6 +186,7 @@ int32_t CGSwapChainGnm_InitDisplayAndBackBuffers(
         if (*out_sub_obj) {
             reinterpret_cast<void(*)(void*)>(GX_VMA(0x26dbcc0ULL))(*out_sub_obj);
             cpu_alloc->vtbl->Free(cpu_alloc, *out_sub_obj);
+            *out_sub_obj = nullptr;
         }
         return 8;
     }
@@ -619,6 +639,7 @@ void* CGDeviceChild_GetSelf(void* self) {
 
 // VMA: 0x26d44a0 (5 B)
 void CGDeviceChild_ReleaseRef(void* ref_holder) {
+    reinterpret_cast<void(*)(void*)>(GX_VMA(0x2167fb0ULL))(ref_holder);
 }
 
 // VMA: 0x26d4480 (23 B)
@@ -664,12 +685,12 @@ uint64_t* CGGlobalRing_GetFencePtr() {
 
 // VMA: 0x26d4320 (8 B)
 void* CGGlobalRing_GetStateBlockD() {
-    return g_eboot_live_slide ? reinterpret_cast<void*>(g_eboot_live_slide + 0x546caf0ULL) : nullptr;
+    return reinterpret_cast<void*>(GX_VMA(0x546caf0ULL));
 }
 
 // VMA: 0x26d4310 (8 B)
 void* CGGlobalRing_GetStateBlockC() {
-    return g_eboot_live_slide ? reinterpret_cast<void*>(g_eboot_live_slide + 0x546cae0ULL) : nullptr;
+    return reinterpret_cast<void*>(GX_VMA(0x546cae0ULL));
 }
 
 // VMA: 0x26d4300 (6 B)
@@ -682,7 +703,7 @@ void* CGGlobalRing_GetCueHeapPtr() {
 
 // VMA: 0x26d42e0 (8 B)
 void* CGGlobalRing_GetStateBlockB() {
-    return g_eboot_live_slide ? reinterpret_cast<void*>(g_eboot_live_slide + 0x546cad0ULL) : nullptr;
+    return reinterpret_cast<void*>(GX_VMA(0x546cad0ULL));
 }
 
 // VMA: 0x26d42d0 (6 B)
@@ -695,12 +716,12 @@ uint8_t* CGGlobalRing_GetCcbRingPtr() {
 
 // VMA: 0x26d42b0 (8 B)
 void* CGGlobalRing_GetStateBlockA2() {
-    return g_eboot_live_slide ? reinterpret_cast<void*>(g_eboot_live_slide + 0x546cac0ULL) : nullptr;
+    return reinterpret_cast<void*>(GX_VMA(0x546cac0ULL));
 }
 
 // VMA: 0x26d42a0 (8 B)
 void* CGGlobalRing_GetStateBlockA1() {
-    return g_eboot_live_slide ? reinterpret_cast<void*>(g_eboot_live_slide + 0x546cab0ULL) : nullptr;
+    return reinterpret_cast<void*>(GX_VMA(0x546cab0ULL));
 }
 
 // VMA: 0x26d4290 (6 B)
@@ -829,7 +850,7 @@ void CGQueryLabelPoolGnm_InitHeader(
 // VMA: 0x26d3d40 (35 B)
 // Aligns an arbitrary pointer inside the label pool back to the start of its slot.
 uint64_t* CGQueryLabelPoolGnm_AlignToSlotBase(const CGQueryLabelPoolGnm* self, uint64_t* label_ptr) {
-    if (!label_ptr) return nullptr;
+    if (!label_ptr || self->qwords_per_slot == 0) return nullptr;
     uint64_t qword_offset = static_cast<uint64_t>(label_ptr - self->gpu_labels_base);
     uint64_t slot_start_qword = qword_offset - (qword_offset % self->qwords_per_slot);
     return self->gpu_labels_base + slot_start_qword;

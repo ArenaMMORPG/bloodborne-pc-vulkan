@@ -216,7 +216,7 @@ def scaled_sizes(settings):
     out=output_size(settings)
     if out==OUTPUT_SIZE or settings.get('upscaler')=='taa': return None
     scale=1.0
-    if os.environ.get('BB_FIXED_PRESET_RES')=='1' and settings.get('upscaler','fsr3')!='off':
+    if os.environ.get('BB_FIXED_PRESET_RES','1')!='0' and settings.get('upscaler','fsr3')!='off':
         preset=int(settings.get('preset','0') or 0)
         scale=PRESET_SCALES[max(0,min(preset,len(PRESET_SCALES)-1))]
     render=tuple(max(2,round(v/scale/2)*2) for v in out)

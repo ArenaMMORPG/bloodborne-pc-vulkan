@@ -364,10 +364,10 @@ GXMtdConvertedValue16 GXMtdParamValue_ConvertBetweenTypes(
                         tempConverted[i] = (srcInts[i] != 0u) ? 1u : 0u;
                     }
                 } else {
-                    // int -> float (unsigned 32-bit to float)
+                    // int -> float (signed 32-bit to float)
                     float* dstFloats = reinterpret_cast<float*>(tempConverted);
                     for (int32_t i = 0; i < srcCount; ++i) {
-                        dstFloats[i] = static_cast<float>(srcInts[i]);
+                        dstFloats[i] = static_cast<float>(static_cast<int32_t>(srcInts[i]));
                     }
                 }
             }
@@ -410,8 +410,22 @@ uint32_t GXDisplayOutput_GetDefaultModeDesc1080p60(
     uint32_t unusedModeIdx,
     GXDisplayModeDesc* outModeDesc)
 {
-    outModeDesc->width          = 1920;  // 0x780
-    outModeDesc->height         = 1080;  // 0x438
+    uint32_t w = 1920;
+    uint32_t h = 1080;
+    uint8_t* pGlobal6c8 = *reinterpret_cast<uint8_t**>(GX_VMA(0x55406c8ULL));
+    if (pGlobal6c8 != nullptr) {
+        uint8_t* pDev90 = *reinterpret_cast<uint8_t**>(pGlobal6c8 + 0x90);
+        if (pDev90 != nullptr) {
+            uint32_t devW = *reinterpret_cast<uint32_t*>(pDev90 + 0x80);
+            uint32_t devH = *reinterpret_cast<uint32_t*>(pDev90 + 0x84);
+            if (devW != 0 && devH != 0) {
+                w = devW;
+                h = devH;
+            }
+        }
+    }
+    outModeDesc->width          = w;
+    outModeDesc->height         = h;
     outModeDesc->refreshRateNum = 60000; // 0xEA60
     outModeDesc->refreshRateDen = 1000;  // 0x3E8
     outModeDesc->pixelFormat    = 0x57;  // 87 (DXGI_FORMAT_B8G8R8A8_UNORM)
@@ -429,11 +443,25 @@ void GXDisplayOutput_GetDefaultOutputDesc(
     GXDisplayOutputDesc* outDesc)
 {
     (void)unusedSelf;
+    int32_t w = 1920;
+    int32_t h = 1080;
+    uint8_t* pGlobal6c8 = *reinterpret_cast<uint8_t**>(GX_VMA(0x55406c8ULL));
+    if (pGlobal6c8 != nullptr) {
+        uint8_t* pDev90 = *reinterpret_cast<uint8_t**>(pGlobal6c8 + 0x90);
+        if (pDev90 != nullptr) {
+            uint32_t devW = *reinterpret_cast<uint32_t*>(pDev90 + 0x80);
+            uint32_t devH = *reinterpret_cast<uint32_t*>(pDev90 + 0x84);
+            if (devW != 0 && devH != 0) {
+                w = static_cast<int32_t>(devW);
+                h = static_cast<int32_t>(devH);
+            }
+        }
+    }
     DLCharTraitsW_CopyString(outDesc->deviceName, reinterpret_cast<const char16_t*>(GX_VMA(0x4871540ULL)));
     outDesc->desktopLeft         = 0;
     outDesc->desktopTop          = 0;
-    outDesc->desktopRight        = 1920; // 0x780
-    outDesc->desktopBottom       = 1080; // 0x438
+    outDesc->desktopRight        = w;
+    outDesc->desktopBottom       = h;
     outDesc->isAttachedToDesktop = 1;
     outDesc->rotationMode        = 1;
     outDesc->monitorHandle       = nullptr;
@@ -678,11 +706,12 @@ void GXDynamicBufferRingOwner_Destroy(GXDynamicBufferRingOwner* self) {
     }
 
     GXGnmRefCountedBuffer* buf = self->bufferObj;
-    if (DLAtomic_FetchDecrement32(&buf->refCount) == 1 && buf != nullptr) {
+    if (buf != nullptr && DLAtomic_FetchDecrement32(&buf->refCount) == 1) {
         DLAllocator* bufAlloc = buf->allocator;
         buf->vptr->dtor(buf);
         bufAlloc->vptr->deallocate(bufAlloc, buf);
     }
+    self->bufferObj = nullptr;
 }
 
 // ============================================================================
@@ -724,11 +753,12 @@ void GXDynamicBufferRingOwner_Initialize(
     if (cursor == nullptr) {
         self->ringCursor = nullptr;
         GXGnmRefCountedBuffer* buf = self->bufferObj;
-        if (DLAtomic_FetchDecrement32(&buf->refCount) == 1 && buf != nullptr) {
+        if (buf != nullptr && DLAtomic_FetchDecrement32(&buf->refCount) == 1) {
             DLAllocator* bufAlloc = buf->allocator;
             buf->vptr->dtor(buf);
             bufAlloc->vptr->deallocate(bufAlloc, buf);
         }
+        self->bufferObj = nullptr;
         *outStatus = 9;
         return;
     }
@@ -737,12 +767,17 @@ void GXDynamicBufferRingOwner_Initialize(
     self->ringCursor = cursor;
 
     if (*outStatus != 0) {
+        GXDynamicBufferRingCursor_DtorThunk(cursor);
+        allocator->vptr->deallocate(allocator, cursor);
+        self->ringCursor = nullptr;
+
         GXGnmRefCountedBuffer* buf = self->bufferObj;
-        if (DLAtomic_FetchDecrement32(&buf->refCount) == 1 && buf != nullptr) {
+        if (buf != nullptr && DLAtomic_FetchDecrement32(&buf->refCount) == 1) {
             DLAllocator* bufAlloc = buf->allocator;
             buf->vptr->dtor(buf);
             bufAlloc->vptr->deallocate(bufAlloc, buf);
         }
+        self->bufferObj = nullptr;
         return;
     }
 

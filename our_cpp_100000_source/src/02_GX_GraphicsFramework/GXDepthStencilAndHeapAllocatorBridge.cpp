@@ -319,7 +319,10 @@ bool GXDepthStencilResource_CreateFromDesc(
 
     if (stencilSrvFormat != 0) {
         srvDesc[0] = stencilSrvFormat;
-        GXDevice_CreateShaderResourceView(pDev, &pThis->m_pStencilSrv, pThis->m_pGnmTexture, srvDesc, pExtra1);
+        if (GXDevice_CreateShaderResourceView(pDev, &pThis->m_pStencilSrv, pThis->m_pGnmTexture, srvDesc, pExtra1) != 0) {
+            fnRelease(pThis);
+            return false;
+        }
     }
 
     if (pGlobal) {
@@ -433,16 +436,6 @@ void GXDepthStencilResource_BaseDtor(GXDepthStencilResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6860ULL));
     GXDepthStencilResource_ReleaseViewsAndTexture(pThis);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6a20ULL));
-    GXTexture2DResource_ReleaseGpuTexture(pThis);
-    CGTextureGnmHeader* pTex = pThis->m_pGnmTexture;
-    if (pTex) {
-        if (__sync_fetch_and_add(&pTex->m_refCount, -1) == 1) {
-            void* pAlloc = pTex->m_pAllocator;
-            (*reinterpret_cast<void(**)(void*)>(pTex->m_vptr))(pTex);
-            (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pAlloc) + 0x70))(pAlloc, pTex);
-        }
-        pThis->m_pGnmTexture = nullptr;
-    }
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     if (pThis->m_pColorScaleCBuf) {
         CGBufferGnm_Release(pThis->m_pColorScaleCBuf);
@@ -657,21 +650,33 @@ void GXGammaRampLookupTable_InitIdentity(float* pTableBase) {
 // 0x219e740 (255 B): GXGammaRampLookupTable_ComputePowCurve
 // Computes `clamp(powf(i / 1024.0f, expR/G/B), 0.0f, 1.0f)` for 1025 entries.
 void GXGammaRampLookupTable_ComputePowCurve(const float* pGammaParams, float* pOutTableBase) {
-    float expR = pGammaParams[2] / pGammaParams[5]; // (+0x08) / (+0x14)
-    float expG = pGammaParams[3] / pGammaParams[6]; // (+0x0C) / (+0x18)
-    float expB = pGammaParams[4] / pGammaParams[7]; // (+0x10) / (+0x1C)
+    float expR = (pGammaParams[5] != 0.0f) ? (pGammaParams[2] / pGammaParams[5]) : 1.0f; // (+0x08) / (+0x14)
+    float expG = (pGammaParams[6] != 0.0f) ? (pGammaParams[3] / pGammaParams[6]) : 1.0f; // (+0x0C) / (+0x18)
+    float expB = (pGammaParams[7] != 0.0f) ? (pGammaParams[4] / pGammaParams[7]) : 1.0f; // (+0x10) / (+0x1C)
 
     float* pOut = pOutTableBase + 2;
     const float kInv1024 = 1.0f / 1024.0f;
-    for (uint32_t i = 0; i < 0x401; ++i) {
-        float x = static_cast<float>(i) * kInv1024;
-        float r = std::pow(x, expR);
-        float g = std::pow(x, expG);
-        float b = std::pow(x, expB);
-        pOut[-2] = (r < 0.0f) ? 0.0f : ((r > 1.0f) ? 1.0f : r);
-        pOut[-1] = (g < 0.0f) ? 0.0f : ((g > 1.0f) ? 1.0f : g);
-        pOut[0]  = (b < 0.0f) ? 0.0f : ((b > 1.0f) ? 1.0f : b);
-        pOut += 3;
+    if (expR == expG && expG == expB) {
+        for (uint32_t i = 0; i < 0x401; ++i) {
+            float x = static_cast<float>(i) * kInv1024;
+            float v = std::pow(x, expR);
+            v = (v < 0.0f) ? 0.0f : ((v > 1.0f) ? 1.0f : v);
+            pOut[-2] = v;
+            pOut[-1] = v;
+            pOut[0]  = v;
+            pOut += 3;
+        }
+    } else {
+        for (uint32_t i = 0; i < 0x401; ++i) {
+            float x = static_cast<float>(i) * kInv1024;
+            float r = std::pow(x, expR);
+            float g = std::pow(x, expG);
+            float b = std::pow(x, expB);
+            pOut[-2] = (r < 0.0f) ? 0.0f : ((r > 1.0f) ? 1.0f : r);
+            pOut[-1] = (g < 0.0f) ? 0.0f : ((g > 1.0f) ? 1.0f : g);
+            pOut[0]  = (b < 0.0f) ? 0.0f : ((b > 1.0f) ? 1.0f : b);
+            pOut += 3;
+        }
     }
 }
 
@@ -733,57 +738,19 @@ void GXPropertyEnumVector_Reallocate24ByteEntries(uint8_t* pVec, size_t newCap) 
 
     uint8_t* pOldBegin = *reinterpret_cast<uint8_t**>(pVec + 0x08);
     uint8_t* pOldEnd   = *reinterpret_cast<uint8_t**>(pVec + 0x10);
-    if (pOldBegin != pOldEnd) {
-        uint8_t* pDst = pNewBuf;
-        for (uint8_t* pSrc = pOldBegin; pSrc != pOldEnd; pSrc += 24, pDst += 24) {
-            if (pDst) {
-                *reinterpret_cast<uint64_t*>(pDst + 0x08) = 0;
-                *reinterpret_cast<uint64_t*>(pDst + 0x00) = 0;
-                uint64_t cStrPtr = *reinterpret_cast<uint64_t*>(pSrc + 0x08);
-                if (cStrPtr != 0) {
-                    *reinterpret_cast<uint64_t*>(pDst + 0x08) = cStrPtr;
-                } else {
-                    uint8_t* pRefStr = *reinterpret_cast<uint8_t**>(pSrc + 0x00);
-                    *reinterpret_cast<uint64_t*>(pDst + 0x08) = 0;
-                    if (pRefStr) {
-                        *reinterpret_cast<uint8_t**>(pDst + 0x00) = pRefStr;
-                        *reinterpret_cast<uint32_t*>(pRefStr + 0x38) += 1;
-                    }
-                }
-                pDst[0x10] = pSrc[0x10];
-            }
-        }
-        pOldBegin = *reinterpret_cast<uint8_t**>(pVec + 0x08);
-        pOldEnd   = *reinterpret_cast<uint8_t**>(pVec + 0x10);
+    size_t byteCount   = static_cast<size_t>(pOldEnd - pOldBegin);
+    if (pNewBuf && byteCount != 0) {
+        std::memcpy(pNewBuf, pOldBegin, byteCount);
     }
 
     if (pOldBegin) {
-        for (uint8_t* pCur = pOldBegin; pCur != pOldEnd; pCur += 24) {
-            *reinterpret_cast<uint64_t*>(pCur + 0x08) = 0;
-            uint8_t* pRefStr = *reinterpret_cast<uint8_t**>(pCur + 0x00);
-            if (pRefStr) {
-                if (--(*reinterpret_cast<uint32_t*>(pRefStr + 0x38)) == 0) {
-                    void* pStrNodeAlloc = *reinterpret_cast<void**>(GX_VMA(0x5540e10ULL));
-                    if (*reinterpret_cast<uint64_t*>(pRefStr + 0x20) >= 8) {
-                        void* pBufAlloc = *reinterpret_cast<void**>(pRefStr + 0x28);
-                        void* pStrData  = *reinterpret_cast<void**>(pRefStr + 0x08);
-                        (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pBufAlloc) + 0x70))(pBufAlloc, pStrData);
-                    }
-                    *reinterpret_cast<uint64_t*>(pRefStr + 0x20) = 7;
-                    *reinterpret_cast<uint64_t*>(pRefStr + 0x18) = 0;
-                    *reinterpret_cast<uint16_t*>(pRefStr + 0x08) = 0;
-                    (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pStrNodeAlloc) + 0x70))(pStrNodeAlloc, pRefStr);
-                }
-                *reinterpret_cast<uint64_t*>(pCur + 0x00) = 0;
-            }
-        }
         void* pDealloc = *reinterpret_cast<void**>(pVec + 0x20);
         (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pDealloc) + 0x70))(pDealloc, pOldBegin);
     }
 
-    size_t count = static_cast<size_t>(pOldEnd - pOldBegin) / 24;
-    *reinterpret_cast<uint8_t**>(pVec + 0x18) = pNewBuf + newCap * 24;
-    *reinterpret_cast<uint8_t**>(pVec + 0x10) = pNewBuf + count * 24;
+    size_t count = byteCount / 24;
+    *reinterpret_cast<uint8_t**>(pVec + 0x18) = pNewBuf ? (pNewBuf + newCap * 24) : nullptr;
+    *reinterpret_cast<uint8_t**>(pVec + 0x10) = pNewBuf ? (pNewBuf + count * 24) : nullptr;
     *reinterpret_cast<uint8_t**>(pVec + 0x08) = pNewBuf;
 }
 
@@ -925,12 +892,9 @@ void GXRenderJob_NoOpCallbackA() {}
 
 // 0x219d930 (108 B): GXDisplayOutputManager_UpdateGammaRampFromSource
 void GXDisplayOutputManager_UpdateGammaRampFromSource(void* /*pUnused*/, void** ppManagerAndSource) {
-    uint8_t tempRamp[0x3010];
-    void* pSource = ppManagerAndSource[1];
-    (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pSource)))(pSource, tempRamp);
-
     uint8_t* pMgr = reinterpret_cast<uint8_t*>(ppManagerAndSource[0]);
-    reinterpret_cast<void*(*)(void*, const void*, size_t)>(GX_VMA(0x2bbe578ULL))(pMgr + 0x10, tempRamp, 0x300C);
+    void* pSource = ppManagerAndSource[1];
+    (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pSource)))(pSource, pMgr + 0x10);
     pMgr[0x301C] = 1;
 }
 
@@ -967,26 +931,30 @@ void GXRenderThreadJobDispatcher_SubmitAllContextJobs() {
         uint8_t* pLock = pJobQueue + 0xB0;
         (*reinterpret_cast<void(**)(void*, uint32_t)>(*reinterpret_cast<uintptr_t*>(pLock) + 0x18))(pLock, ~0u);
         uint8_t* pHdr = reinterpret_cast<uint8_t*>(sub_e45560(pJobQueue + 0x48, 0x1C, 4));
-        pHdr[0] = 1;
-        *reinterpret_cast<uint16_t*>(pHdr + 2) = 0x1C;
-        uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pHdr)) + 4) & 3u;
-        uint8_t pad = misalign ? static_cast<uint8_t>(4 - misalign) : 0;
-        pHdr[1] = pad;
+        uint8_t* pPayload = nullptr;
+        if (pHdr) {
+            pHdr[0] = 1;
+            *reinterpret_cast<uint16_t*>(pHdr + 2) = 0x1C;
+            uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pHdr)) + 4) & 3u;
+            uint8_t pad = misalign ? static_cast<uint8_t>(4 - misalign) : 0;
+            pHdr[1] = pad;
+            pPayload = pHdr + 4 + pad;
 
-        int32_t curCount = *reinterpret_cast<int32_t*>(pJobQueue + 0x38);
-        uint8_t* pSlot = nullptr;
-        if (curCount < *reinterpret_cast<int32_t*>(pJobQueue + 0x3C)) {
-            *reinterpret_cast<int32_t*>(pJobQueue + 0x38) = curCount + 1;
-            pSlot = *reinterpret_cast<uint8_t**>(pJobQueue + 0x30) + static_cast<int64_t>(curCount) * 16;
+            int32_t curCount = *reinterpret_cast<int32_t*>(pJobQueue + 0x38);
+            if (curCount < *reinterpret_cast<int32_t*>(pJobQueue + 0x3C)) {
+                *reinterpret_cast<int32_t*>(pJobQueue + 0x38) = curCount + 1;
+                uint8_t* pSlot = *reinterpret_cast<uint8_t**>(pJobQueue + 0x30) + static_cast<int64_t>(curCount) * 16;
+                *reinterpret_cast<uint8_t**>(pSlot + 0x00) = pHdr;
+                *reinterpret_cast<uint32_t*>(pSlot + 0x08) = 0;
+            }
         }
-        *reinterpret_cast<uint8_t**>(pSlot + 0x00) = pHdr;
-        *reinterpret_cast<uint32_t*>(pSlot + 0x08) = 0;
-        uint8_t* pPayload = pHdr ? (pHdr + 4 + pad) : nullptr;
         (*reinterpret_cast<void(**)(void*)>(*reinterpret_cast<uintptr_t*>(pLock) + 0x28))(pLock);
 
-        *reinterpret_cast<void(**)()>(pPayload + 0x00) = &GXRenderJob_NoOpCallbackA;
-        *reinterpret_cast<uint64_t*>(pPayload + 0x08)  = 1;
-        *reinterpret_cast<uint64_t*>(pPayload + 0x10)  = 0;
+        if (pPayload) {
+            *reinterpret_cast<void(**)()>(pPayload + 0x00) = &GXRenderJob_NoOpCallbackA;
+            *reinterpret_cast<uint64_t*>(pPayload + 0x08)  = 1;
+            *reinterpret_cast<uint64_t*>(pPayload + 0x10)  = 0;
+        }
     }
 
     // 2. Package and submit command lists for each active GXDeviceContext
@@ -1026,26 +994,30 @@ void GXRenderThreadJobDispatcher_SubmitAllContextJobs() {
         uint8_t* pLock = pEndQueue + 0xB0;
         (*reinterpret_cast<void(**)(void*, uint32_t)>(*reinterpret_cast<uintptr_t*>(pLock) + 0x18))(pLock, ~0u);
         uint8_t* pHdr = reinterpret_cast<uint8_t*>(sub_e45560(pEndQueue + 0x48, 0x1C, 4));
-        pHdr[0] = 1;
-        *reinterpret_cast<uint16_t*>(pHdr + 2) = 0x1C;
-        uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pHdr)) + 4) & 3u;
-        uint8_t pad = misalign ? static_cast<uint8_t>(4 - misalign) : 0;
-        pHdr[1] = pad;
+        uint8_t* pPayload = nullptr;
+        if (pHdr) {
+            pHdr[0] = 1;
+            *reinterpret_cast<uint16_t*>(pHdr + 2) = 0x1C;
+            uint32_t misalign = (static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pHdr)) + 4) & 3u;
+            uint8_t pad = misalign ? static_cast<uint8_t>(4 - misalign) : 0;
+            pHdr[1] = pad;
+            pPayload = pHdr + 4 + pad;
 
-        int32_t curCount = *reinterpret_cast<int32_t*>(pEndQueue + 0x38);
-        uint8_t* pSlot = nullptr;
-        if (curCount < *reinterpret_cast<int32_t*>(pEndQueue + 0x3C)) {
-            *reinterpret_cast<int32_t*>(pEndQueue + 0x38) = curCount + 1;
-            pSlot = *reinterpret_cast<uint8_t**>(pEndQueue + 0x30) + static_cast<int64_t>(curCount) * 16;
+            int32_t curCount = *reinterpret_cast<int32_t*>(pEndQueue + 0x38);
+            if (curCount < *reinterpret_cast<int32_t*>(pEndQueue + 0x3C)) {
+                *reinterpret_cast<int32_t*>(pEndQueue + 0x38) = curCount + 1;
+                uint8_t* pSlot = *reinterpret_cast<uint8_t**>(pEndQueue + 0x30) + static_cast<int64_t>(curCount) * 16;
+                *reinterpret_cast<uint8_t**>(pSlot + 0x00) = pHdr;
+                *reinterpret_cast<uint32_t*>(pSlot + 0x08) = 0;
+            }
         }
-        *reinterpret_cast<uint8_t**>(pSlot + 0x00) = pHdr;
-        *reinterpret_cast<uint32_t*>(pSlot + 0x08) = 0;
-        uint8_t* pPayload = pHdr ? (pHdr + 4 + pad) : nullptr;
         (*reinterpret_cast<void(**)(void*)>(*reinterpret_cast<uintptr_t*>(pLock) + 0x28))(pLock);
 
-        *reinterpret_cast<void(**)()>(pPayload + 0x00) = &GXRenderJob_NoOpCallbackB;
-        *reinterpret_cast<uint64_t*>(pPayload + 0x08)  = 1;
-        *reinterpret_cast<uint64_t*>(pPayload + 0x10)  = 0;
+        if (pPayload) {
+            *reinterpret_cast<void(**)()>(pPayload + 0x00) = &GXRenderJob_NoOpCallbackB;
+            *reinterpret_cast<uint64_t*>(pPayload + 0x08)  = 1;
+            *reinterpret_cast<uint64_t*>(pPayload + 0x10)  = 0;
+        }
     }
 }
 
@@ -1142,22 +1114,6 @@ void GXHeapInternalState_DestroyAndFreeArena(uint8_t* pState) {
             }
             pState[0xF8] = 0;
         }
-    }
-
-    if (pState[0x8F] != 0) {
-        uintptr_t alignPad = (0ULL - reinterpret_cast<uintptr_t>(pHeapBase)) & 7ULL;
-        uint8_t* pAlignedHeap = pState + alignPad + 0x28;
-        void* pArena = *reinterpret_cast<void**>(pState + alignPad + 0x80);
-        if (pArena) {
-            sub_2084ae0(pAlignedHeap, pArena);
-        }
-        uintptr_t highOff = alignPad | 0x48ULL;
-        *reinterpret_cast<uint64_t*>(pAlignedHeap + 0x08) = 0;
-        *reinterpret_cast<uint64_t*>(pAlignedHeap + 0x00) = 0;
-        *reinterpret_cast<uint64_t*>(pState + highOff + 0x38) = 0;
-        *reinterpret_cast<uint64_t*>(pState + highOff + 0x30) = 0;
-        *reinterpret_cast<uint64_t*>(pState + highOff + 0x28) = 0;
-        pState[0x8F] = 0;
     }
 }
 

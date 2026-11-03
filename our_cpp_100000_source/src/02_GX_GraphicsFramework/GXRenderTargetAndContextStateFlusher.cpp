@@ -644,7 +644,8 @@ void GXRenderTargetResource_ReleaseViewsAndTexture(GXRenderTargetResource* pThis
     }
 
     if (pThis->m_ppRenderTargetViews) {
-        uint32_t mipCount = pThis->m_pGnmTexture ? pThis->m_pGnmTexture->m_mipLevels : 0;
+        uint64_t allocCount = *reinterpret_cast<uint64_t*>(pThis->m_ppRenderTargetViews - 1);
+        uint32_t mipCount = static_cast<uint32_t>(allocCount);
         for (uint32_t i = 0; i < mipCount; ++i) {
             void* pRtv = pThis->m_ppRenderTargetViews[i];
             if (pRtv) {
@@ -670,16 +671,6 @@ void GXRenderTargetResource_BaseDtor(GXRenderTargetResource* pThis) {
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6940ULL));
     GXRenderTargetResource_ReleaseViewsAndTexture(pThis);
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6a20ULL));
-    GXTexture2DResource_ReleaseGpuTexture(pThis);
-    CGTextureGnmHeader* pTex = pThis->m_pGnmTexture;
-    if (pTex) {
-        if (__sync_fetch_and_add(&pTex->m_refCount, -1) == 1) {
-            void* pAlloc = pTex->m_pAllocator;
-            (*reinterpret_cast<void(**)(void*)>(pTex->m_vptr))(pTex);
-            (*reinterpret_cast<void(**)(void*, void*)>(*reinterpret_cast<uintptr_t*>(pAlloc) + 0x70))(pAlloc, pTex);
-        }
-        pThis->m_pGnmTexture = nullptr;
-    }
     pThis->m_vptr = reinterpret_cast<void**>(GX_VMA(0x53b6b00ULL));
     if (pThis->m_pColorScaleCBuf) {
         CGBufferGnm_Release(pThis->m_pColorScaleCBuf);
@@ -1033,7 +1024,7 @@ void GXDeviceContext_CopyShadowStateAndDirtyMasks(
 // Helper for resetting dirty bitmasks after a Draw/Dispatch call
 static inline void GXDeviceContext_ResetDirtyMasksAfterDraw(uint8_t* pCtx) {
     std::memset(pCtx + 0x1670, 0, 0xB8);
-    *reinterpret_cast<uint64_t*>(pCtx + 0x1680) = 0x0E;
+    *reinterpret_cast<uint64_t*>(pCtx + 0x1680) = 0x20;
     *reinterpret_cast<uint64_t*>(pCtx + 0x1688) = 0x08;
 }
 
@@ -1133,7 +1124,8 @@ void GXDeviceContext_Dispatch(
 
 // 0x21a2240 (44 B): GXDeviceContext_PopRasterizerStateBoth
 void GXDeviceContext_PopRasterizerStateBoth(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2090];
+    uint8_t idx = (pCtx[0x2090] > 0) ? --pCtx[0x2090] : 0;
+    idx &= 7u;
     void* pRs = *reinterpret_cast<void**>(pCtx + 0x1ED0 + static_cast<size_t>(idx) * 8);
     *reinterpret_cast<void**>(pCtx + 0x258) = pRs;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
@@ -1142,14 +1134,17 @@ void GXDeviceContext_PopRasterizerStateBoth(uint8_t* pCtx) {
 
 // 0x21a2220 (29 B): GXDeviceContext_PushRasterizerStateFromShadow
 void GXDeviceContext_PushRasterizerStateFromShadow(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2090]++;
+    uint8_t idx = pCtx[0x2090];
+    if (idx < 8) pCtx[0x2090] = idx + 1;
+    idx &= 7u;
     *reinterpret_cast<void**>(pCtx + 0x1ED0 + static_cast<size_t>(idx) * 8) =
         *reinterpret_cast<void**>(pCtx + 0x258);
 }
 
 // 0x21a21f0 (37 B): GXDeviceContext_PopRasterizerStateToGnmOnly
 void GXDeviceContext_PopRasterizerStateToGnmOnly(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2090];
+    uint8_t idx = (pCtx[0x2090] > 0) ? --pCtx[0x2090] : 0;
+    idx &= 7u;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pGnmCtx + 0xB970) =
         *reinterpret_cast<void**>(pCtx + 0x1ED0 + static_cast<size_t>(idx) * 8);
@@ -1157,7 +1152,9 @@ void GXDeviceContext_PopRasterizerStateToGnmOnly(uint8_t* pCtx) {
 
 // 0x21a21c0 (33 B): GXDeviceContext_PushRasterizerStateFromGnm
 void GXDeviceContext_PushRasterizerStateFromGnm(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2090]++;
+    uint8_t idx = pCtx[0x2090];
+    if (idx < 8) pCtx[0x2090] = idx + 1;
+    idx &= 7u;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pCtx + 0x1ED0 + static_cast<size_t>(idx) * 8) =
         *reinterpret_cast<void**>(pGnmCtx + 0xB970);
@@ -1165,8 +1162,8 @@ void GXDeviceContext_PushRasterizerStateFromGnm(uint8_t* pCtx) {
 
 // 0x21a2170 (67 B): GXDeviceContext_PopDepthStencilStateBoth
 void GXDeviceContext_PopDepthStencilStateBoth(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2091];
-    size_t off = static_cast<size_t>(idx) * 16;
+    uint8_t idx = (pCtx[0x2091] > 0) ? --pCtx[0x2091] : 0;
+    size_t off = static_cast<size_t>(idx & 7u) * 16;
     void* pDss = *reinterpret_cast<void**>(pCtx + 0x1F10 + off);
     uint8_t stencilRef = pCtx[0x1F18 + off];
     *reinterpret_cast<void**>(pCtx + 0x210) = pDss;
@@ -1178,16 +1175,17 @@ void GXDeviceContext_PopDepthStencilStateBoth(uint8_t* pCtx) {
 
 // 0x21a2140 (46 B): GXDeviceContext_PushDepthStencilStateFromShadow
 void GXDeviceContext_PushDepthStencilStateFromShadow(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2091]++;
-    size_t off = static_cast<size_t>(idx) * 16;
+    uint8_t idx = pCtx[0x2091];
+    if (idx < 8) pCtx[0x2091] = idx + 1;
+    size_t off = static_cast<size_t>(idx & 7u) * 16;
     *reinterpret_cast<void**>(pCtx + 0x1F10 + off) = *reinterpret_cast<void**>(pCtx + 0x210);
     pCtx[0x1F18 + off] = pCtx[0x218];
 }
 
 // 0x21a2100 (61 B): GXDeviceContext_PopDepthStencilStateToGnmOnly
 void GXDeviceContext_PopDepthStencilStateToGnmOnly(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2091];
-    size_t off = static_cast<size_t>(idx) * 16;
+    uint8_t idx = (pCtx[0x2091] > 0) ? --pCtx[0x2091] : 0;
+    size_t off = static_cast<size_t>(idx & 7u) * 16;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pGnmCtx + 0xBC08) = *reinterpret_cast<void**>(pCtx + 0x1F10 + off);
     pGnmCtx[0xBCB4] = pCtx[0x1F18 + off];
@@ -1196,8 +1194,9 @@ void GXDeviceContext_PopDepthStencilStateToGnmOnly(uint8_t* pCtx) {
 
 // 0x21a20c0 (50 B): GXDeviceContext_PushDepthStencilStateFromGnm
 void GXDeviceContext_PushDepthStencilStateFromGnm(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2091]++;
-    size_t off = static_cast<size_t>(idx) * 16;
+    uint8_t idx = pCtx[0x2091];
+    if (idx < 8) pCtx[0x2091] = idx + 1;
+    size_t off = static_cast<size_t>(idx & 7u) * 16;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pCtx + 0x1F10 + off) = *reinterpret_cast<void**>(pGnmCtx + 0xBC08);
     pCtx[0x1F18 + off] = pGnmCtx[0xBCB4];
@@ -1205,8 +1204,8 @@ void GXDeviceContext_PushDepthStencilStateFromGnm(uint8_t* pCtx) {
 
 // 0x21a2050 (101 B): GXDeviceContext_PopBlendStateBoth
 void GXDeviceContext_PopBlendStateBoth(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2092];
-    size_t off = static_cast<size_t>(idx) * 32;
+    uint8_t idx = (pCtx[0x2092] > 0) ? --pCtx[0x2092] : 0;
+    size_t off = static_cast<size_t>(idx & 7u) * 32;
     void* pBs = *reinterpret_cast<void**>(pCtx + 0x1F90 + off);
     uint32_t sampleMask = *reinterpret_cast<uint32_t*>(pCtx + 0x1FA8 + off);
     *reinterpret_cast<void**>(pCtx + 0x480) = pBs;
@@ -1221,8 +1220,9 @@ void GXDeviceContext_PopBlendStateBoth(uint8_t* pCtx) {
 
 // 0x21a2010 (63 B): GXDeviceContext_PushBlendStateFromShadow
 void GXDeviceContext_PushBlendStateFromShadow(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2092]++;
-    size_t off = static_cast<size_t>(idx) * 32;
+    uint8_t idx = pCtx[0x2092];
+    if (idx < 8) pCtx[0x2092] = idx + 1;
+    size_t off = static_cast<size_t>(idx & 7u) * 32;
     *reinterpret_cast<void**>(pCtx + 0x1F90 + off) = *reinterpret_cast<void**>(pCtx + 0x480);
     std::memcpy(pCtx + 0x1F98 + off, pCtx + 0x488, 16);
     *reinterpret_cast<uint32_t*>(pCtx + 0x1FA8 + off) = *reinterpret_cast<uint32_t*>(pCtx + 0x498);
@@ -1230,8 +1230,8 @@ void GXDeviceContext_PushBlendStateFromShadow(uint8_t* pCtx) {
 
 // 0x21a1fc0 (71 B): GXDeviceContext_PopBlendStateToGnmOnly
 void GXDeviceContext_PopBlendStateToGnmOnly(uint8_t* pCtx) {
-    uint8_t idx = --pCtx[0x2092];
-    size_t off = static_cast<size_t>(idx) * 32;
+    uint8_t idx = (pCtx[0x2092] > 0) ? --pCtx[0x2092] : 0;
+    size_t off = static_cast<size_t>(idx & 7u) * 32;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pGnmCtx + 0xBC00) = *reinterpret_cast<void**>(pCtx + 0x1F90 + off);
     std::memcpy(pGnmCtx + 0xBC98, pCtx + 0x1F98 + off, 16);
@@ -1240,8 +1240,9 @@ void GXDeviceContext_PopBlendStateToGnmOnly(uint8_t* pCtx) {
 
 // 0x21a1f70 (67 B): GXDeviceContext_PushBlendStateFromGnm
 void GXDeviceContext_PushBlendStateFromGnm(uint8_t* pCtx) {
-    uint8_t idx = pCtx[0x2092]++;
-    size_t off = static_cast<size_t>(idx) * 32;
+    uint8_t idx = pCtx[0x2092];
+    if (idx < 8) pCtx[0x2092] = idx + 1;
+    size_t off = static_cast<size_t>(idx & 7u) * 32;
     uint8_t* pGnmCtx = *reinterpret_cast<uint8_t**>(pCtx + 0x08);
     *reinterpret_cast<void**>(pCtx + 0x1F90 + off) = *reinterpret_cast<void**>(pGnmCtx + 0xBC00);
     std::memcpy(pCtx + 0x1F98 + off, pGnmCtx + 0xBC98, 16);
@@ -1546,10 +1547,10 @@ static inline void GXDeviceContext_FlushStageConstantBuffers(
             for (uint32_t s = cur; s < end; ++s) {
                 uint8_t* pBuf = *reinterpret_cast<uint8_t**>(pCtx + ctxCbsOff + static_cast<size_t>(s) * 8);
                 if (pBuf) {
-                    uint64_t req = (1ULL << s) | stageUsageBit;
-                    uint64_t curUsage = static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(pBuf + 0x44));
+                    uint32_t req = (1u << s) | static_cast<uint32_t>(stageUsageBit);
+                    uint32_t curUsage = *reinterpret_cast<uint32_t*>(pBuf + 0x44);
                     if ((curUsage & req) != req) {
-                        __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pBuf + 0x44), req);
+                        __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pBuf + 0x44), req);
                     }
                 }
             }
@@ -1963,12 +1964,15 @@ bool GXRenderTargetResource_BlitOrClearFullscreenQuad(
     uint8_t* pQuadResources = *reinterpret_cast<uint8_t**>(pGlobal5540dd8 + 0x6078);
     if (!pQuadResources) return false;
 
-    bool hasCustomScissor = (pOptionalScissorRect[0] != 0) ||
-                            (pOptionalScissorRect[2] != 0) ||
-                            (pOptionalScissorRect[1] != 0);
+    bool hasCustomScissor = pOptionalScissorRect &&
+                            ((pOptionalScissorRect[0] != 0) ||
+                             (pOptionalScissorRect[2] != 0) ||
+                             (pOptionalScissorRect[1] != 0) ||
+                             (pOptionalScissorRect[3] != 0));
 
     // 1. Save previous viewports, RTV0, DSV, BlendState, DepthStencilState, and optional Scissor/RS
     uint32_t savedVpCount   = *reinterpret_cast<uint32_t*>(pCtx + 0xC8);
+    if (savedVpCount > 16) savedVpCount = 16;
     size_t   savedVpBytes   = static_cast<size_t>(savedVpCount) * 24;
     uint8_t  savedViewports[16 * 24];
     std::memcpy(savedViewports, pCtx + 0xCC, savedVpBytes);
@@ -1982,11 +1986,13 @@ bool GXRenderTargetResource_BlitOrClearFullscreenQuad(
     void*    savedDss        = *reinterpret_cast<void**>(pCtx + 0x210);
     uint8_t  savedStencilRef = pCtx[0x218];
 
-    void*   savedRasterizer = nullptr;
-    uint8_t savedScissors[16 * 16];
+    void*    savedRasterizer = nullptr;
+    uint32_t savedScCount    = 0;
+    uint8_t  savedScissors[16 * 16];
     if (hasCustomScissor) {
         savedRasterizer = *reinterpret_cast<void**>(pCtx + 0x258);
-        uint32_t savedScCount = *reinterpret_cast<uint32_t*>(pCtx + 0x18C);
+        savedScCount = *reinterpret_cast<uint32_t*>(pCtx + 0x18C);
+        if (savedScCount > 16) savedScCount = 16;
         std::memcpy(savedScissors, pCtx + 0x190, static_cast<size_t>(savedScCount) * 16);
 
         uint8_t* pGlobal = *reinterpret_cast<uint8_t**>(GX_VMA(0x55406c8ULL));
@@ -2163,13 +2169,16 @@ bool GXRenderTargetResource_BlitOrClearFullscreenQuad(
     if (hasCustomScissor) {
         *reinterpret_cast<void**>(pCtx + 0x258)    = savedRasterizer;
         *reinterpret_cast<void**>(pGnmCtx + 0xB970) = savedRasterizer;
-        if (*reinterpret_cast<uint32_t*>(pCtx + 0x18C) <= 1) {
-            *reinterpret_cast<uint32_t*>(pCtx + 0x18C) = 1;
+        uint32_t restoreScCount = (savedScCount != 0) ? savedScCount : 1u;
+        *reinterpret_cast<uint32_t*>(pCtx + 0x18C) = savedScCount;
+        if (savedScCount != 0) {
+            std::memcpy(pCtx + 0x190, savedScissors, static_cast<size_t>(savedScCount) * 16);
         }
-        std::memcpy(pCtx + 0x190, savedScissors, 16);
-        CGGfxContext_SetScissorCount(pGnmCtx + 0xB528, 1);
-        *reinterpret_cast<uint32_t*>(pGnmCtx + 0xBBFC) = 1;
-        std::memcpy(pGnmCtx + 0xBAF8, savedScissors, 16);
+        CGGfxContext_SetScissorCount(pGnmCtx + 0xB528, restoreScCount);
+        *reinterpret_cast<uint32_t*>(pGnmCtx + 0xBBFC) = savedScCount;
+        if (savedScCount != 0) {
+            std::memcpy(pGnmCtx + 0xBAF8, savedScissors, static_cast<size_t>(savedScCount) * 16);
+        }
     }
 
     GXDeviceContext_FlushDirtyStateToGnmContext(pCtx);

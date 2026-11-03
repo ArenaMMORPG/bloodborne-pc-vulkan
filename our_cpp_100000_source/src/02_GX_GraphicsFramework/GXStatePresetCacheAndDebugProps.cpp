@@ -275,36 +275,16 @@ void GXStatePresetCache_UpdateSamplerAnisotropyPresets(
         }
     }
 
-    // Compare each shadow descriptor against the existing sampler state and recreate if dirty
+    // Compare each shadow descriptor against the existing sampler state and update in-place if dirty
     for (size_t i = 0; i < 19; ++i) {
+        if (self->samplerStates[i] == nullptr) {
+            continue;
+        }
         GXSamplerDesc currentDesc{};
         GXSamplerState_ExtractDesc(self->samplerStates[i], &currentDesc);
 
         if (std::memcmp(&currentDesc, &self->samplerShadowDescs[i], sizeof(GXSamplerDesc)) != 0) {
-            if (self->samplerStates[i] != nullptr) {
-                DLAllocator* ownerAlloc = GXStateObject_GetAllocator(self->samplerStates[i]);
-                ownerAlloc->vptr->Free(ownerAlloc, self->samplerStates[i]);
-                self->samplerStates[i] = nullptr;
-            }
-
-            uint8_t** ppGlobal = *reinterpret_cast<uint8_t***>(GX_VMA(0x55406c8ULL));
-            uint8_t* pDev = ppGlobal ? *ppGlobal : nullptr;
-            if (pDev != nullptr
-                && *reinterpret_cast<void**>(pDev + 0x00) != nullptr
-                && *reinterpret_cast<void**>(pDev + 0x08) != nullptr)
-            {
-                DLAllocator* devStateAlloc = *reinterpret_cast<DLAllocator**>(pDev + 0xDC10);
-                if (devStateAlloc != nullptr && *reinterpret_cast<void**>(pDev + 0x20) != nullptr) {
-                    alignas(16) uint8_t tempSamplerState[0x40]{};
-                    GXSamplerState_InitFromDesc(tempSamplerState, nullptr, &self->samplerShadowDescs[i]);
-
-                    void* newState = devStateAlloc->vptr->AllocateAligned(devStateAlloc, 0x40u, 0x10u);
-                    if (newState != nullptr) {
-                        std::memcpy(newState, tempSamplerState, 0x40u);
-                    }
-                    self->samplerStates[i] = newState;
-                }
-            }
+            GXSamplerState_InitFromDesc(self->samplerStates[i], nullptr, &self->samplerShadowDescs[i]);
         }
     }
 }
@@ -805,7 +785,9 @@ void GXStatePresetCache_InitializeAllPresets(
 
     // Snapshot all 19 sampler descriptors into `self->samplerShadowDescs` (+0x350 .. +0x78F)
     for (size_t i = 0; i < 19; ++i) {
-        GXSamplerState_ExtractDesc(self->samplerStates[i], &self->samplerShadowDescs[i]);
+        if (self->samplerStates[i] != nullptr) {
+            GXSamplerState_ExtractDesc(self->samplerStates[i], &self->samplerShadowDescs[i]);
+        }
     }
 }
 
@@ -840,24 +822,17 @@ static inline void DLPointerVector_ReallocateImpl(DLPointerVector* self, size_t 
 
     void** oldBegin = self->begin;
     void** oldEnd   = self->end;
-    if (oldBegin != oldEnd) {
-        void** dst = newBuf;
-        for (void** src = oldBegin; src != oldEnd; ++src, ++dst) {
-            if (dst != nullptr) {
-                *dst = *src;
-            }
-        }
-        oldBegin = self->begin;
-        oldEnd   = self->end;
+    ptrdiff_t count = oldEnd - oldBegin;
+    if (newBuf != nullptr && count > 0) {
+        std::memcpy(newBuf, oldBegin, static_cast<size_t>(count) * sizeof(void*));
     }
 
-    ptrdiff_t count = oldEnd - oldBegin;
     if (oldBegin != nullptr) {
         self->allocator->vptr->Free(self->allocator, oldBegin);
     }
 
-    self->cap   = newBuf + newCapElements;
-    self->end   = newBuf + count;
+    self->cap   = newBuf ? (newBuf + newCapElements) : nullptr;
+    self->end   = newBuf ? (newBuf + count) : nullptr;
     self->begin = newBuf;
 }
 
@@ -909,8 +884,6 @@ DLPointerVector* DLVectorPtr_MoveAssign(DLPointerVector* self, DLPointerVector* 
         self->begin = nullptr;
     }
 
-    self->allocator->vptr->GetHeapTag(self->allocator);
-    rhs->allocator->vptr->GetHeapTag(rhs->allocator);
     uint32_t selfTag = self->allocator->vptr->GetHeapTag(self->allocator);
     uint32_t rhsTag  = rhs->allocator->vptr->GetHeapTag(rhs->allocator);
 

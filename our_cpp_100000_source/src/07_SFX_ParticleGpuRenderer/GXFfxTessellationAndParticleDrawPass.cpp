@@ -272,11 +272,6 @@ extern "C" void* sub_2308900(void* pSelf, void* pItem, uint32_t typeId, uint64_t
 
         pAlloc = *reinterpret_cast<void**>(self + 0xa0);
         vtbl = *reinterpret_cast<void**>(pAlloc);
-        fnGetAvail = *reinterpret_cast<uint64_t (**)(void*)>(static_cast<uint8_t*>(vtbl) + 0x38);
-        fnGetAvail(pAlloc);
-
-        pAlloc = *reinterpret_cast<void**>(self + 0xa0);
-        vtbl = *reinterpret_cast<void**>(pAlloc);
         auto fnAlloc = *reinterpret_cast<void* (**)(void*, uint64_t, uint64_t)>(static_cast<uint8_t*>(vtbl) + 0x58);
         uint64_t rawBuf = reinterpret_cast<uint64_t>(fnAlloc(pAlloc, *reinterpret_cast<uint32_t*>(self + 0x88), 0x10));
 
@@ -284,20 +279,24 @@ extern "C" void* sub_2308900(void* pSelf, void* pItem, uint32_t typeId, uint64_t
         vtbl = *reinterpret_cast<void**>(pAlloc);
         fnAlloc = *reinterpret_cast<void* (**)(void*, uint64_t, uint64_t)>(static_cast<uint8_t*>(vtbl) + 0x58);
         uint64_t* newBlock = static_cast<uint64_t*>(fnAlloc(pAlloc, 0x20, 0x8));
-        if (newBlock) {
-            newBlock[3] = 0;
-            newBlock[2] = 0;
-            newBlock[1] = 0;
-            newBlock[0] = 0;
+        if (!rawBuf || !newBlock) {
+            auto fnFree = *reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70);
+            if (newBlock) {
+                fnFree(pAlloc, newBlock);
+            }
+            if (rawBuf) {
+                fnFree(pAlloc, reinterpret_cast<void*>(rawBuf));
+            }
+            *reinterpret_cast<uint64_t**>(self + 0x30) = nullptr;
+            sub_ee5de0(6);
+            return nullptr;
         }
+        uint64_t blkEnd = rawBuf + *reinterpret_cast<uint32_t*>(self + 0x88);
+        newBlock[0] = rawBuf;
+        newBlock[1] = blkEnd;
+        newBlock[2] = rawBuf;
+        newBlock[3] = blkEnd;
         uint64_t blockPtrVal = reinterpret_cast<uint64_t>(newBlock);
-        if (newBlock[0] == 0) {
-            uint64_t blkEnd = rawBuf + *reinterpret_cast<uint32_t*>(self + 0x88);
-            newBlock[2] = rawBuf;
-            newBlock[0] = rawBuf;
-            newBlock[3] = blkEnd;
-            newBlock[1] = blkEnd;
-        }
         *reinterpret_cast<uint64_t**>(self + 0x30) = newBlock;
         sub_2305560(self + 0x38, &blockPtrVal);
         sub_29416c0(self + 0x60, &rawBuf);
@@ -392,15 +391,23 @@ extern "C" void* sub_2308900(void* pSelf, void* pItem, uint32_t typeId, uint64_t
         uint8_t* pBuckets = *reinterpret_cast<uint8_t**>(pMgr + 0x40);
         uint8_t* pIter = *reinterpret_cast<uint8_t**>(pBuckets + bucket * 48 + 0x10);
         uint8_t* pFound = pHead;
+        uint8_t* pWhere = pHead;
         if (pIter != pHead) {
             uint8_t* pBucketEnd = **reinterpret_cast<uint8_t***>(pBuckets + ((bucket * 2) | 1ULL) * 24 + 0x10);
             while (pIter != pBucketEnd) {
                 uint64_t iterKey = *reinterpret_cast<uint64_t*>(pIter + 0x10);
                 if (iterKey >= key) {
-                    pFound = (key < iterKey) ? pHead : pIter;
+                    if (key < iterKey) {
+                        pWhere = pIter;
+                    } else {
+                        pFound = pIter;
+                    }
                     break;
                 }
                 pIter = *reinterpret_cast<uint8_t**>(pIter);
+            }
+            if (pFound == pHead && pWhere == pHead) {
+                pWhere = pBucketEnd;
             }
         }
 
@@ -408,72 +415,39 @@ extern "C" void* sub_2308900(void* pSelf, void* pItem, uint32_t typeId, uint64_t
         if (pFound != pHead) {
             pSlot = reinterpret_cast<uint64_t*>(pFound + 0x18);
         } else {
-            uint64_t hashVal2 = computeParkMillerHash64(key, sub_2bbfd68);
-            uint64_t mask2 = *reinterpret_cast<uint64_t*>(pMgr + 0x60);
-            uint64_t bucket2 = hashVal2 & mask2;
-            if (bucket2 >= *reinterpret_cast<uint64_t*>(pMgr + 0x68)) {
-                bucket2 += ~(mask2 >> 1);
+            uint8_t* pOldFirst = *reinterpret_cast<uint8_t**>(pHead);
+            uint8_t* pOldPrev = *reinterpret_cast<uint8_t**>(pOldFirst + 0x8);
+            void* pNodeAlloc = *reinterpret_cast<void**>(pMgr + 0x30);
+            void* nodeAllocVtbl = *reinterpret_cast<void**>(pNodeAlloc);
+            auto fnNodeAlloc = *reinterpret_cast<uint8_t* (**)(void*, uint64_t, uint64_t)>(
+                static_cast<uint8_t*>(nodeAllocVtbl) + 0x58);
+            uint8_t* pNewNode = fnNodeAlloc(pNodeAlloc, 0x28, 0x8);
+            if (!pNewNode) {
+                handleContainerAllocFailure();
+                return nullptr;
             }
+            *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = pOldFirst ? pOldFirst : pNewNode;
+            *reinterpret_cast<uint8_t**>(pNewNode + 0x8) = pOldFirst ? pOldPrev : pNewNode;
+            *reinterpret_cast<uint64_t*>(pNewNode + 0x10) = key;
+            *reinterpret_cast<uint64_t*>(pNewNode + 0x18) = 0;
+            *reinterpret_cast<uint64_t*>(pNewNode + 0x20) = 0;
 
-            uint8_t* pHead2 = *reinterpret_cast<uint8_t**>(pMgr + 0x20);
-            uint8_t* pBuckets2 = *reinterpret_cast<uint8_t**>(pMgr + 0x40);
-            uint8_t* pFirst = *reinterpret_cast<uint8_t**>(pBuckets2 + bucket2 * 48 + 0x10);
-            uint8_t* pWhere = pHead2;
-            bool alreadyExists = false;
-            if (pFirst != pHead2) {
-                uint8_t* pCur = **reinterpret_cast<uint8_t***>(pBuckets2 + ((bucket2 * 2) | 1ULL) * 24 + 0x10);
-                while (pCur != pFirst) {
-                    pCur = *reinterpret_cast<uint8_t**>(pCur + 0x8);
-                    uint64_t curKey = *reinterpret_cast<uint64_t*>(pCur + 0x10);
-                    if (key >= curKey) {
-                        if (curKey >= key) {
-                            pSlot = reinterpret_cast<uint64_t*>(pCur + 0x18);
-                            alreadyExists = true;
-                        } else {
-                            pWhere = *reinterpret_cast<uint8_t**>(pCur);
-                        }
-                        break;
-                    }
-                }
-                if (!alreadyExists && pWhere == pHead2 && pCur == pFirst) {
-                    pWhere = pFirst;
-                }
+            uint64_t count = *reinterpret_cast<uint64_t*>(pMgr + 0x28);
+            if (count == 0x666666666666665ULL) {
+                sub_2bbf1b8(reinterpret_cast<const char*>(GX_VMA(0x4940378ULL)));
             }
+            *reinterpret_cast<uint64_t*>(pMgr + 0x28) = count + 1;
+            *reinterpret_cast<uint8_t**>(pOldFirst + 0x8) = pNewNode;
+            **reinterpret_cast<uint8_t***>(pNewNode + 0x8) = pNewNode;
 
-            if (!alreadyExists) {
-                uint8_t* pOldFirst = *reinterpret_cast<uint8_t**>(pHead2);
-                uint8_t* pOldPrev = *reinterpret_cast<uint8_t**>(pOldFirst + 0x8);
-                void* pNodeAlloc = *reinterpret_cast<void**>(pMgr + 0x30);
-                void* nodeAllocVtbl = *reinterpret_cast<void**>(pNodeAlloc);
-                auto fnNodeAlloc = *reinterpret_cast<uint8_t* (**)(void*, uint64_t, uint64_t)>(
-                    static_cast<uint8_t*>(nodeAllocVtbl) + 0x58);
-                uint8_t* pNewNode = fnNodeAlloc(pNodeAlloc, 0x28, 0x8);
-                if (!pNewNode) {
-                    handleContainerAllocFailure();
-                }
-                *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = pOldFirst ? pOldFirst : pNewNode;
-                *reinterpret_cast<uint8_t**>(pNewNode + 0x8) = pOldFirst ? pOldPrev : pNewNode;
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x10) = key;
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x18) = 0;
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x20) = 0;
-
-                uint64_t count = *reinterpret_cast<uint64_t*>(pMgr + 0x28);
-                if (count == 0x666666666666665ULL) {
-                    sub_2bbf1b8(reinterpret_cast<const char*>(GX_VMA(0x4940378ULL)));
-                }
-                *reinterpret_cast<uint64_t*>(pMgr + 0x28) = count + 1;
-                *reinterpret_cast<uint8_t**>(pOldFirst + 0x8) = pNewNode;
-                **reinterpret_cast<uint8_t***>(pNewNode + 0x8) = pNewNode;
-
-                FfxIter24 plistIter = {
-                    0ULL,
-                    0ULL,
-                    *reinterpret_cast<void**>(*reinterpret_cast<void**>(pMgr + 0x20))
-                };
-                FfxInsertResult32 insRes = {};
-                sub_2309e80(&insRes, pMgr + 0x18, pWhere, bucket2, plistIter);
-                pSlot = reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(insRes.pNode) + 0x18);
-            }
+            FfxIter24 plistIter = {
+                0ULL,
+                0ULL,
+                *reinterpret_cast<void**>(*reinterpret_cast<void**>(pMgr + 0x20))
+            };
+            FfxInsertResult32 insRes = {};
+            sub_2309e80(&insRes, pMgr + 0x18, pWhere, bucket, plistIter);
+            pSlot = reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(insRes.pNode) + 0x18);
 
             uint8_t* pSlotVec = pMgr + 0xa8;
             uint64_t vecCap = (*reinterpret_cast<uint64_t*>(pMgr + 0xc0) - *reinterpret_cast<uint64_t*>(pMgr + 0xb0)) >> 3;
@@ -559,44 +533,28 @@ extern "C" void sub_23087a0(void* pSelf) {
 
     void** pVec1Begin = *reinterpret_cast<void***>(self + 0x40);
     void** pVec1End = *reinterpret_cast<void***>(self + 0x48);
-    while (pVec1Begin != pVec1End) {
-        void* pElem = *pVec1Begin;
+    for (void** pIt = pVec1Begin; pIt != pVec1End; ++pIt) {
+        void* pElem = *pIt;
         if (pElem) {
             void* pAlloc = *reinterpret_cast<void**>(self + 0xa0);
             void* vtbl = *reinterpret_cast<void**>(pAlloc);
             auto fnFree = *reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70);
             fnFree(pAlloc, pElem);
-            *pVec1Begin = nullptr;
-            pVec1End = *reinterpret_cast<void***>(self + 0x48);
         }
-        size_t remBytes = static_cast<size_t>(
-            reinterpret_cast<uint8_t*>(pVec1End) - reinterpret_cast<uint8_t*>(pVec1Begin + 1));
-        sub_2bbe658(pVec1Begin, pVec1Begin + 1, remBytes);
-        pVec1End = *reinterpret_cast<void***>(self + 0x48) - 1;
-        *reinterpret_cast<void***>(self + 0x48) = pVec1End;
     }
-    pVec1Begin = *reinterpret_cast<void***>(self + 0x40);
     *reinterpret_cast<void***>(self + 0x48) = pVec1Begin;
 
     void** pVec2Begin = *reinterpret_cast<void***>(self + 0x68);
     void** pVec2End = *reinterpret_cast<void***>(self + 0x70);
-    while (pVec2Begin != pVec2End) {
-        void* pElem = *pVec2Begin;
+    for (void** pIt = pVec2Begin; pIt != pVec2End; ++pIt) {
+        void* pElem = *pIt;
         if (pElem) {
             void* pAlloc = *reinterpret_cast<void**>(self + 0xa0);
             void* vtbl = *reinterpret_cast<void**>(pAlloc);
             auto fnFree = *reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70);
             fnFree(pAlloc, pElem);
-            *pVec2Begin = nullptr;
-            pVec2End = *reinterpret_cast<void***>(self + 0x70);
         }
-        size_t remBytes = static_cast<size_t>(
-            reinterpret_cast<uint8_t*>(pVec2End) - reinterpret_cast<uint8_t*>(pVec2Begin + 1));
-        sub_2bbe658(pVec2Begin, pVec2Begin + 1, remBytes);
-        pVec2End = *reinterpret_cast<void***>(self + 0x70) - 1;
-        *reinterpret_cast<void***>(self + 0x70) = pVec2End;
     }
-    pVec2Begin = *reinterpret_cast<void***>(self + 0x68);
     *reinterpret_cast<void***>(self + 0x70) = pVec2Begin;
     *reinterpret_cast<uint64_t*>(self + 0x30) = 0;
 
@@ -688,23 +646,25 @@ extern "C" void sub_2308560(
         allocVtbl = *reinterpret_cast<void**>(pAlloc);
         fnAlloc = *reinterpret_cast<void* (**)(void*, uint64_t, uint64_t)>(static_cast<uint8_t*>(allocVtbl) + 0x58);
         uint64_t* newBlock = static_cast<uint64_t*>(fnAlloc(pAlloc, 0x20, 0x8));
-        if (newBlock) {
-            newBlock[3] = 0;
-            newBlock[2] = 0;
-            newBlock[1] = 0;
-            newBlock[0] = 0;
-        }
-        uint64_t blockPtrVal = reinterpret_cast<uint64_t>(newBlock);
-        if (newBlock[0] == 0) {
+        if (rawBuf && newBlock) {
             uint64_t blkEnd = rawBuf + *reinterpret_cast<uint32_t*>(self + 0x88);
-            newBlock[2] = rawBuf;
             newBlock[0] = rawBuf;
-            newBlock[3] = blkEnd;
             newBlock[1] = blkEnd;
+            newBlock[2] = rawBuf;
+            newBlock[3] = blkEnd;
+            uint64_t blockPtrVal = reinterpret_cast<uint64_t>(newBlock);
+            *reinterpret_cast<uint64_t**>(self + 0x30) = newBlock;
+            sub_2305560(self + 0x38, &blockPtrVal);
+            sub_29416c0(self + 0x60, &rawBuf);
+        } else {
+            auto fnFree = *reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(allocVtbl) + 0x70);
+            if (newBlock) {
+                fnFree(pAlloc, newBlock);
+            }
+            if (rawBuf) {
+                fnFree(pAlloc, reinterpret_cast<void*>(rawBuf));
+            }
         }
-        *reinterpret_cast<uint64_t**>(self + 0x30) = newBlock;
-        sub_2305560(self + 0x38, &blockPtrVal);
-        sub_29416c0(self + 0x60, &rawBuf);
     }
 
     if (*reinterpret_cast<uint64_t*>(self + 0x30) == 0) {
@@ -1058,146 +1018,6 @@ extern "C" void sub_23078a0(void* pSelf, void* pAllocator, void* pField08, void*
     }
 
     validateContainerHeap(pAllocator);
-    void* pAllocArg = pAllocator;
-    alignas(16) uint8_t tempHash[0x60] = {};
-    sub_2309350(tempHash, &pAllocArg);
-
-    if ((self + 0x18) != tempHash) {
-        _mm_storeu_ps(
-            reinterpret_cast<float*>(self + 0x60),
-            _mm_loadu_ps(reinterpret_cast<const float*>(tempHash + 0x48)));
-        *reinterpret_cast<float*>(self + 0x70) = *reinterpret_cast<const float*>(tempHash + 0x58);
-
-        uint8_t* pHead = *reinterpret_cast<uint8_t**>(self + 0x20);
-        uint8_t* pCur = *reinterpret_cast<uint8_t**>(pHead);
-        *reinterpret_cast<uint8_t**>(pHead) = pHead;
-        pHead = *reinterpret_cast<uint8_t**>(self + 0x20);
-        *reinterpret_cast<uint8_t**>(pHead + 0x8) = pHead;
-        *reinterpret_cast<uint64_t*>(self + 0x28) = 0;
-        while (pCur != *reinterpret_cast<uint8_t**>(self + 0x20)) {
-            uint8_t* pNext = *reinterpret_cast<uint8_t**>(pCur);
-            void* pNodeAlloc = *reinterpret_cast<void**>(self + 0x30);
-            void* vtbl = *reinterpret_cast<void**>(pNodeAlloc);
-            auto fnFree = *reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70);
-            fnFree(pNodeAlloc, pCur);
-            pCur = pNext;
-        }
-
-        void* pDstAlloc = *reinterpret_cast<void**>(self + 0x30);
-        void* pSrcAlloc = *reinterpret_cast<void**>(tempHash + 0x18);
-        void* dstVtbl = *reinterpret_cast<void**>(pDstAlloc);
-        (*reinterpret_cast<void (**)(void*)>(static_cast<uint8_t*>(dstVtbl) + 0x10))(pDstAlloc);
-        void* srcVtbl = *reinterpret_cast<void**>(pSrcAlloc);
-        (*reinterpret_cast<void (**)(void*)>(static_cast<uint8_t*>(srcVtbl) + 0x10))(pSrcAlloc);
-
-        uint64_t srcBucketBytes = *reinterpret_cast<uint64_t*>(tempHash + 0x30) - *reinterpret_cast<uint64_t*>(tempHash + 0x28);
-        uint64_t srcBucketCount = (srcBucketBytes >> 3) * 0xaaaaaaaaaaaaaaabULL;
-        *reinterpret_cast<uint64_t*>(self + 0x48) = *reinterpret_cast<uint64_t*>(self + 0x40);
-
-        FfxIter24 fillVal = { 0ULL, 0ULL, *reinterpret_cast<void**>(self + 0x20) };
-        FfxIter24 whereIter = { 0ULL, 0ULL, *reinterpret_cast<void**>(self + 0x40) };
-        FfxIter24 outIter = {};
-        sub_2309830(&outIter, self + 0x38, srcBucketCount, &fillVal, whereIter);
-
-        uint8_t* pTempHead = *reinterpret_cast<uint8_t**>(tempHash + 0x08);
-        for (uint8_t* pSrcNode = *reinterpret_cast<uint8_t**>(pTempHead);
-             pSrcNode != pTempHead;
-             pSrcNode = *reinterpret_cast<uint8_t**>(pSrcNode)) {
-            uint64_t key = *reinterpret_cast<uint64_t*>(pSrcNode + 0x10);
-            uint64_t hashVal = computeParkMillerHash64(key, sub_2bbfd68);
-            uint64_t mask = *reinterpret_cast<uint64_t*>(self + 0x60);
-            uint64_t bucket = hashVal & mask;
-            if (bucket >= *reinterpret_cast<uint64_t*>(self + 0x68)) {
-                bucket += ~(mask >> 1);
-            }
-
-            uint8_t* pSelfHead = *reinterpret_cast<uint8_t**>(self + 0x20);
-            uint8_t* pSelfBuckets = *reinterpret_cast<uint8_t**>(self + 0x40);
-            uint8_t* pFirst = *reinterpret_cast<uint8_t**>(pSelfBuckets + bucket * 48 + 0x10);
-            uint8_t* pWhere = pSelfHead;
-            bool exists = false;
-            if (pFirst != pSelfHead) {
-                uint8_t* pScan = **reinterpret_cast<uint8_t***>(pSelfBuckets + ((bucket * 2) | 1ULL) * 24 + 0x10);
-                while (pScan != pFirst) {
-                    pScan = *reinterpret_cast<uint8_t**>(pScan + 0x8);
-                    uint64_t scanKey = *reinterpret_cast<uint64_t*>(pScan + 0x10);
-                    if (key >= scanKey) {
-                        if (scanKey >= key) {
-                            exists = true;
-                        } else {
-                            pWhere = *reinterpret_cast<uint8_t**>(pScan);
-                        }
-                        break;
-                    }
-                }
-                if (!exists && pWhere == pSelfHead && pScan == pFirst) {
-                    pWhere = pFirst;
-                }
-            }
-
-            if (!exists) {
-                uint8_t* pOldFirst = *reinterpret_cast<uint8_t**>(pSelfHead);
-                uint8_t* pOldPrev = *reinterpret_cast<uint8_t**>(pOldFirst + 0x8);
-                void* pNodeAlloc = *reinterpret_cast<void**>(self + 0x30);
-                void* vtbl = *reinterpret_cast<void**>(pNodeAlloc);
-                auto fnNodeAlloc = *reinterpret_cast<uint8_t* (**)(void*, uint64_t, uint64_t)>(
-                    static_cast<uint8_t*>(vtbl) + 0x58);
-                uint8_t* pNewNode = fnNodeAlloc(pNodeAlloc, 0x28, 0x8);
-                if (!pNewNode) {
-                    handleContainerAllocFailure();
-                }
-                *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = pOldFirst ? pOldFirst : pNewNode;
-                *reinterpret_cast<uint8_t**>(pNewNode + 0x8) = pOldFirst ? pOldPrev : pNewNode;
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x10) = *reinterpret_cast<uint64_t*>(pSrcNode + 0x10);
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x18) = *reinterpret_cast<uint64_t*>(pSrcNode + 0x18);
-                *reinterpret_cast<uint64_t*>(pNewNode + 0x20) = *reinterpret_cast<uint64_t*>(pSrcNode + 0x20);
-
-                uint64_t cnt = *reinterpret_cast<uint64_t*>(self + 0x28);
-                if (cnt == 0x666666666666665ULL) {
-                    sub_2bbf1b8(reinterpret_cast<const char*>(GX_VMA(0x4940378ULL)));
-                }
-                *reinterpret_cast<uint64_t*>(self + 0x28) = cnt + 1;
-                *reinterpret_cast<uint8_t**>(pOldFirst + 0x8) = pNewNode;
-                **reinterpret_cast<uint8_t***>(pNewNode + 0x8) = pNewNode;
-
-                FfxIter24 plistIter = {
-                    0ULL,
-                    0ULL,
-                    *reinterpret_cast<void**>(*reinterpret_cast<void**>(self + 0x20))
-                };
-                FfxInsertResult32 insRes = {};
-                sub_2309e80(&insRes, self + 0x18, pWhere, bucket, plistIter);
-            }
-        }
-    }
-
-    void* pTempBuckets = *reinterpret_cast<void**>(tempHash + 0x28);
-    if (pTempBuckets) {
-        void* pBAlloc = *reinterpret_cast<void**>(tempHash + 0x40);
-        void* vtbl = *reinterpret_cast<void**>(pBAlloc);
-        (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(pBAlloc, pTempBuckets);
-        *reinterpret_cast<uint64_t*>(tempHash + 0x38) = 0;
-        *reinterpret_cast<uint64_t*>(tempHash + 0x30) = 0;
-        *reinterpret_cast<uint64_t*>(tempHash + 0x28) = 0;
-    }
-
-    uint8_t* pTempHead = *reinterpret_cast<uint8_t**>(tempHash + 0x08);
-    uint8_t* pTCur = *reinterpret_cast<uint8_t**>(pTempHead);
-    *reinterpret_cast<uint8_t**>(pTempHead) = pTempHead;
-    pTempHead = *reinterpret_cast<uint8_t**>(tempHash + 0x08);
-    *reinterpret_cast<uint8_t**>(pTempHead + 0x8) = pTempHead;
-    *reinterpret_cast<uint64_t*>(tempHash + 0x10) = 0;
-    while (pTCur != *reinterpret_cast<uint8_t**>(tempHash + 0x08)) {
-        uint8_t* pTNext = *reinterpret_cast<uint8_t**>(pTCur);
-        void* pTAlloc = *reinterpret_cast<void**>(tempHash + 0x18);
-        void* vtbl = *reinterpret_cast<void**>(pTAlloc);
-        (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(pTAlloc, pTCur);
-        pTCur = pTNext;
-    }
-    void* pTAlloc = *reinterpret_cast<void**>(tempHash + 0x18);
-    void* vtbl = *reinterpret_cast<void**>(pTAlloc);
-    (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(pTAlloc, pTCur);
-
     sub_23094c0(self + 0xa8, 0x400ULL);
 }
 
@@ -1213,6 +1033,7 @@ extern "C" void sub_23077a0(void* pVec, uint64_t newCap) {
     uint64_t* pNewBuf = fnAlloc(pAlloc, newCap * 8ULL, 0x8ULL);
     if (!pNewBuf) {
         handleContainerAllocFailure();
+        return;
     }
 
     uint64_t* pBegin = *reinterpret_cast<uint64_t**>(vec + 0x8);
@@ -1511,6 +1332,7 @@ extern "C" void sub_2306700(void* pList, void* pWhereNode, const void* pSrcData)
     uint8_t* pNewNode = fnAlloc(pAlloc, 0x270ULL, 0x10ULL);
     if (!pNewNode) {
         handleContainerAllocFailure();
+        return;
     }
 
     *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = whereNode ? whereNode : pNewNode;
@@ -1579,7 +1401,6 @@ extern "C" void sub_2306700(void* pList, void* pWhereNode, const void* pSrcData)
     *reinterpret_cast<uint64_t*>(pNewNode + 0x240) = *reinterpret_cast<const uint64_t*>(src + 0x230);
     *reinterpret_cast<uint64_t*>(pNewNode + 0x238) = *reinterpret_cast<const uint64_t*>(src + 0x228);
     *reinterpret_cast<uint64_t*>(pNewNode + 0x230) = *reinterpret_cast<const uint64_t*>(src + 0x220);
-    *reinterpret_cast<uint64_t*>(pNewNode + 0x30)  = *reinterpret_cast<const uint64_t*>(src + 0x20);
 
     uint64_t count = *reinterpret_cast<uint64_t*>(list + 0x10);
     if (count == 0x69069069069068ULL) {
@@ -1725,6 +1546,7 @@ extern "C" void sub_2305f50(
         uint8_t* pNewBuf = fnAlloc(pAlloc, newCap * 80ULL, 0x10ULL);
         if (!pNewBuf) {
             handleContainerAllocFailure();
+            return;
         }
 
         pBegin = *reinterpret_cast<uint8_t**>(vec + 0x8);
@@ -2106,6 +1928,7 @@ extern "C" void sub_2305640(void* pVec) {
     uint8_t* pNewBuf = fnAlloc(pAlloc, allocBytes, 0x8ULL);
     if (!pNewBuf) {
         handleContainerAllocFailure();
+        return;
     }
 
     pBegin = *reinterpret_cast<uint8_t**>(vec + 0x8);
@@ -2556,66 +2379,45 @@ extern "C" void sub_2304a60(void* pSelf, uint64_t key, void* pVal20, uint32_t va
     }
 
     if (pFound == pHead) {
-        uint64_t hashVal2 = computeParkMillerHash64(key, sub_2bbfd68);
-        uint64_t mask2 = *reinterpret_cast<uint64_t*>(self + 0x6a8);
-        uint64_t bucket2 = hashVal2 & mask2;
-        if (bucket2 >= *reinterpret_cast<uint64_t*>(self + 0x6b0)) {
-            bucket2 += ~(mask2 >> 1);
-        }
-
-        pHead = *reinterpret_cast<uint8_t**>(self + 0x668);
-        pBuckets = *reinterpret_cast<uint8_t**>(self + 0x688);
-        uint8_t* pScan = *reinterpret_cast<uint8_t**>(pBuckets + bucket2 * 48 + 0x10);
         uint8_t* pTargetNode = pHead;
-        if (pScan != pHead) {
-            uint8_t* pEnd = **reinterpret_cast<uint8_t***>(pBuckets + ((bucket2 * 2) | 1ULL) * 24 + 0x10);
-            while (pScan != pEnd) {
-                uint64_t scanKey = *reinterpret_cast<uint64_t*>(pScan + 0x10);
-                if (scanKey >= key) {
-                    pTargetNode = (scanKey > key) ? pHead : pScan;
-                    break;
-                }
-                pScan = *reinterpret_cast<uint8_t**>(pScan);
-            }
+        uint8_t* pOldFirst = *reinterpret_cast<uint8_t**>(pHead);
+        uint8_t* pOldPrev  = *reinterpret_cast<uint8_t**>(pOldFirst + 0x8);
+        void* pNodeAlloc   = *reinterpret_cast<void**>(self + 0x678);
+        void* vtbl         = *reinterpret_cast<void**>(pNodeAlloc);
+        auto fnAlloc = *reinterpret_cast<uint8_t* (**)(void*, uint64_t, uint64_t)>(
+            static_cast<uint8_t*>(vtbl) + 0x58);
+        uint8_t* pNewNode = fnAlloc(pNodeAlloc, 0x30ULL, 0x8ULL);
+        if (!pNewNode) {
+            handleContainerAllocFailure();
+            lockVtbl = *reinterpret_cast<void**>(pLock);
+            (*reinterpret_cast<void (**)(void*)>(static_cast<uint8_t*>(lockVtbl) + 0x28))(pLock);
+            return;
         }
 
-        if (pTargetNode == pHead) {
-            uint8_t* pOldFirst = *reinterpret_cast<uint8_t**>(pHead);
-            uint8_t* pOldPrev  = *reinterpret_cast<uint8_t**>(pOldFirst + 0x8);
-            void* pNodeAlloc   = *reinterpret_cast<void**>(self + 0x678);
-            void* vtbl         = *reinterpret_cast<void**>(pNodeAlloc);
-            auto fnAlloc = *reinterpret_cast<uint8_t* (**)(void*, uint64_t, uint64_t)>(
-                static_cast<uint8_t*>(vtbl) + 0x58);
-            uint8_t* pNewNode = fnAlloc(pNodeAlloc, 0x30ULL, 0x8ULL);
-            if (!pNewNode) {
-                handleContainerAllocFailure();
-            }
+        *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = pOldFirst ? pOldFirst : pNewNode;
+        *reinterpret_cast<uint8_t**>(pNewNode + 0x8) = pOldFirst ? pOldPrev  : pNewNode;
+        *reinterpret_cast<uint64_t*>(pNewNode + 0x10) = key;
+        *reinterpret_cast<uint64_t*>(pNewNode + 0x18) = 0;
+        *reinterpret_cast<uint64_t*>(pNewNode + 0x20) = 0;
+        *reinterpret_cast<uint64_t*>(pNewNode + 0x28) = 0;
 
-            *reinterpret_cast<uint8_t**>(pNewNode + 0x0) = pOldFirst ? pOldFirst : pNewNode;
-            *reinterpret_cast<uint8_t**>(pNewNode + 0x8) = pOldFirst ? pOldPrev  : pNewNode;
-            *reinterpret_cast<uint64_t*>(pNewNode + 0x10) = key;
-            *reinterpret_cast<uint64_t*>(pNewNode + 0x18) = 0;
-            *reinterpret_cast<uint64_t*>(pNewNode + 0x20) = 0;
-            *reinterpret_cast<uint64_t*>(pNewNode + 0x28) = 0;
-
-            uint64_t count = *reinterpret_cast<uint64_t*>(self + 0x670);
-            if (count == 0x555555555555554ULL) {
-                sub_2bbf1b8(reinterpret_cast<const char*>(GX_VMA(0x4940378ULL)));
-            }
-            *reinterpret_cast<uint64_t*>(self + 0x670) = count + 1ULL;
-            *reinterpret_cast<uint8_t**>(pOldFirst + 0x8) = pNewNode;
-            **reinterpret_cast<uint8_t***>(pNewNode + 0x8) = pNewNode;
-
-            uint8_t* pFirstNode = *reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(self + 0x668));
-            FfxIter24 plistIter = { 0ULL, 0ULL, pFirstNode };
-            FfxInsertResult32 insRes = {};
-            sub_2307390(
-                &insRes,
-                self + 0x660,
-                reinterpret_cast<const uint64_t*>(pFirstNode + 0x10),
-                plistIter);
-            pTargetNode = static_cast<uint8_t*>(insRes.pNode);
+        uint64_t count = *reinterpret_cast<uint64_t*>(self + 0x670);
+        if (count == 0x555555555555554ULL) {
+            sub_2bbf1b8(reinterpret_cast<const char*>(GX_VMA(0x4940378ULL)));
         }
+        *reinterpret_cast<uint64_t*>(self + 0x670) = count + 1ULL;
+        *reinterpret_cast<uint8_t**>(pOldFirst + 0x8) = pNewNode;
+        **reinterpret_cast<uint8_t***>(pNewNode + 0x8) = pNewNode;
+
+        uint8_t* pFirstNode = *reinterpret_cast<uint8_t**>(*reinterpret_cast<uint8_t**>(self + 0x668));
+        FfxIter24 plistIter = { 0ULL, 0ULL, pFirstNode };
+        FfxInsertResult32 insRes = {};
+        sub_2307390(
+            &insRes,
+            self + 0x660,
+            reinterpret_cast<const uint64_t*>(pFirstNode + 0x10),
+            plistIter);
+        pTargetNode = static_cast<uint8_t*>(insRes.pNode);
 
         *reinterpret_cast<uint64_t*>(pTargetNode + 0x18) = key;
         *reinterpret_cast<void**>(pTargetNode + 0x20)    = pVal20;

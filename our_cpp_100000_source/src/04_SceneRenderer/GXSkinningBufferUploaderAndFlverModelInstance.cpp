@@ -352,17 +352,17 @@ void sub_21c8c50(void* self, const float* bone_matrices,
         size_t alloc_bytes = static_cast<size_t>(bone_count) * 48;
 
         auto* tls_base = static_cast<uint8_t*>(g_tls_frame_heap_53e4658);
-        void* alloc_obj = tls_base + 0xc8;
+        void* alloc_obj = (tls_base != nullptr) ? static_cast<void*>(tls_base + 0xc8) : g_fallback_frame_alloc_5540688;
         auto* vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
         using AllocFn = void* (*)(void*, size_t, size_t);
         void* temp_buf = reinterpret_cast<AllocFn>(vtbl[0x58 / 8])(alloc_obj, alloc_bytes, 16);
-        if (temp_buf == nullptr) {
+        if (temp_buf == nullptr && alloc_obj != g_fallback_frame_alloc_5540688) {
             alloc_obj = g_fallback_frame_alloc_5540688;
             vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
             temp_buf = reinterpret_cast<AllocFn>(vtbl[0x58 / 8])(alloc_obj, alloc_bytes, 16);
-            if (temp_buf == nullptr) {
-                return;
-            }
+        }
+        if (temp_buf == nullptr) {
+            return;
         }
 
         if (*reinterpret_cast<void**>(s + 0x18) != nullptr) {
@@ -544,7 +544,19 @@ void sub_21c8c50(void* self, const float* bone_matrices,
                     sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_prv, 0, 0, temp_buf, 0, 0);
                     s[0xa4] = 1;
                 } else {
-                    // prev_bone_matrices == nullptr, but model[0x1ec] != 0
+                    // prev_bone_matrices == nullptr, but model[0x1ec] != 0:
+                    // 1) Upload identity to cb_prv first, then compute bone_matrices * inv_bind once
+                    //    and reuse it for both cb_vel and cb_main / shadow_buf.
+                    auto* dst_id = static_cast<float*>(temp_buf);
+                    for (int32_t b = 0; b < static_cast<int32_t>(bone_count); ++b, dst_id += 12) {
+                        _mm_storeu_ps(dst_id,     _mm_load_ps(kIdentity3x4_5128a10));
+                        _mm_storeu_ps(dst_id + 4, _mm_load_ps(kIdentity3x4_5128a10 + 4));
+                        _mm_storeu_ps(dst_id + 8, _mm_load_ps(kIdentity3x4_5128a10 + 8));
+                    }
+                    int64_t r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
+                    void* cb_prv = (*reinterpret_cast<void***>(s + 0x18))[r_idx];
+                    sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_prv, 0, 0, temp_buf, 0, 0);
+
                     if (bone_count > 0) {
                         const __m128 c_0001 = _mm_load_ps(kSimd0001_4920ca0);
                         for (int64_t b = 0; b < bone_count; ++b) {
@@ -569,33 +581,33 @@ void sub_21c8c50(void* self, const float* bone_matrices,
                             }
                         }
                     }
-                    int64_t r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
+                    r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
                     void* cb_vel = (*reinterpret_cast<void***>(s + 0x10))[r_idx];
                     sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_vel, 0, 0, temp_buf, 0, 0);
 
-                    auto* dst_id = static_cast<float*>(temp_buf);
-                    for (int32_t b = 0; b < static_cast<int32_t>(bone_count); ++b, dst_id += 12) {
-                        _mm_storeu_ps(dst_id,     _mm_load_ps(kIdentity3x4_5128a10));
-                        _mm_storeu_ps(dst_id + 4, _mm_load_ps(kIdentity3x4_5128a10 + 4));
-                        _mm_storeu_ps(dst_id + 8, _mm_load_ps(kIdentity3x4_5128a10 + 8));
-                    }
                     r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
-                    void* cb_prv = (*reinterpret_cast<void***>(s + 0x18))[r_idx];
-                    sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_prv, 0, 0, temp_buf, 0, 0);
+                    void* shadow_buf = *reinterpret_cast<void**>(s + r_idx * 8 + 0x20);
+                    if (shadow_buf != nullptr) {
+                        sub_261a1b0(shadow_buf, temp_buf, alloc_bytes);
+                        r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
+                    }
+                    void* cb_main = (*reinterpret_cast<void***>(s + 0x08))[r_idx];
+                    sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_main, 0, 0, temp_buf, 0, 0);
+
+                    auto* free_vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
+                    using FreeFn = void (*)(void*, void*);
+                    reinterpret_cast<FreeFn>(free_vtbl[0x70 / 8])(alloc_obj, temp_buf);
+                    return;
                 }
             } else {
                 // model[0x1ec] == 0
-                int64_t r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
-                void* cb_cur = (*reinterpret_cast<void***>(s + 0x08))[r_idx];
-                sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_cur, 0, 0, bone_matrices, 0, 0);
-
                 auto* dst_id = static_cast<float*>(temp_buf);
                 for (int32_t b = 0; b < static_cast<int32_t>(bone_count); ++b, dst_id += 12) {
                     _mm_storeu_ps(dst_id,     _mm_load_ps(kIdentity3x4_5128a10));
                     _mm_storeu_ps(dst_id + 4, _mm_load_ps(kIdentity3x4_5128a10 + 4));
                     _mm_storeu_ps(dst_id + 8, _mm_load_ps(kIdentity3x4_5128a10 + 8));
                 }
-                r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
+                int64_t r_idx = *reinterpret_cast<int32_t*>(s + 0x98);
                 void* cb_prv = (*reinterpret_cast<void***>(s + 0x18))[r_idx];
                 sub_2168a20(cmd_ctx, cmd_ctx + 0xb730, cb_prv, 0, 0, temp_buf, 0, 0);
             }
@@ -651,10 +663,18 @@ void sub_21c8c50(void* self, const float* bone_matrices,
     int64_t ring_idx = next_idx;
     auto* vec_array = *reinterpret_cast<uint8_t**>(s + 0x00);
     auto* tls_base = static_cast<uint8_t*>(g_tls_frame_heap_53e4658);
-    void* alloc_obj = tls_base + 0xc8;
+    void* alloc_obj = (tls_base != nullptr) ? static_cast<void*>(tls_base + 0xc8) : g_fallback_frame_alloc_5540688;
     auto* vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
     using AllocFn = void* (*)(void*, size_t, size_t);
     void* palette_buf = reinterpret_cast<AllocFn>(vtbl[0x58 / 8])(alloc_obj, 0x540, 16);
+    if (palette_buf == nullptr && alloc_obj != g_fallback_frame_alloc_5540688) {
+        alloc_obj = g_fallback_frame_alloc_5540688;
+        vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
+        palette_buf = reinterpret_cast<AllocFn>(vtbl[0x58 / 8])(alloc_obj, 0x540, 16);
+    }
+    if (palette_buf == nullptr) {
+        return;
+    }
 
     auto* vec_entry = vec_array + ring_idx * 40;
     void** cb_begin = *reinterpret_cast<void***>(vec_entry + 0x08);
@@ -711,6 +731,27 @@ void sub_21c8c50(void* self, const float* bone_matrices,
                                 _mm_storeu_ps(dst_m + r * 4, res);
                             }
                         }
+                    } else {
+                        uint16_t single_bone = *reinterpret_cast<uint16_t*>(submesh_info + 0x16);
+                        const auto* inv_bind = *reinterpret_cast<const float* const*>(model + 0x1f0) + static_cast<size_t>(single_bone) * 12;
+                        const float* src_m = bone_matrices + static_cast<size_t>(single_bone) * 12;
+                        auto* dst_m = static_cast<float*>(palette_buf);
+
+                        __m128 ib0 = _mm_loadu_ps(inv_bind);
+                        __m128 ib1 = _mm_loadu_ps(inv_bind + 4);
+                        __m128 ib2 = _mm_loadu_ps(inv_bind + 8);
+
+                        for (int r = 0; r < 3; ++r) {
+                            __m128 row = _mm_loadu_ps(src_m + r * 4);
+                            __m128 x = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(row), 0x00));
+                            __m128 y = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(row), 0x55));
+                            __m128 z = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(row), 0xaa));
+                            __m128 w = _mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(row), 0xff));
+                            __m128 res = _mm_add_ps(_mm_mul_ps(ib0, x), _mm_mul_ps(y, ib1));
+                            res = _mm_add_ps(_mm_mul_ps(z, ib2), res);
+                            res = _mm_add_ps(_mm_mul_ps(w, c_0001), res);
+                            _mm_storeu_ps(dst_m + r * 4, res);
+                        }
                     }
                 }
 
@@ -726,13 +767,9 @@ void sub_21c8c50(void* self, const float* bone_matrices,
         }
     }
 
-    if (palette_buf != nullptr) {
-        auto* tls_base2 = static_cast<uint8_t*>(g_tls_frame_heap_53e4658);
-        void* alloc_obj2 = tls_base2 + 0xc8;
-        auto* free_vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj2);
-        using FreeFn = void (*)(void*, void*);
-        reinterpret_cast<FreeFn>(free_vtbl[0x70 / 8])(alloc_obj2, palette_buf);
-    }
+    auto* free_vtbl = *reinterpret_cast<uintptr_t**>(alloc_obj);
+    using FreeFn = void (*)(void*, void*);
+    reinterpret_cast<FreeFn>(free_vtbl[0x70 / 8])(alloc_obj, palette_buf);
 }
 
 // ============================================================================
@@ -766,6 +803,9 @@ uint8_t sub_21c8570(void* self, void* model_res, uint8_t extra_ring_frames) {
 
     *reinterpret_cast<void**>(s + 0xb0) = model;
     uint32_t ring_count = static_cast<uint32_t>(extra_ring_frames) + 1u;
+    if (ring_count > 14u) {
+        ring_count = 14u;
+    }
     *reinterpret_cast<uint32_t*>(s + 0x9c) = ring_count;
     *reinterpret_cast<uint32_t*>(s + 0xa0) = *reinterpret_cast<uint32_t*>(model + 0x1c);
 
@@ -1266,26 +1306,6 @@ void sub_21c7890(void* mat_list, void* inspector) {
     auto* insp = static_cast<uint8_t*>(inspector);
     uint64_t cookie = *g_stack_cookie_ptr_53e3be0;
 
-    if (g_tls_temp_heap_53e4568 == nullptr) {
-        sub_207d250();
-    }
-    void* temp_heap = static_cast<uint8_t*>(g_tls_temp_heap_53e4568) + 0x28;
-    uint8_t flags_buf[8] = {};
-    auto* th_vtbl = *reinterpret_cast<uintptr_t**>(temp_heap);
-    using CheckFn = void (*)(void*, void*, uint32_t);
-    reinterpret_cast<CheckFn>(th_vtbl[0x20 / 8])(flags_buf, temp_heap, 0);
-    if ((flags_buf[0] & 0x20) == 0) {
-        sub_20b55b0(nullptr, 0x3e, kErrIncompatHeap_4737dc0);
-    }
-
-    struct TempVec {
-        uint64_t pad0;
-        void**   begin;
-        void**   end;
-        void**   cap;
-        void*    alloc;
-    } visited = { 0, nullptr, nullptr, nullptr, temp_heap };
-
     void** begin = *reinterpret_cast<void***>(m + 0x10);
     void** end   = *reinterpret_cast<void***>(m + 0x18);
     if (begin != end) {
@@ -1301,19 +1321,6 @@ void sub_21c7890(void* mat_list, void* inspector) {
             if (found != it) {
                 continue;
             }
-
-            // Push *it into visited vector
-            if (visited.end == visited.cap) {
-                size_t cur_sz = static_cast<size_t>(visited.end - visited.begin);
-                size_t half = cur_sz >> 1;
-                size_t new_cap = (0x1FFFFFFFFFFFFFFFull - half < cur_sz) ? 0 : (cur_sz + half);
-                if (new_cap < cur_sz + 1) new_cap = cur_sz + 1;
-                sub_21c7e80(&visited, new_cap);
-            }
-            if (visited.end != nullptr) {
-                *visited.end = *it;
-            }
-            ++visited.end;
 
             auto* mat_obj = static_cast<uint8_t*>(*it);
             const char* name_utf8 = (*reinterpret_cast<uint64_t*>(mat_obj + 0x58) >= 8)
@@ -1380,12 +1387,6 @@ void sub_21c7890(void* mat_list, void* inspector) {
                     *reinterpret_cast<void***>(insp + 0x10) = stk_end - 1;
                 }
             }
-        }
-
-        if (visited.begin != nullptr) {
-            auto* a_vtbl = *reinterpret_cast<uintptr_t**>(visited.alloc);
-            using FreeFn = void (*)(void*, void*);
-            reinterpret_cast<FreeFn>(a_vtbl[0x70 / 8])(visited.alloc, visited.begin);
         }
     }
 
@@ -2053,17 +2054,6 @@ void sub_21c6410(void* self) {
     *reinterpret_cast<uint32_t*>(s + 0x204) = 0;
     *reinterpret_cast<uint32_t*>(s + 0x208) = 0;
 
-    void** mat_cur = *reinterpret_cast<void***>(s + 0x220);
-    if (mat_cur != *reinterpret_cast<void***>(s + 0x228)) {
-        for (; mat_cur != *reinterpret_cast<void***>(s + 0x228); ++mat_cur) {
-            void* elem = *mat_cur;
-            auto* vtbl = *reinterpret_cast<uintptr_t**>(elem);
-            reinterpret_cast<void (*)(void*)>(vtbl[0x48 / 8])(elem);
-        }
-        mat_cur = *reinterpret_cast<void***>(s + 0x220);
-    }
-    *reinterpret_cast<void***>(s + 0x228) = mat_cur;
-
     uint8_t out_iter[24] = {};
     void* vec_end   = *reinterpret_cast<void**>(s + 0x288);
     void* vec_begin = *reinterpret_cast<void**>(s + 0x280);
@@ -2103,7 +2093,7 @@ void sub_21c6410(void* self) {
     sub_21cda20(s + 0x268);
     *reinterpret_cast<void**>(s + 0x210) = g_vtable_53b6eb0;
 
-    mat_cur = *reinterpret_cast<void***>(s + 0x220);
+    void** mat_cur = *reinterpret_cast<void***>(s + 0x220);
     if (mat_cur != *reinterpret_cast<void***>(s + 0x228)) {
         for (; mat_cur != *reinterpret_cast<void***>(s + 0x228); ++mat_cur) {
             void* elem = *mat_cur;

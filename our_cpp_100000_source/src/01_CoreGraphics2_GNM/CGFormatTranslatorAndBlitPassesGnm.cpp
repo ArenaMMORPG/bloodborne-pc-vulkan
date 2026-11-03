@@ -1066,7 +1066,7 @@ static inline void CGSurfaceSyncTrackerGnm_TransitionDepthTargetPostOp(
     GX_CALL(void, 0x26b8bd0ULL, (void*, uint32_t, const void*, const void*, uint32_t), self, swz, dt_view, depth_resource, flag);
 }
 static inline uint32_t CGGpuBlitAndClearPassesGnm_GetNumSamples(uint32_t a, uint32_t b, uint32_t c) {
-    return GX_CALL(uint32_t, 0x26b80e0ULL, (uint32_t, uint32_t, uint32_t), a, b, c);
+    return GX_CALL(uint32_t, 0x26b7ab0ULL, (uint32_t, uint32_t, uint32_t), a, b, c);
 }
 static inline int32_t CGFormatTranslatorGnm_TranslateToGnmDataFormat(uint32_t* out_fmt, uint32_t engine_fmt) {
     return GX_CALL(int32_t, 0x26b7310ULL, (uint32_t*, uint32_t), out_fmt, engine_fmt);
@@ -2141,7 +2141,7 @@ void CGGpuBlitAndClearPassesGnm_ClearUnorderedAccessViewUint(
         GX_CALL(void, 0x26cd400ULL, (void*, void*, const void*), binder, gnmx_ctx, cs_hdr);
         const uint32_t subres = GX_CALL(uint32_t, 0x2164d40ULL, (uint32_t, uint32_t, uint32_t), mip_level, slice, mip_count);
         uint64_t sub_off = 0ULL, sub_size = 0ULL;
-        if (CGPipelineStatePackerGnm_GetSubresourceByteOffsetAndSize(&sub_off, &sub_size, resource, subres, 0u, 0u) == 0) {
+        if (bpe != 0ULL && CGPipelineStatePackerGnm_GetSubresourceByteOffsetAndSize(&sub_off, &sub_size, resource, subres, 0u, 0u) == 0) {
             const uint64_t num_elems = (sub_size + bpe - 1ULL) / bpe;
             const uint64_t base_addr = *reinterpret_cast<const uint64_t*>(resource + 0x08) + sub_off;
             uint64_t uav_vsharp[2] = {};
@@ -3008,7 +3008,7 @@ void CGGpuBlitAndClearPassesGnm_CopyTextureRegionViaCompute(
     uint32_t* cb_mem = static_cast<uint32_t*>(
         GX_CALL(void*, 0x26ae7f0ULL, (void*, void*, uint32_t),
                 gnmx_ctx_wrapper + 0xb3c0, gnmx_ctx_wrapper, 0x30u));
-    if (cb_mem == nullptr) {
+    if (cb_mem == nullptr || max_sx1 <= sx0 || max_sy1 <= sy0 || max_sz1 <= sz0) {
         return;
     }
 

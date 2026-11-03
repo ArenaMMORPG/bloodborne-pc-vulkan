@@ -106,6 +106,9 @@ bool CGGpuFreeListAllocatorGnm_Initialize(
     size_t byteSize)
 {
     uintptr_t alignPad = (0ULL - baseGpuAddr) & 0xFULL;
+    if (byteSize < alignPad) {
+        return false;
+    }
     uintptr_t alignedBase = baseGpuAddr + alignPad;
     size_t alignedSize = (byteSize - alignPad) & ~static_cast<size_t>(0xFULL);
 
@@ -123,6 +126,7 @@ bool CGGpuFreeListAllocatorGnm_Initialize(
     *reinterpret_cast<uint64_t*>(self + 0xd0) = alignedSize;
 
     CGGpuBlockNode* sentinel = reinterpret_cast<CGGpuBlockNode*>(self + 0x68);
+    sentinel->stateOrTaggedFence = 0;
     sentinel->gpuAddress = baseGpuAddr + (alignPad | alignedSize);
     sentinel->prevByAddr = sentinel;
     sentinel->nextByAddr = sentinel;
@@ -212,47 +216,45 @@ CGGpuBlockNode* CGGpuFreeListAllocatorGnm_AllocateAlignedInternal(
             uintptr_t poolOffset = (0ULL - reinterpret_cast<uintptr_t>(self)) & 7ULL;
             uint8_t* poolPtr = self + poolOffset;
 
-            CGGpuBlockNode* tailRem = static_cast<CGGpuBlockNode*>(FixedBlockPool_AllocateNode(poolPtr));
-            if (tailRem) {
-                CGGpuBlockNode* oldNext = cur->nextByAddr;
-                cur->nextByAddr     = tailRem;
-                tailRem->prevByAddr = cur;
-                tailRem->nextByAddr = oldNext;
-                oldNext->prevByAddr = tailRem;
-                tailRem->stateOrTaggedFence = 0;
-                tailRem->nextFree = nullptr;
-                tailRem->prevFree = nullptr;
+            if (frontPad != 0) {
+                CGGpuBlockNode* headPad = static_cast<CGGpuBlockNode*>(FixedBlockPool_AllocateNode(poolPtr));
+                if (headPad) {
+                    CGGpuBlockNode* oldPrev = cur->prevByAddr;
+                    oldPrev->nextByAddr = headPad;
+                    headPad->prevByAddr = oldPrev;
+                    headPad->nextByAddr = cur;
+                    cur->prevByAddr     = headPad;
+                    headPad->stateOrTaggedFence = 0;
+                    headPad->gpuAddress = cur->gpuAddress;
 
-                if (frontPad != 0) {
-                    CGGpuBlockNode* headPad = static_cast<CGGpuBlockNode*>(FixedBlockPool_AllocateNode(poolPtr));
-                    if (headPad) {
-                        CGGpuBlockNode* oldPrev = cur->prevByAddr;
-                        oldPrev->nextByAddr = headPad;
-                        headPad->prevByAddr = oldPrev;
-                        headPad->nextByAddr = cur;
-                        cur->prevByAddr     = headPad;
-                        headPad->stateOrTaggedFence = 0;
-                        headPad->gpuAddress = cur->gpuAddress;
-
-                        CGGpuBlockNode* freePrev = cur->prevFree;
-                        CGGpuBlockNode* freeNext = freePrev->nextFree;
-                        freePrev->nextFree = headPad;
-                        headPad->nextFree  = freeNext;
-                        headPad->prevFree  = freePrev;
-                        freeNext->prevFree = headPad;
-                    }
-                    cur->gpuAddress = alignedStart;
+                    CGGpuBlockNode* freePrev = cur->prevFree;
+                    CGGpuBlockNode* freeNext = freePrev->nextFree;
+                    freePrev->nextFree = headPad;
+                    headPad->nextFree  = freeNext;
+                    headPad->prevFree  = freePrev;
+                    freeNext->prevFree = headPad;
                 }
-
-                tailRem->gpuAddress = cur->gpuAddress + alignedSize;
-                CGGpuBlockNode* freePrev = cur->prevFree;
-                CGGpuBlockNode* freeNext = freePrev->nextFree;
-                freePrev->nextFree = tailRem;
-                tailRem->nextFree  = freeNext;
-                tailRem->prevFree  = freePrev;
-                freeNext->prevFree = tailRem;
-            } else {
                 cur->gpuAddress = alignedStart;
+            }
+
+            if (availAfterAlign > alignedSize) {
+                CGGpuBlockNode* tailRem = static_cast<CGGpuBlockNode*>(FixedBlockPool_AllocateNode(poolPtr));
+                if (tailRem) {
+                    CGGpuBlockNode* oldNext = cur->nextByAddr;
+                    cur->nextByAddr     = tailRem;
+                    tailRem->prevByAddr = cur;
+                    tailRem->nextByAddr = oldNext;
+                    oldNext->prevByAddr = tailRem;
+                    tailRem->stateOrTaggedFence = 0;
+                    tailRem->gpuAddress = cur->gpuAddress + alignedSize;
+
+                    CGGpuBlockNode* freePrev = cur->prevFree;
+                    CGGpuBlockNode* freeNext = freePrev->nextFree;
+                    freePrev->nextFree = tailRem;
+                    tailRem->nextFree  = freeNext;
+                    tailRem->prevFree  = freePrev;
+                    freeNext->prevFree = tailRem;
+                }
             }
         }
 
@@ -686,6 +688,7 @@ int32_t CGDescriptorViewGnm_CreateSamplerView(
     }
     if (!CGDescriptorHwGnm_InitializeDefault(mem)) {
         alloc->vtable->deallocate(alloc, self->hwDescMem);
+        self->hwDescMem = nullptr;
         return 8;
     }
     return 0;
@@ -754,6 +757,7 @@ int32_t CGDescriptorViewGnm_CreateResourceView(
     }
     if (!CGDescriptorHwGnm_InitializeDefault(mem)) {
         alloc->vtable->deallocate(alloc, self->hwDescMem);
+        self->hwDescMem = nullptr;
         return 8;
     }
     return 0;
@@ -986,6 +990,11 @@ void* LuaTableValueProxy_ToUserDataPair(uint64_t* outPair, LuaTableValueProxy* s
     void* L = self->stateWrap->L;
     uint64_t* ud = static_cast<uint64_t*>(lua_touserdata(L, -1));
     lua_settop(L, -2);
+    if (!ud) {
+        outPair[0] = 0;
+        outPair[1] = 0;
+        return outPair;
+    }
     outPair[0] = ud[0];
     outPair[1] = ud[1];
     return outPair;

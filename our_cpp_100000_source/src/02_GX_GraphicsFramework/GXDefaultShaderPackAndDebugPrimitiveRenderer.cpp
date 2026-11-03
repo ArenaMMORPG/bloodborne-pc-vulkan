@@ -271,15 +271,12 @@ bool GXDefaultShaderPack_BindPresetPipelineToContext(
 
     if (bDirectHwOnly != 0) {
         pHwState[0x197A] |= 0x01;
-        uint64_t bitMask0 = 1ULL;
-        for (uint32_t i = 0; i < 1; ++i, bitMask0 += bitMask0) {
-            auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb1Views[i]);
-            if (pViewBytes != nullptr) {
-                uint64_t reqFlags = bitMask0 | 0x100000ULL;
-                uint64_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
-                if ((curFlags & reqFlags) != reqFlags) {
-                    __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pViewBytes + 0x44), reqFlags);
-                }
+        auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb1Views[0]);
+        if (pViewBytes != nullptr) {
+            const uint32_t reqFlags = 0x100001u;
+            uint32_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
+            if ((curFlags & reqFlags) != reqFlags) {
+                __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pViewBytes + 0x44), reqFlags);
             }
         }
         *reinterpret_cast<void**>(pHwState + 0xD528) = ppCb1Views[0];
@@ -290,15 +287,12 @@ bool GXDefaultShaderPack_BindPresetPipelineToContext(
         *reinterpret_cast<uint32_t*>(pCtxBytes + 0x09DC) = (cbEnd0 > 1u) ? cbEnd0 : 1u;
 
         *reinterpret_cast<uint64_t*>(pHwState + 0x1978) |= 0x10000ULL;
-        uint64_t bitMask0 = 1ULL;
-        for (uint32_t i = 0; i < 1; ++i, bitMask0 += bitMask0) {
-            auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb1Views[i]);
-            if (pViewBytes != nullptr) {
-                uint64_t reqFlags = bitMask0 | 0x100000ULL;
-                uint64_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
-                if ((curFlags & reqFlags) != reqFlags) {
-                    __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pViewBytes + 0x44), reqFlags);
-                }
+        auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb1Views[0]);
+        if (pViewBytes != nullptr) {
+            const uint32_t reqFlags = 0x100001u;
+            uint32_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
+            if ((curFlags & reqFlags) != reqFlags) {
+                __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pViewBytes + 0x44), reqFlags);
             }
         }
         *reinterpret_cast<void**>(pHwState + 0xD528) = ppCb1Views[0];
@@ -317,15 +311,12 @@ bool GXDefaultShaderPack_BindPresetPipelineToContext(
         void** ppCb2Views = sub_26d7440(pThis->m_pConstantBuffers[2]);
         if (bDirectHwOnly != 0) {
             pHwState[0x197A] |= 0x02;
-            uint64_t bitMask1 = 2ULL;
-            for (uint32_t i = 0; i < 1; ++i, bitMask1 += bitMask1) {
-                auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb2Views[i]);
-                if (pViewBytes != nullptr) {
-                    uint64_t reqFlags = bitMask1 | 0x100000ULL;
-                    uint64_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
-                    if ((curFlags & reqFlags) != reqFlags) {
-                        __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pViewBytes + 0x44), reqFlags);
-                    }
+            auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb2Views[0]);
+            if (pViewBytes != nullptr) {
+                const uint32_t reqFlags = 0x100002u;
+                uint32_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
+                if ((curFlags & reqFlags) != reqFlags) {
+                    __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pViewBytes + 0x44), reqFlags);
                 }
             }
             *reinterpret_cast<void**>(pHwState + 0xD530) = ppCb2Views[0];
@@ -337,15 +328,12 @@ bool GXDefaultShaderPack_BindPresetPipelineToContext(
             *reinterpret_cast<uint32_t*>(pCtxBytes + 0x09DC) = (cbEnd1 > 2u) ? cbEnd1 : 2u;
 
             *reinterpret_cast<uint64_t*>(pHwState + 0x1978) |= 0x20000ULL;
-            uint64_t bitMask1 = 2ULL;
-            for (uint32_t i = 0; i < 1; ++i, bitMask1 += bitMask1) {
-                auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb2Views[i]);
-                if (pViewBytes != nullptr) {
-                    uint64_t reqFlags = bitMask1 | 0x100000ULL;
-                    uint64_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
-                    if ((curFlags & reqFlags) != reqFlags) {
-                        __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pViewBytes + 0x44), reqFlags);
-                    }
+            auto* pViewBytes = reinterpret_cast<uint8_t*>(ppCb2Views[0]);
+            if (pViewBytes != nullptr) {
+                const uint32_t reqFlags = 0x100002u;
+                uint32_t curFlags = *reinterpret_cast<uint32_t*>(pViewBytes + 0x44);
+                if ((curFlags & reqFlags) != reqFlags) {
+                    __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pViewBytes + 0x44), reqFlags);
                 }
             }
             *reinterpret_cast<void**>(pHwState + 0xD530) = ppCb2Views[0];
@@ -1202,8 +1190,9 @@ void GXDebugPrimitiveRenderer_DrawTransformAxes(
 
     // Y axis: origin -> origin + row1 * axisLength, color0 = (0, gIntensity, 0, aIntensity)
     lineVerts[1][0] = _mm_add_ps(_mm_mul_ps(scaleVec, _mm_load_ps(pTransformMatrix[1])), origin);
-    lineVerts[0][1] = _mm_set_ps(aIntensity, 0.0f, gIntensity, 0.0f);
-    lineVerts[1][1] = _mm_set_ps(aIntensity, 0.0f, bIntensity, 0.0f);
+    __m128 yCol = _mm_set_ps(aIntensity, 0.0f, gIntensity, 0.0f);
+    lineVerts[0][1] = yCol;
+    lineVerts[1][1] = yCol;
     fnDraw(pThis->m_pDrawCtx->m_pDrawer, 2 /* LineList */, 2, lineVerts, 0x20);
 
     // Z axis: origin -> origin + row2 * axisLength, color = (0, 0, bIntensity, aIntensity)
@@ -1350,6 +1339,7 @@ const void* GXGParamBinaryReader_FindUnkBlock2ById(
         const auto* pEntry = pBase + static_cast<size_t>(pThis->m_pHeader->unkBlock2Offset) + static_cast<size_t>(offset);
         if (*reinterpret_cast<const uint32_t*>(pEntry) == targetId) {
             pFound = pEntry;
+            break;
         }
     }
     return pFound;
@@ -1442,8 +1432,10 @@ uint8_t GXGParamBinaryReader_GetParamMetadataAndValues(
         pBase + pThis->m_pHeader->paramHeaderOffsetsOffset + paramOffsetsBase);
     const auto* pParamHdr = pBase + pThis->m_pHeader->paramHeadersOffset + pParamOffsets[paramIndex];
 
-    (void)ppOutNameW;
     const auto* pNameW = reinterpret_cast<const char16_t*>(pParamHdr + 0x0C);
+    if (ppOutNameW != nullptr) {
+        *ppOutNameW = pNameW;
+    }
     *ppOutCommentW = SkipAlignedGParamWString(pNameW);
     *pOutCount = pParamHdr[0x09];
     uint32_t valOffset = *reinterpret_cast<const uint32_t*>(pParamHdr + 0x00);
@@ -1647,23 +1639,21 @@ struct GXGParamGroupLookupTable {
 
 static inline bool CaseInsensitiveAsciiWStrEquals(const char16_t* pStrA, const char16_t* pStrB)
 {
+    if (pStrA == pStrB) return true;
+    if (!pStrA || !pStrB) return false;
     const uint16_t* pCtypeTable = sub_2bbec48();
-    const auto* pBytesA = reinterpret_cast<const uint8_t*>(pStrA);
-    const auto* pBytesB = reinterpret_cast<const uint8_t*>(pStrB);
 
     for (;;) {
-        uint16_t mappedA = pCtypeTable[pBytesA[0]];
-        int16_t  mappedB = static_cast<int8_t>(pCtypeTable[pBytesB[0]]);
-        int16_t  lowA = 0;
-        if (static_cast<uint8_t>(mappedA) != 0) {
-            lowA = static_cast<int8_t>(mappedA);
-            pBytesA += 2;
-            pBytesB += 2;
-            if (lowA == mappedB) {
-                continue;
-            }
+        uint16_t ca = static_cast<uint16_t>(*pStrA++);
+        uint16_t cb = static_cast<uint16_t>(*pStrB++);
+        uint16_t ma = (ca < 0x100u && pCtypeTable) ? static_cast<uint16_t>(pCtypeTable[ca] & 0xFFu) : ca;
+        uint16_t mb = (cb < 0x100u && pCtypeTable) ? static_cast<uint16_t>(pCtypeTable[cb] & 0xFFu) : cb;
+        if (ma != mb) {
+            return false;
         }
-        return (lowA == mappedB);
+        if (ca == 0u) {
+            return true;
+        }
     }
 }
 

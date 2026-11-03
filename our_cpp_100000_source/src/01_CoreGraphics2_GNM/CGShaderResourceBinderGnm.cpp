@@ -267,7 +267,7 @@ inline void ExecuteStageBindingBytecode(
             }
             if (opcode == 7) {
                 emit_ptr(dst_reg, tbl_gpu);
-            } else {
+            } else if (dst_reg >= 16u) {
                 const uint64_t addr = reinterpret_cast<uint64_t>(tbl_gpu);
                 const int32_t idx   = static_cast<int32_t>(dst_reg) - 16;
                 srt_dwords[idx]     = static_cast<uint32_t>(addr);
@@ -304,7 +304,7 @@ inline void ExecuteStageBindingBytecode(
             }
             if (opcode == 8) {
                 emit_ptr(dst_reg, gpu_tbl);
-            } else {
+            } else if (dst_reg >= 16u) {
                 const uint64_t addr = reinterpret_cast<uint64_t>(gpu_tbl);
                 const int32_t idx   = static_cast<int32_t>(dst_reg) - 16;
                 srt_dwords[idx]     = static_cast<uint32_t>(addr);
@@ -332,7 +332,7 @@ inline void ExecuteStageBindingBytecode(
             }
             if (opcode == 9) {
                 emit_ptr(dst_reg, gpu_tbl);
-            } else {
+            } else if (dst_reg >= 16u) {
                 const uint64_t addr = reinterpret_cast<uint64_t>(gpu_tbl);
                 const int32_t idx   = static_cast<int32_t>(dst_reg) - 16;
                 srt_dwords[idx]     = static_cast<uint32_t>(addr);
@@ -360,7 +360,7 @@ inline void ExecuteStageBindingBytecode(
             }
             if (opcode == 10) {
                 emit_ptr(dst_reg, gpu_tbl);
-            } else {
+            } else if (dst_reg >= 16u) {
                 const uint64_t addr = reinterpret_cast<uint64_t>(gpu_tbl);
                 const int32_t idx   = static_cast<int32_t>(dst_reg) - 16;
                 srt_dwords[idx]     = static_cast<uint32_t>(addr);
@@ -388,7 +388,7 @@ inline void ExecuteStageBindingBytecode(
             }
             if (opcode == 11) {
                 emit_ptr(dst_reg, gpu_tbl);
-            } else {
+            } else if (dst_reg >= 16u) {
                 const uint64_t addr = reinterpret_cast<uint64_t>(gpu_tbl);
                 const int32_t idx   = static_cast<int32_t>(dst_reg) - 16;
                 srt_dwords[idx]     = static_cast<uint32_t>(addr);
@@ -397,25 +397,25 @@ inline void ExecuteStageBindingBytecode(
             break;
         }
         case 13:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_srv_tsharps[binder_stage_idx][src_slot], 16);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_srv_tsharps[binder_stage_idx][src_slot], 16);
             break;
         case 14:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_srv_tsharps[binder_stage_idx][src_slot], 32);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_srv_tsharps[binder_stage_idx][src_slot], 32);
             break;
         case 15:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_uav_tsharps[binder_stage_idx][src_slot], 16);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_uav_tsharps[binder_stage_idx][src_slot], 16);
             break;
         case 16:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_uav_tsharps[binder_stage_idx][src_slot], 32);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_uav_tsharps[binder_stage_idx][src_slot], 32);
             break;
         case 17:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_sampler_ssharps[binder_stage_idx][src_slot], 16);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_sampler_ssharps[binder_stage_idx][src_slot], 16);
             break;
         case 18:
-            std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_cb_vsharps[binder_stage_idx][src_slot], 16);
+            if (dst_reg >= 16u) std::memcpy(&srt_dwords[static_cast<int32_t>(dst_reg) - 16], self->staged_cb_vsharps[binder_stage_idx][src_slot], 16);
             break;
         case 19:
-            srt_dwords[static_cast<int32_t>(dst_reg) - 16] = gds_range_dword;
+            if (dst_reg >= 16u) srt_dwords[static_cast<int32_t>(dst_reg) - 16] = gds_range_dword;
             break;
         case 26: {
             const uint64_t copy_bytes = static_cast<uint64_t>(cmd >> 24) << 2;
@@ -851,11 +851,12 @@ void CGShaderResourceBinderGnm_SetVsAndPsShaders(
                 gx_direct_vk::GenerateAndEmitPsShaderUsage(
                     gnmx_gfxc, vs_exports, num_vs_outputs, ps_inputs, num_ps_inputs);
             } else {
+                const uint32_t safe_inputs = (num_ps_inputs <= 32u) ? num_ps_inputs : 32u;
                 uint32_t ps_usage_table[32];
                 reinterpret_cast<void(*)(uint32_t*, const void*, uint32_t, const void*, uint32_t)>(GX_VMA(0x10873a0ULL))(
-                    ps_usage_table, vs_exports, num_vs_outputs, ps_inputs, num_ps_inputs);
+                    ps_usage_table, vs_exports, num_vs_outputs, ps_inputs, safe_inputs);
                 reinterpret_cast<void(*)(void*, const uint32_t*, uint32_t)>(GX_VMA(0x1075000ULL))(
-                    gnmx_gfxc, ps_usage_table, num_ps_inputs);
+                    gnmx_gfxc, ps_usage_table, safe_inputs);
             }
         }
     } else {
@@ -1624,11 +1625,12 @@ inline void BindPsShaderUsageFromExportShader(
         gx_direct_vk::GenerateAndEmitPsShaderUsage(
             gnmx_ctx, vs_export_table, num_exp_items, ps_input_table, num_ps_inputs);
     } else {
+        const uint32_t safe_inputs = (num_ps_inputs <= 32u) ? num_ps_inputs : 32u;
         uint32_t usage_table[32];
         reinterpret_cast<void(*)(uint32_t*, const void*, uint32_t, const void*, uint32_t)>(GX_VMA(0x10873a0ULL))(
-            usage_table, vs_export_table, num_exp_items, ps_input_table, num_ps_inputs);
+            usage_table, vs_export_table, num_exp_items, ps_input_table, safe_inputs);
         reinterpret_cast<void(*)(void*, const uint32_t*, uint32_t)>(GX_VMA(0x1075000ULL))(
-            gnmx_ctx, usage_table, num_ps_inputs);
+            gnmx_ctx, usage_table, safe_inputs);
     }
 }
 
@@ -1666,6 +1668,9 @@ inline void ConfigureTessellationStagesAndRings(
         tess_consts, hs_obj + 0x24, ls_stride, clamped_patches);
     uint32_t* gpu_consts = reinterpret_cast<uint32_t*(*)(void*, uint32_t, uint32_t)>(GX_VMA(0x26b07f0ULL))(
         gnmx_ctx, 0x24u, 4u);
+    if (gpu_consts == nullptr) {
+        return;
+    }
     std::memcpy(gpu_consts, tess_consts, 0x24u);
 
     uint64_t cb_vsharp[2];

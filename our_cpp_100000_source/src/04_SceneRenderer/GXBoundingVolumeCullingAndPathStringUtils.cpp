@@ -164,10 +164,10 @@ bool sub_21bd140(const void* self, uint32_t task_id) {
     while (it != end) {
         const uint8_t* item = static_cast<const uint8_t*>(*it);
         ++it;
+        if (item == nullptr) {
+            continue;
+        }
         if (*reinterpret_cast<const uint32_t*>(item + 0x88) == task_id) {
-            if (item == nullptr) {
-                return true;
-            }
             return *reinterpret_cast<const uint32_t*>(item) > 2u;
         }
     }
@@ -185,10 +185,10 @@ uint8_t sub_21bd100(const void* self, void* out_result, uint32_t task_id) {
     while (it != end) {
         void* item = *it;
         ++it;
+        if (item == nullptr) {
+            continue;
+        }
         if (*reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(item) + 0x88) == task_id) {
-            if (item == nullptr) {
-                return 0u;
-            }
             return sub_e48ec0(item, out_result);
         }
     }
@@ -220,6 +220,11 @@ uint32_t sub_21bcf40(void* self, const void* a1, const void* a2,
     if (raw_mem != nullptr) {
         sub_e48280(raw_mem, frame_cnt, stack_arg6);
         task_obj = raw_mem;
+    }
+    if (task_obj == nullptr) {
+        auto* mtx_vtbl = *reinterpret_cast<void (***)(void*)>(mutex_obj);
+        mtx_vtbl[5](mutex_obj);
+        return 0u;
     }
 
     const uint32_t next_id = ++(*reinterpret_cast<uint32_t*>(base + 0x50));
@@ -824,7 +829,7 @@ bool sub_21bbaf0(void* dev_ctx, const void* gnf_hdr, uint32_t mip_level, __m128*
                 const __m128 one_vec = _mm_load_ps(kVec4One);
                 inv_count = _mm_div_ps(one_vec, inv_count);
                 const __m128 quarter_vec = _mm_load_ps(kVec4Quarter);
-                const __m128 c255 = _mm_set1_ps(255.0f);
+                const __m128 inv255 = _mm_set1_ps(1.0f / 255.0f);
 
                 struct MapInfo {
                     uint8_t* base_ptr;
@@ -853,21 +858,19 @@ bool sub_21bbaf0(void* dev_ctx, const void* gnf_hdr, uint32_t mip_level, __m128*
                             const uint32_t b_u8 = (rgba >> 16) & 0xffu;
                             const uint32_t a_u8 = rgba >> 24;
 
-                            __m128 r_f = _mm_div_ss(_mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(r_u8)), c255);
-                            __m128 g_f = _mm_div_ss(_mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(g_u8)), c255);
-                            __m128 b_f = _mm_div_ss(_mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(b_u8)), c255);
-                            __m128 a_f = _mm_div_ss(_mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(a_u8)), c255);
-
-                            __m128 px = r_f;
-                            px = _mm_insert_ps(px, g_f, 0x10);
-                            px = _mm_insert_ps(px, b_f, 0x20);
-                            px = _mm_insert_ps(px, a_f, 0x30);
-
-                            __m128 a_xxxx = _mm_shuffle_ps(px, px, 0xff);
-                            __m128 inv_a  = _mm_div_ps(one_vec, a_xxxx);
-                            px = _mm_mul_ps(px, inv_a);
-                            px = _mm_mul_ps(px, quarter_vec);
-                            sum = _mm_add_ps(sum, px);
+                            if (a_u8 != 0u) {
+                                __m128 px = _mm_cvtepi32_ps(_mm_setr_epi32(
+                                    static_cast<int32_t>(r_u8),
+                                    static_cast<int32_t>(g_u8),
+                                    static_cast<int32_t>(b_u8),
+                                    static_cast<int32_t>(a_u8)));
+                                px = _mm_mul_ps(px, inv255);
+                                __m128 a_xxxx = _mm_shuffle_ps(px, px, 0xff);
+                                __m128 inv_a  = _mm_div_ps(one_vec, a_xxxx);
+                                px = _mm_mul_ps(px, inv_a);
+                                px = _mm_mul_ps(px, quarter_vec);
+                                sum = _mm_add_ps(sum, px);
+                            }
 
                             y_byte_off += map_info.row_pitch_bytes;
                         }
@@ -875,8 +878,7 @@ bool sub_21bbaf0(void* dev_ctx, const void* gnf_hdr, uint32_t mip_level, __m128*
                     face_accum[face] = _mm_mul_ps(sum, inv_count);
                 }
             } else {
-                const __m128 one_vec = _mm_load_ps(kVec4One);
-                inv_count = _mm_mul_ps(_mm_div_ps(one_vec, inv_count), _mm_setzero_ps());
+                inv_count = _mm_setzero_ps();
                 struct MapInfo {
                     uint8_t* base_ptr;
                     uint32_t row_pitch_bytes;
@@ -895,9 +897,12 @@ bool sub_21bbaf0(void* dev_ctx, const void* gnf_hdr, uint32_t mip_level, __m128*
             }
         } else if (fmt == 0x0au) {
             const uint32_t texel_count = width * width;
-            __m128 inv_count = _mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(texel_count));
-            inv_count = _mm_shuffle_ps(inv_count, inv_count, 0x00);
-            inv_count = _mm_div_ps(_mm_load_ps(kVec4One), inv_count);
+            __m128 inv_count = _mm_setzero_ps();
+            if (width != 0u) {
+                inv_count = _mm_cvtsi32_ss(_mm_setzero_ps(), static_cast<int32_t>(texel_count));
+                inv_count = _mm_shuffle_ps(inv_count, inv_count, 0x00);
+                inv_count = _mm_div_ps(_mm_load_ps(kVec4One), inv_count);
+            }
 
             struct MapInfo {
                 uint8_t* base_ptr;
@@ -1304,9 +1309,12 @@ void sub_21baff0(void* pass_ctx, void* resource_view) {
 
     uint8_t* cmd_ctx = *reinterpret_cast<uint8_t**>(pass_ctx);
     const uint32_t count_c8 = *reinterpret_cast<const uint32_t*>(cmd_ctx + 0xc8);
-    const size_t copy_bytes = static_cast<size_t>(count_c8) * 24u;
+    size_t copy_bytes = static_cast<size_t>(count_c8) * 24u;
 
-    alignas(16) float viewport_buf[8]{};
+    alignas(16) float viewport_buf[48]{};
+    if (copy_bytes > sizeof(viewport_buf)) {
+        copy_bytes = sizeof(viewport_buf);
+    }
     sub_261a1b0(viewport_buf, cmd_ctx + 0xcc, copy_bytes);
 
     const float inv_w = 1.0f / viewport_buf[2];
@@ -1535,6 +1543,17 @@ void sub_21baff0(void* pass_ctx, void* resource_view) {
         auto* vtbl = *reinterpret_cast<void (***)(void*, uint32_t, uint32_t, const void*, uint32_t)>(&draw_helper);
         vtbl[0](&draw_helper, 5u, 4u, quad_verts, 0x10u);
     }
+
+    *reinterpret_cast<uint64_t*>(cmd_ctx + 0x788) = 0ULL;
+    *reinterpret_cast<uint32_t*>(cmd_ctx + 0x960) = 0u;
+    uint32_t v964_post = *reinterpret_cast<const uint32_t*>(cmd_ctx + 0x964);
+    if (v964_post <= 1u) {
+        v964_post = 1u;
+    }
+    *reinterpret_cast<uint32_t*>(cmd_ctx + 0x964) = v964_post;
+    gnm_state = *reinterpret_cast<uint8_t**>(cmd_ctx + 0x08);
+    *reinterpret_cast<uint64_t*>(gnm_state + 0x1968) |= 1ULL;
+    *reinterpret_cast<uint64_t*>(gnm_state + 0xd128)  = 0ULL;
 }
 
 // ============================================================================
@@ -1596,29 +1615,31 @@ bool sub_21bac20(void** out_tex, void* unused_rsi, void* custom_alloc, void* cus
     prng.seed_val = usec_seed;
     sub_2686170(prng.state);
 
-    uint8_t* slice_ptr = noise_buf + 0x0f;
-    for (uint64_t z = 0; z < 16u; ++z) {
-        uint8_t* row_ptr = slice_ptr;
-        for (uint64_t y = 0; y < 16u; ++y) {
-            row_ptr[-15] = sub_29add90(prng.state);
-            row_ptr[-14] = sub_29add90(prng.state);
-            row_ptr[-13] = sub_29add90(prng.state);
-            row_ptr[-12] = sub_29add90(prng.state);
-            row_ptr[-11] = sub_29add90(prng.state);
-            row_ptr[-10] = sub_29add90(prng.state);
-            row_ptr[-9]  = sub_29add90(prng.state);
-            row_ptr[-8]  = sub_29add90(prng.state);
-            row_ptr[-7]  = sub_29add90(prng.state);
-            row_ptr[-6]  = sub_29add90(prng.state);
-            row_ptr[-5]  = sub_29add90(prng.state);
-            row_ptr[-4]  = sub_29add90(prng.state);
-            row_ptr[-3]  = sub_29add90(prng.state);
-            row_ptr[-2]  = sub_29add90(prng.state);
-            row_ptr[-1]  = sub_29add90(prng.state);
-            row_ptr[0]   = sub_29add90(prng.state);
-            row_ptr += 16;
+    if (noise_buf != nullptr) {
+        uint8_t* slice_ptr = noise_buf + 0x0f;
+        for (uint64_t z = 0; z < 16u; ++z) {
+            uint8_t* row_ptr = slice_ptr;
+            for (uint64_t y = 0; y < 16u; ++y) {
+                row_ptr[-15] = sub_29add90(prng.state);
+                row_ptr[-14] = sub_29add90(prng.state);
+                row_ptr[-13] = sub_29add90(prng.state);
+                row_ptr[-12] = sub_29add90(prng.state);
+                row_ptr[-11] = sub_29add90(prng.state);
+                row_ptr[-10] = sub_29add90(prng.state);
+                row_ptr[-9]  = sub_29add90(prng.state);
+                row_ptr[-8]  = sub_29add90(prng.state);
+                row_ptr[-7]  = sub_29add90(prng.state);
+                row_ptr[-6]  = sub_29add90(prng.state);
+                row_ptr[-5]  = sub_29add90(prng.state);
+                row_ptr[-4]  = sub_29add90(prng.state);
+                row_ptr[-3]  = sub_29add90(prng.state);
+                row_ptr[-2]  = sub_29add90(prng.state);
+                row_ptr[-1]  = sub_29add90(prng.state);
+                row_ptr[0]   = sub_29add90(prng.state);
+                row_ptr += 16;
+            }
+            slice_ptr += 0x100;
         }
-        slice_ptr += 0x100;
     }
 
     auto* alloc_vtbl = *reinterpret_cast<void* (***)(void*, size_t, size_t)>(alloc1);
@@ -1974,10 +1995,10 @@ void sub_21ba280(void* self) {
 
     uint8_t* ref_obj = *reinterpret_cast<uint8_t**>(base + 0x10);
     if (ref_obj != nullptr) {
-        const int32_t refs = *reinterpret_cast<const int32_t*>(ref_obj + 0x08);
+        const int32_t refs = __atomic_load_n(reinterpret_cast<const int32_t*>(ref_obj + 0x08), __ATOMIC_RELAXED);
         if (refs != 0) {
-            *reinterpret_cast<int32_t*>(ref_obj + 0x08) = refs - 1;
-            if (refs <= 1) {
+            const int32_t prev = __atomic_fetch_sub(reinterpret_cast<int32_t*>(ref_obj + 0x08), 1, __ATOMIC_ACQ_REL);
+            if (prev <= 1) {
                 auto* vtbl = *reinterpret_cast<void (***)(void*)>(ref_obj);
                 vtbl[0](ref_obj);
             }
@@ -2129,10 +2150,10 @@ void sub_21ba020(void* self) {
 
     uint8_t* ref_obj = *reinterpret_cast<uint8_t**>(base + 0x10);
     if (ref_obj != nullptr) {
-        const int32_t refs = *reinterpret_cast<const int32_t*>(ref_obj + 0x08);
+        const int32_t refs = __atomic_load_n(reinterpret_cast<const int32_t*>(ref_obj + 0x08), __ATOMIC_RELAXED);
         if (refs != 0) {
-            *reinterpret_cast<int32_t*>(ref_obj + 0x08) = refs - 1;
-            if (refs <= 1) {
+            const int32_t prev = __atomic_fetch_sub(reinterpret_cast<int32_t*>(ref_obj + 0x08), 1, __ATOMIC_ACQ_REL);
+            if (prev <= 1) {
                 auto* vtbl = *reinterpret_cast<void (***)(void*)>(ref_obj);
                 vtbl[0](ref_obj);
             }

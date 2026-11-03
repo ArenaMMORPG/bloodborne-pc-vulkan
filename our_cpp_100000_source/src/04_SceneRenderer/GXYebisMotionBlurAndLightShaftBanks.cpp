@@ -162,7 +162,7 @@ using FnAssignWideStr      = void (*)(void* dstStrObj, const char16_t* src, size
 using FnSceneGetBankCount  = uint32_t (*)(void* sceneSys, uint32_t slotId, void* streamPtr);
 using FnSceneGetParamIdAt  = uint32_t (*)(void* sceneSys, uint32_t slotId, void* streamPtr, uint32_t index);
 using FnSceneFinalizeLoad  = void (*)(void* sceneSys, uint32_t slotId, uint32_t bankId, uint32_t flags, void* streamPtr, float weight);
-using FnSceneBeginUnload   = void (*)(void* sceneSys, uint32_t slotId);
+using FnSceneBeginUnload   = void (*)(void* sceneSys, uint32_t slotId, uint32_t bankId, uint32_t overrideSlotIdx, float blendTime);
 using FnSceneCheckEntry    = bool (*)(void* sceneSys, uint32_t slotId, uint32_t paramId, uint32_t bankId);
 using FnSceneSetActiveId   = void (*)(void* sceneSys, uint32_t slotId, uint32_t paramId, uint32_t bankId, int64_t negOne);
 using FnSceneSyncBank      = void (*)(void* sceneSys, uint32_t slotId);
@@ -262,6 +262,12 @@ static ParamBucketIter* ParamBucketVector_InsertFillImpl(
                     alloc->vptr->allocateAligned(alloc, newCapItems * sizeof(ParamBucketIter), 8));
                 if (!newBuf) {
                     ReportTransactionFailure();
+                    if (outIter) {
+                        outIter->proxy0 = 0;
+                        outIter->proxy1 = 0;
+                        outIter->node = nullptr;
+                    }
+                    return outIter;
                 }
             }
 
@@ -612,6 +618,9 @@ static void GXParamBankManager_OpenParamEditListDialogImpl_DE(
             void* desktopCtx = *reinterpret_cast<void**>(guiDesktop + 0x20);
             reinterpret_cast<void (*)(void*, void*, void*, const void*)>(GX_VMA(0x2328e40ULL))(
                 dialog, guiDesktop, desktopCtx, &rectDesc);
+        } else {
+            ReleaseGuiWidgetRef_DE(dialog);
+            dialog = nullptr;
         }
     }
 
@@ -809,8 +818,7 @@ extern "C" void GXParamBankManagerC_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc1[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2730ULL))), 0};
     uint8_t* cb1 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb1 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb1 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb1 + 0x00) = GX_VMA(0x53b71e0ULL);
         *reinterpret_cast<void**>(cb1 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb1 + 0x18) = 0;
@@ -828,8 +836,7 @@ extern "C" void GXParamBankManagerC_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc2[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d275eULL))), 0};
     uint8_t* cb2 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb2 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb2 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb2 + 0x00) = GX_VMA(0x53b71e0ULL);
         *reinterpret_cast<void**>(cb2 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb2 + 0x18) = 0;
@@ -847,8 +854,7 @@ extern "C" void GXParamBankManagerC_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc3[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2790ULL))), 0};
     uint8_t* cb3 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb3 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb3 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb3 + 0x00) = GX_VMA(0x53b71e0ULL);
         *reinterpret_cast<void**>(cb3 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb3 + 0x18) = 0;
@@ -999,12 +1005,19 @@ extern "C" void GXParamBankManagerC_SetActiveParamId(void* /*self*/, uint32_t pa
 }
 
 // 7. 0x21fa060 (698 B) — GXParamBankManagerC_UnloadBankById
-extern "C" void GXParamBankManagerC_UnloadBankById(ParamOuterHashTable* self, uint32_t /*unused*/, uint32_t bankId) {
+extern "C" void GXParamBankManagerC_UnloadBankById(
+    ParamOuterHashTable* self,
+    void* /*unused*/,
+    uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime)
+{
     uint8_t* globalRoot = *reinterpret_cast<uint8_t**>(GX_VMA(0x5540dd8ULL));
     uint8_t* sceneSys = *reinterpret_cast<uint8_t**>(globalRoot + 0x5ad0);
     uint32_t slotId = *reinterpret_cast<uint32_t*>(sceneSys + 0x48);
 
-    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(sceneSys, slotId);
+    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(
+        sceneSys, slotId, bankId, overrideSlotIdx, blendTime);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     uint64_t outerIdx = ComputeLehmerHashBucket(bankId, 0xdeadbeefU, self->mask, self->maxBucketIdx);
@@ -1120,10 +1133,10 @@ extern "C" void GXParamBankManagerC_LoadBankFromStream(
                 ownerAlloc->vptr->allocateAligned(ownerAlloc, 0x20, 0x8));
             if (innerSent != nullptr) {
                 innerSent->next = innerSent;
+                innerSent->prev = innerSent;
             } else {
                 ReportTransactionFailure();
             }
-            innerSent->prev = innerSent;
             inner->sentinel = innerSent;
             inner->buckets = nullptr;
             inner->bucketCapBytes = 0;
@@ -1145,6 +1158,7 @@ extern "C" void GXParamBankManagerC_LoadBankFromStream(
             self->nodeAlloc->vptr->allocateAligned(self->nodeAlloc, 0x20, 0x8));
         if (newOuterNode == nullptr) {
             ReportTransactionFailure();
+            return;
         }
         newOuterNode->next = headFirst ? headFirst : newOuterNode;
         newOuterNode->prev = headFirst ? headFirst->prev : newOuterNode;
@@ -1184,10 +1198,12 @@ extern "C" void GXParamBankManagerC_LoadBankFromStream(
         if (innerNode == innerSentinel) {
             DLAllocator* ownerAlloc = self->ownerAlloc;
             uint8_t* elem = static_cast<uint8_t*>(ownerAlloc->vptr->allocateAligned(ownerAlloc, 0x90, 0x8));
-            if (elem != nullptr) {
-                reinterpret_cast<FnElemConstruct>(GX_VMA(0xe82420ULL))(elem);
-                reinterpret_cast<FnElemInit>(GX_VMA(0xe82510ULL))(elem);
+            if (elem == nullptr) {
+                ReportTransactionFailure();
+                continue;
             }
+            reinterpret_cast<FnElemConstruct>(GX_VMA(0xe82420ULL))(elem);
+            reinterpret_cast<FnElemInit>(GX_VMA(0xe82510ULL))(elem);
             *reinterpret_cast<uint32_t*>(elem + 0x88) = paramId;
             *reinterpret_cast<uint32_t*>(elem + 0x8c) = bankId;
             reinterpret_cast<FnElemApply>(GX_VMA(0xe82730ULL))(elem, 0.0f);
@@ -1198,6 +1214,7 @@ extern "C" void GXParamBankManagerC_LoadBankFromStream(
                 inner->nodeAlloc->vptr->allocateAligned(inner->nodeAlloc, 0x20, 0x8));
             if (newInnerNode == nullptr) {
                 ReportTransactionFailure();
+                continue;
             }
             newInnerNode->next = iHeadFirst ? iHeadFirst : newInnerNode;
             newInnerNode->prev = iHeadFirst ? iHeadFirst->prev : newInnerNode;
@@ -1395,13 +1412,15 @@ extern "C" void GXParamBankManagerC_Destruct(uint8_t* self) {
 
     uint64_t strCap = *reinterpret_cast<uint64_t*>(self + 0x100);
     if (strCap >= 8) {
+        void* heapBuf = *reinterpret_cast<void**>(self + 0x0e8);
         if (strCap + 1 >= 0x41) {
-            reinterpret_cast<FnFileLineAssert>(GX_VMA(0x20b55b0ULL))(
-                reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)),
-                0x120,
-                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+            DLAllocator* sAlloc = *reinterpret_cast<DLAllocator**>(self + 0x108);
+            if (sAlloc && heapBuf) {
+                sAlloc->vptr->freeBlock(sAlloc, heapBuf);
+            }
+        } else {
+            self[0x189] &= 0xfdU;
         }
-        self[0x189] &= 0xfdU;
     }
     *reinterpret_cast<uint64_t*>(self + 0x100) = 7;
     *reinterpret_cast<uint64_t*>(self + 0x0f8) = 0;
@@ -1447,10 +1466,10 @@ extern "C" void GXParamBankManagerC_Construct(uint8_t* self, DLAllocator* alloc)
     ParamHashNode* sentinel = static_cast<ParamHashNode*>(alloc->vptr->allocateAligned(alloc, 0x20, 0x8));
     if (sentinel != nullptr) {
         sentinel->next = sentinel;
+        sentinel->prev = sentinel;
     } else {
         ReportTransactionFailure();
     }
-    sentinel->prev = sentinel;
     outer->sentinel = sentinel;
     outer->buckets = nullptr;
     outer->bucketCapBytes = 0;
@@ -1612,8 +1631,7 @@ extern "C" void GXParamBankManagerD_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc1[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2730ULL))), 0};
     uint8_t* cb1 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb1 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb1 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb1 + 0x00) = GX_VMA(0x53b71a0ULL);
         *reinterpret_cast<void**>(cb1 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb1 + 0x18) = 0;
@@ -1631,8 +1649,7 @@ extern "C" void GXParamBankManagerD_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc2[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d275eULL))), 0};
     uint8_t* cb2 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb2 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb2 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb2 + 0x00) = GX_VMA(0x53b71a0ULL);
         *reinterpret_cast<void**>(cb2 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb2 + 0x18) = 0;
@@ -1650,8 +1667,7 @@ extern "C" void GXParamBankManagerD_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc3[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2790ULL))), 0};
     uint8_t* cb3 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb3 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb3 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb3 + 0x00) = GX_VMA(0x53b71a0ULL);
         *reinterpret_cast<void**>(cb3 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb3 + 0x18) = 0;
@@ -1801,12 +1817,19 @@ extern "C" void GXParamBankManagerD_SetActiveParamId(void* /*self*/, uint32_t pa
 }
 
 // 29. 0x21f64b0 (698 B) — GXParamBankManagerD_UnloadBankById
-extern "C" void GXParamBankManagerD_UnloadBankById(ParamOuterHashTable* self, uint32_t /*unused*/, uint32_t bankId) {
+extern "C" void GXParamBankManagerD_UnloadBankById(
+    ParamOuterHashTable* self,
+    void* /*unused*/,
+    uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime)
+{
     uint8_t* globalRoot = *reinterpret_cast<uint8_t**>(GX_VMA(0x5540dd8ULL));
     uint8_t* sceneSys = *reinterpret_cast<uint8_t**>(globalRoot + 0x5ad0);
     uint32_t slotId = *reinterpret_cast<uint32_t*>(sceneSys + 0x54);
 
-    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(sceneSys, slotId);
+    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(
+        sceneSys, slotId, bankId, overrideSlotIdx, blendTime);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     uint64_t outerIdx = ComputeLehmerHashBucket(bankId, 0xdeadbeefU, self->mask, self->maxBucketIdx);
@@ -1922,10 +1945,10 @@ extern "C" void GXParamBankManagerD_LoadBankFromStream(
                 ownerAlloc->vptr->allocateAligned(ownerAlloc, 0x20, 0x8));
             if (innerSent != nullptr) {
                 innerSent->next = innerSent;
+                innerSent->prev = innerSent;
             } else {
                 ReportTransactionFailure();
             }
-            innerSent->prev = innerSent;
             inner->sentinel = innerSent;
             inner->buckets = nullptr;
             inner->bucketCapBytes = 0;
@@ -1947,6 +1970,7 @@ extern "C" void GXParamBankManagerD_LoadBankFromStream(
             self->nodeAlloc->vptr->allocateAligned(self->nodeAlloc, 0x20, 0x8));
         if (newOuterNode == nullptr) {
             ReportTransactionFailure();
+            return;
         }
         newOuterNode->next = headFirst ? headFirst : newOuterNode;
         newOuterNode->prev = headFirst ? headFirst->prev : newOuterNode;
@@ -1986,10 +2010,12 @@ extern "C" void GXParamBankManagerD_LoadBankFromStream(
         if (innerNode == innerSentinel) {
             DLAllocator* ownerAlloc = self->ownerAlloc;
             uint8_t* elem = static_cast<uint8_t*>(ownerAlloc->vptr->allocateAligned(ownerAlloc, 0xd0, 0x10));
-            if (elem != nullptr) {
-                reinterpret_cast<FnElemConstruct>(GX_VMA(0xe80c60ULL))(elem);
-                reinterpret_cast<FnElemInit>(GX_VMA(0xe80d90ULL))(elem);
+            if (elem == nullptr) {
+                ReportTransactionFailure();
+                continue;
             }
+            reinterpret_cast<FnElemConstruct>(GX_VMA(0xe80c60ULL))(elem);
+            reinterpret_cast<FnElemInit>(GX_VMA(0xe80d90ULL))(elem);
             *reinterpret_cast<uint32_t*>(elem + 0xc8) = paramId;
             *reinterpret_cast<uint32_t*>(elem + 0xcc) = bankId;
             reinterpret_cast<FnElemApply>(GX_VMA(0xe80ff0ULL))(elem, 0.0f);
@@ -2000,6 +2026,7 @@ extern "C" void GXParamBankManagerD_LoadBankFromStream(
                 inner->nodeAlloc->vptr->allocateAligned(inner->nodeAlloc, 0x20, 0x8));
             if (newInnerNode == nullptr) {
                 ReportTransactionFailure();
+                continue;
             }
             newInnerNode->next = iHeadFirst ? iHeadFirst : newInnerNode;
             newInnerNode->prev = iHeadFirst ? iHeadFirst->prev : newInnerNode;
@@ -2076,13 +2103,17 @@ extern "C" bool GXParamBankManagerD_RegisterProperties(uint8_t* self) {
     };
     fnAddField(propSys, slotId, reinterpret_cast<const char16_t*>(GX_VMA(0x49c6b40ULL)), reinterpret_cast<const char16_t*>(GX_VMA(0x49c6b56ULL)), &descGlareRatio, 1, 1);
 
-    // 5. AngleAttenuation (+0xa0) & 6. NoiseMask (reuses descAngleAtten in binary!)
+    // 5. AngleAttenuation (+0xa0) & 6. NoiseMask (+0xa4)
     ParamGuiPropDesc descAngleAtten = {
         vtFloatPrimary, self + 0xa0, 0x09, {0, 0, 0}, 0, 1, {0}, vtFloatSecondary,
         0x00000000U, 0x42480000U, 0x3c23d70aU, 0x3f800000U
     };
+    ParamGuiPropDesc descNoiseMask = {
+        vtFloatPrimary, self + 0xa4, 0x09, {0, 0, 0}, 0, 1, {0}, vtFloatSecondary,
+        0x00000000U, 0x3f800000U, 0x3c23d70aU, 0x3f800000U
+    };
     fnAddField(propSys, slotId, reinterpret_cast<const char16_t*>(GX_VMA(0x49c6b78ULL)), reinterpret_cast<const char16_t*>(GX_VMA(0x49c6b9aULL)), &descAngleAtten, 1, 1);
-    fnAddField(propSys, slotId, reinterpret_cast<const char16_t*>(GX_VMA(0x49c6bc8ULL)), reinterpret_cast<const char16_t*>(GX_VMA(0x49c6bdcULL)), &descAngleAtten, 1, 1);
+    fnAddField(propSys, slotId, reinterpret_cast<const char16_t*>(GX_VMA(0x49c6bc8ULL)), reinterpret_cast<const char16_t*>(GX_VMA(0x49c6bdcULL)), &descNoiseMask, 1, 1);
 
     // 7. NoiseFrequency (+0xa8)
     ParamGuiPropDesc descNoiseFreq = {
@@ -2210,13 +2241,15 @@ extern "C" void GXParamBankManagerD_Destruct(uint8_t* self) {
 
     uint64_t strCap = *reinterpret_cast<uint64_t*>(self + 0x178);
     if (strCap >= 8) {
+        void* heapBuf = *reinterpret_cast<void**>(self + 0x160);
         if (strCap + 1 >= 0x41) {
-            reinterpret_cast<FnFileLineAssert>(GX_VMA(0x20b55b0ULL))(
-                reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)),
-                0x120,
-                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+            DLAllocator* sAlloc = *reinterpret_cast<DLAllocator**>(self + 0x180);
+            if (sAlloc && heapBuf) {
+                sAlloc->vptr->freeBlock(sAlloc, heapBuf);
+            }
+        } else {
+            self[0x201] &= 0xfdU;
         }
-        self[0x201] &= 0xfdU;
     }
     *reinterpret_cast<uint64_t*>(self + 0x178) = 7;
     *reinterpret_cast<uint64_t*>(self + 0x170) = 0;
@@ -2262,10 +2295,10 @@ extern "C" void GXParamBankManagerD_Construct(uint8_t* self, DLAllocator* alloc)
     ParamHashNode* sentinel = static_cast<ParamHashNode*>(alloc->vptr->allocateAligned(alloc, 0x20, 0x8));
     if (sentinel != nullptr) {
         sentinel->next = sentinel;
+        sentinel->prev = sentinel;
     } else {
         ReportTransactionFailure();
     }
-    sentinel->prev = sentinel;
     outer->sentinel = sentinel;
     outer->buckets = nullptr;
     outer->bucketCapBytes = 0;
@@ -2428,8 +2461,7 @@ extern "C" void GXParamBankManagerE_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc1[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2730ULL))), 0};
     uint8_t* cb1 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb1 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb1 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb1 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb1 + 0x00) = GX_VMA(0x53b7160ULL);
         *reinterpret_cast<void**>(cb1 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb1 + 0x18) = 0;
@@ -2447,8 +2479,7 @@ extern "C" void GXParamBankManagerE_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc2[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d275eULL))), 0};
     uint8_t* cb2 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb2 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb2 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb2 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb2 + 0x00) = GX_VMA(0x53b7160ULL);
         *reinterpret_cast<void**>(cb2 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb2 + 0x18) = 0;
@@ -2466,8 +2497,7 @@ extern "C" void GXParamBankManagerE_RegisterDebugMenu(void* self, void* parentGu
     uint64_t labelDesc3[3] = {0, reinterpret_cast<uint64_t>(reinterpret_cast<const char16_t*>(GX_VMA(0x49d2790ULL))), 0};
     uint8_t* cb3 = static_cast<uint8_t*>(guiAlloc->vptr->allocateAligned(guiAlloc, 0x30, 0x8));
     if (cb3 != nullptr) {
-        uint32_t flags = (*reinterpret_cast<uint32_t*>(cb3 + 0x08) & 0x80000000U) | 0x40000000U;
-        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = flags;
+        *reinterpret_cast<uint32_t*>(cb3 + 0x08) = 0x40000000U;
         *reinterpret_cast<uint64_t*>(cb3 + 0x00) = GX_VMA(0x53b7160ULL);
         *reinterpret_cast<void**>(cb3 + 0x10) = self;
         *reinterpret_cast<uint32_t*>(cb3 + 0x18) = 0;
@@ -2617,12 +2647,19 @@ extern "C" void GXParamBankManagerE_SetActiveParamId(void* /*self*/, uint32_t pa
 }
 
 // 51. 0x21f2790 (698 B) — GXParamBankManagerE_UnloadBankById
-extern "C" void GXParamBankManagerE_UnloadBankById(ParamOuterHashTable* self, uint32_t /*unused*/, uint32_t bankId) {
+extern "C" void GXParamBankManagerE_UnloadBankById(
+    ParamOuterHashTable* self,
+    void* /*unused*/,
+    uint32_t bankId,
+    uint32_t overrideSlotIdx,
+    float blendTime)
+{
     uint8_t* globalRoot = *reinterpret_cast<uint8_t**>(GX_VMA(0x5540dd8ULL));
     uint8_t* sceneSys = *reinterpret_cast<uint8_t**>(globalRoot + 0x5ad0);
     uint32_t slotId = *reinterpret_cast<uint32_t*>(sceneSys + 0x44);
 
-    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(sceneSys, slotId);
+    reinterpret_cast<FnSceneBeginUnload>(GX_VMA(0x2185b50ULL))(
+        sceneSys, slotId, bankId, overrideSlotIdx, blendTime);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = 1;
 
     uint64_t outerIdx = ComputeLehmerHashBucket(bankId, 0xdeadbeefU, self->mask, self->maxBucketIdx);
@@ -2738,10 +2775,10 @@ extern "C" void GXParamBankManagerE_LoadBankFromStream(
                 ownerAlloc->vptr->allocateAligned(ownerAlloc, 0x20, 0x8));
             if (innerSent != nullptr) {
                 innerSent->next = innerSent;
+                innerSent->prev = innerSent;
             } else {
                 ReportTransactionFailure();
             }
-            innerSent->prev = innerSent;
             inner->sentinel = innerSent;
             inner->buckets = nullptr;
             inner->bucketCapBytes = 0;
@@ -2762,10 +2799,11 @@ extern "C" void GXParamBankManagerE_LoadBankFromStream(
             self->nodeAlloc->vptr->allocateAligned(self->nodeAlloc, 0x20, 0x8));
         if (newOuterNode == nullptr) {
             ReportTransactionFailure();
+            return;
         }
         ParamHashNode* headNext = self->sentinel->next;
-        newOuterNode->next = headNext;
-        newOuterNode->prev = headNext->prev;
+        newOuterNode->next = headNext ? headNext : newOuterNode;
+        newOuterNode->prev = headNext ? headNext->prev : newOuterNode;
         newOuterNode->key = bankId;
         newOuterNode->value = inner;
         if (self->count == 0x7fffffffffffffeULL) {
@@ -2804,10 +2842,12 @@ extern "C" void GXParamBankManagerE_LoadBankFromStream(
         if (innerNode == innerSentinel) {
             DLAllocator* ownerAlloc = self->ownerAlloc;
             uint8_t* elem = static_cast<uint8_t*>(ownerAlloc->vptr->allocateAligned(ownerAlloc, 0x78, 0x8));
-            if (elem != nullptr) {
-                reinterpret_cast<FnElemConstruct>(GX_VMA(0xe789d0ULL))(elem);
-                reinterpret_cast<FnElemInit>(GX_VMA(0xe78a80ULL))(elem);
+            if (elem == nullptr) {
+                ReportTransactionFailure();
+                continue;
             }
+            reinterpret_cast<FnElemConstruct>(GX_VMA(0xe789d0ULL))(elem);
+            reinterpret_cast<FnElemInit>(GX_VMA(0xe78a80ULL))(elem);
             *reinterpret_cast<uint32_t*>(elem + 0x70) = paramId;
             *reinterpret_cast<uint32_t*>(elem + 0x74) = bankId;
             reinterpret_cast<FnElemApply>(GX_VMA(0xe78c70ULL))(elem, 0.0f);
@@ -2817,10 +2857,11 @@ extern "C" void GXParamBankManagerE_LoadBankFromStream(
                 inner->nodeAlloc->vptr->allocateAligned(inner->nodeAlloc, 0x20, 0x8));
             if (newInnerNode == nullptr) {
                 ReportTransactionFailure();
+                continue;
             }
             ParamHashNode* iHeadNext = inner->sentinel->next;
-            newInnerNode->next = iHeadNext;
-            newInnerNode->prev = iHeadNext->prev;
+            newInnerNode->next = iHeadNext ? iHeadNext : newInnerNode;
+            newInnerNode->prev = iHeadNext ? iHeadNext->prev : newInnerNode;
             newInnerNode->key = paramId;
             newInnerNode->value = elem;
             if (inner->count == 0x7fffffffffffffeULL) {
@@ -2985,13 +3026,15 @@ extern "C" void GXParamBankManagerE_Destruct(uint8_t* self) {
 
     uint64_t strCap = *reinterpret_cast<uint64_t*>(self + 0xd0);
     if (strCap >= 8) {
+        void* heapBuf = *reinterpret_cast<void**>(self + 0xb8);
         if (strCap + 1 >= 0x41) {
-            reinterpret_cast<FnFileLineAssert>(GX_VMA(0x20b55b0ULL))(
-                reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)),
-                0x120,
-                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+            DLAllocator* sAlloc = *reinterpret_cast<DLAllocator**>(self + 0xd8);
+            if (sAlloc && heapBuf) {
+                sAlloc->vptr->freeBlock(sAlloc, heapBuf);
+            }
+        } else {
+            self[0x159] &= 0xfdU;
         }
-        self[0x159] &= 0xfdU;
     }
     *reinterpret_cast<uint64_t*>(self + 0xd0) = 7;
     *reinterpret_cast<uint64_t*>(self + 0xc8) = 0;

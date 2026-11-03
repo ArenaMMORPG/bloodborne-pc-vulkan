@@ -59,8 +59,7 @@ inline void ReleaseRefCounted(void* obj) noexcept {
     if (!obj) {
         return;
     }
-    std::int32_t prev = MemRef<std::int32_t>(obj, 0x08);
-    MemRef<std::int32_t>(obj, 0x08) = prev - 1;
+    std::int32_t prev = __atomic_fetch_sub(&MemRef<std::int32_t>(obj, 0x08), 1, __ATOMIC_ACQ_REL);
     if (prev <= 1) {
         VCall<void(*)(void*)>(obj, 0x00)(obj);
     }
@@ -335,18 +334,10 @@ extern "C" void sub_21c4730(void* vec, std::uint64_t new_cap) {
 
     std::uint64_t* old_begin = MemRef<std::uint64_t*>(vec, 0x08);
     std::uint64_t* old_end = MemRef<std::uint64_t*>(vec, 0x10);
-    if (old_begin != old_end) {
-        std::uint64_t* dst = new_buf;
-        for (std::uint64_t* cur = old_begin; cur != old_end; ++cur, ++dst) {
-            if (dst) {
-                *dst = *cur;
-            }
-        }
-        old_begin = MemRef<std::uint64_t*>(vec, 0x08);
-        old_end = MemRef<std::uint64_t*>(vec, 0x10);
-    }
-
     std::ptrdiff_t count = old_end - old_begin;
+    if (new_buf && count > 0) {
+        std::memcpy(new_buf, old_begin, static_cast<std::size_t>(count) * sizeof(std::uint64_t));
+    }
     if (old_begin) {
         void* free_alloc = MemRef<void*>(vec, 0x20);
         VCall<void(*)(void*, void*)>(free_alloc, 0x70)(free_alloc, old_begin);
@@ -373,18 +364,10 @@ extern "C" void sub_21c4630(void* vec, std::uint64_t new_cap) {
 
     std::uint64_t* old_begin = MemRef<std::uint64_t*>(vec, 0x08);
     std::uint64_t* old_end = MemRef<std::uint64_t*>(vec, 0x10);
-    if (old_begin != old_end) {
-        std::uint64_t* dst = new_buf;
-        for (std::uint64_t* cur = old_begin; cur != old_end; ++cur, ++dst) {
-            if (dst) {
-                *dst = *cur;
-            }
-        }
-        old_begin = MemRef<std::uint64_t*>(vec, 0x08);
-        old_end = MemRef<std::uint64_t*>(vec, 0x10);
-    }
-
     std::ptrdiff_t count = old_end - old_begin;
+    if (new_buf && count > 0) {
+        std::memcpy(new_buf, old_begin, static_cast<std::size_t>(count) * sizeof(std::uint64_t));
+    }
     if (old_begin) {
         void* free_alloc = MemRef<void*>(vec, 0x20);
         VCall<void(*)(void*, void*)>(free_alloc, 0x70)(free_alloc, old_begin);
@@ -801,6 +784,10 @@ extern "C" bool sub_21c36a0(void* self, const void* mtd_data, std::uint32_t mtd_
             MemRef<std::uint64_t>(cb_obj, 0x00) = 0;
         }
         MemRef<void*>(self, 0x130) = cb_obj;
+        if (!cb_obj) {
+            sub_26dc2f0(mtd_parser);
+            return false;
+        }
 
         std::uint32_t byte_stride = reg_count << 4;
         std::uint32_t cb_size = byte_stride;
@@ -1561,30 +1548,6 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
 // ============================================================================
 extern "C" void sub_21c1f80(void* frame_slot) {
     sub_21c1440(frame_slot);
-
-    std::uint8_t* stop_marker = static_cast<std::uint8_t*>(frame_slot) + 0xb8;
-    std::uint8_t* cur_marker = static_cast<std::uint8_t*>(frame_slot) + 0x7138;
-    std::uint8_t* pool_base = static_cast<std::uint8_t*>(frame_slot) + 0x6338;
-
-    do {
-        std::uint8_t* entry = pool_base;
-        for (std::uint32_t i = 0; i < 0x80U; ++i, entry += 0x18) {
-            if (void* q0 = MemRef<void*>(entry, -0x08)) {
-                void* alloc = sub_207b720(q0);
-                sub_26a9690(q0);
-                VCall<void(*)(void*, void*)>(alloc, 0x70)(alloc, q0);
-                MemRef<void*>(entry, -0x08) = nullptr;
-            }
-            if (void* q1 = MemRef<void*>(entry, 0x00)) {
-                void* alloc = sub_207b720(q1);
-                sub_26a9690(q1);
-                VCall<void(*)(void*, void*)>(alloc, 0x70)(alloc, q1);
-                MemRef<void*>(entry, 0x00) = nullptr;
-            }
-        }
-        cur_marker -= 0x0e10;
-        pool_base -= 0x0e10;
-    } while (cur_marker != stop_marker);
 }
 
 // ============================================================================
@@ -1652,8 +1615,10 @@ extern "C" void sub_21c1da0(void* self, void* dev_wrapper) {
     std::uint8_t* queue_base = frame_base + static_cast<std::size_t>(queue_idx) * 0x0e10ULL;
 
     std::int32_t active_slot = MemRef<std::int32_t>(queue_base, 0xcc4);
-    void* end_query = MemRef<void*>(queue_base, static_cast<std::ptrdiff_t>(active_slot) * 24 + 0xd0);
-    sub_216a070(MemRef<void*>(dev_wrapper, 0x08), nullptr, end_query);
+    if (active_slot >= 0 && active_slot < 0x80) {
+        void* end_query = MemRef<void*>(queue_base, static_cast<std::ptrdiff_t>(active_slot) * 24 + 0xd0);
+        sub_216a070(MemRef<void*>(dev_wrapper, 0x08), nullptr, end_query);
+    }
 
     std::int32_t stack_depth = MemRef<std::int32_t>(queue_base, 0xcc8);
     if (stack_depth > 0) {
@@ -1727,8 +1692,10 @@ extern "C" void sub_21c1bd0(void* self, void* dev_wrapper) {
         std::uint32_t frame_idx = MemRef<std::uint32_t>(self, 0x00);
         std::uint8_t* frame_base = static_cast<std::uint8_t*>(self) + static_cast<std::size_t>(frame_idx) * 0x7138ULL;
         std::int32_t active_slot = MemRef<std::int32_t>(frame_base, 0xcc4);
-        void* end_query = MemRef<void*>(frame_base, static_cast<std::ptrdiff_t>(active_slot) * 24 + 0xd0);
-        sub_216a070(MemRef<void*>(dev_wrapper, 0x08), nullptr, end_query);
+        if (active_slot >= 0 && active_slot < 0x80) {
+            void* end_query = MemRef<void*>(frame_base, static_cast<std::ptrdiff_t>(active_slot) * 24 + 0xd0);
+            sub_216a070(MemRef<void*>(dev_wrapper, 0x08), nullptr, end_query);
+        }
 
         std::int32_t depth = MemRef<std::int32_t>(frame_base, 0xcc8);
         if (depth > 0) {
@@ -1861,7 +1828,7 @@ extern "C" void sub_21c1540(void* self, void* dev_wrapper) {
     }
 
     while (sub_216a2f0(MemRef<void*>(dev_wrapper, 0x08), nullptr, MemRef<void*>(frame_base, 0x08), nullptr, 0, 0) != 0) {
-        sub_2bbfe68(1);
+        __builtin_ia32_pause();
     }
 
     sub_216a2f0(MemRef<void*>(dev_wrapper, 0x08), nullptr, MemRef<void*>(frame_base, 0x08), frame_base + 0x10, 0, 0);
@@ -2130,7 +2097,7 @@ extern "C" std::int64_t sub_21c0d30(void* self, void* dst_buf, std::uint64_t max
 
     std::ptrdiff_t unp_off = (hdr != nullptr) ? 0x10 : 0x00;
     const std::uint8_t* unp_ptr = entry + unp_off;
-    std::uint64_t unpacked_size = unp_ptr ? MemRef<std::uint32_t>(unp_ptr, 0x00) : 0ULL;
+    std::uint64_t unpacked_size = unp_ptr ? MemRef<std::uint64_t>(unp_ptr, 0x00) : 0ULL;
 
     struct StreamDesc {
         void* vtbl;

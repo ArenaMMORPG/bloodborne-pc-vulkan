@@ -328,8 +328,12 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             float wTone = *reinterpret_cast<float*>(viewBytes + 0x2b4c);
             uint8_t* pToneA = static_cast<uint8_t*>(sub_22044a0(*reinterpret_cast<void**>(selfBytes + 0x5978), viewBytes + 0x2a80));
             uint8_t* pToneB = static_cast<uint8_t*>(sub_22044a0(*reinterpret_cast<void**>(selfBytes + 0x5978), viewBytes + 0x2ae8));
-            *reinterpret_cast<float*>(pToneA + 0xe0) = *reinterpret_cast<float*>(pToneA + 0x94);
-            *reinterpret_cast<float*>(pToneB + 0xe0) = *reinterpret_cast<float*>(pToneB + 0x94);
+            if (*reinterpret_cast<float*>(pToneA + 0xe0) != *reinterpret_cast<float*>(pToneA + 0x94)) {
+                *reinterpret_cast<float*>(pToneA + 0xe0) = *reinterpret_cast<float*>(pToneA + 0x94);
+            }
+            if (*reinterpret_cast<float*>(pToneB + 0xe0) != *reinterpret_cast<float*>(pToneB + 0x94)) {
+                *reinterpret_cast<float*>(pToneB + 0xe0) = *reinterpret_cast<float*>(pToneB + 0x94);
+            }
 
             *reinterpret_cast<uint32_t*>(evalBuf + 0x00) = 0x40800000u;
             *reinterpret_cast<uint32_t*>(evalBuf + 0x04) = 0x400ccccdu;
@@ -462,8 +466,12 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             uint8_t* p1A = static_cast<uint8_t*>(sub_22044a0(*reinterpret_cast<void**>(selfBytes + 0x5978), viewBytes + 0x2a80));
             uint8_t* p1B = static_cast<uint8_t*>(sub_22044a0(*reinterpret_cast<void**>(selfBytes + 0x5978), viewBytes + 0x2ae8));
             float globalRef = *reinterpret_cast<float*>(pGlobalPostCfg + 0x98);
-            *reinterpret_cast<float*>(p1A + 0xdc) = globalRef;
-            *reinterpret_cast<float*>(p1B + 0xdc) = globalRef;
+            if (*reinterpret_cast<float*>(p1A + 0xdc) != globalRef) {
+                *reinterpret_cast<float*>(p1A + 0xdc) = globalRef;
+            }
+            if (*reinterpret_cast<float*>(p1B + 0xdc) != globalRef) {
+                *reinterpret_cast<float*>(p1B + 0xdc) = globalRef;
+            }
 
             *reinterpret_cast<uint32_t*>(evalBuf + 0x00) = 0x40800000u;
             *reinterpret_cast<uint32_t*>(evalBuf + 0x04) = 0x400ccccdu;
@@ -587,85 +595,91 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
                 std::memcpy(pYebisState + 0x31a0, evalBuf + 0x60, 16);
             }
 
-            float w4 = *reinterpret_cast<float*>(viewBytes + 0x2b50);
-            uint8_t* p4A = static_cast<uint8_t*>(sub_21ef2e0(*reinterpret_cast<void**>(selfBytes + 0x5990), viewBytes + 0x2a88));
-            uint8_t* p4B = static_cast<uint8_t*>(sub_21ef2e0(*reinterpret_cast<void**>(selfBytes + 0x5990), viewBytes + 0x2af0));
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x00) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x04) = 0x40b33333u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x08) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x0c) = 0x422d1168u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x10) = 0x3f000000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x14) = 0x42340000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x18) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x1c) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x20) = 3u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x24) = 3u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x28) = 1u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x2c) = 0xffffffffu;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x30) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x34) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x38) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x3c) = 0x40000000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x40) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x44) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x48) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x4c) = 0x42c80000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x50) = 0x43160000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x54) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x58) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x5c) = 0x461c4000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x60) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x64) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x68) = 0x3f000000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x6c) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x70) = 0x3f800000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x74) = 0u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x78) = 0x459c4000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x7c) = 0x3f000000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x80) = 0x3f000000u;
-            *reinterpret_cast<uint32_t*>(evalBuf + 0x84) = 0x3dcccccdu;
-
-            sub_e75b50(evalBuf, p4A + 8, p4B + 8, w4);
-            if (viewBytes[0x2bc5] != 0) {
-                *reinterpret_cast<float*>(evalBuf + 0x08) = *reinterpret_cast<float*>(viewBytes + 0x2bc8);
+            if (gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectDof)) {
+                float w4 = *reinterpret_cast<float*>(viewBytes + 0x2b50);
+                uint8_t* p4A = static_cast<uint8_t*>(sub_21ef2e0(*reinterpret_cast<void**>(selfBytes + 0x5990), viewBytes + 0x2a88));
+                uint8_t* p4B = static_cast<uint8_t*>(sub_21ef2e0(*reinterpret_cast<void**>(selfBytes + 0x5990), viewBytes + 0x2af0));
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x00) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x04) = 0x40b33333u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x08) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x0c) = 0x422d1168u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x10) = 0x3f000000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x14) = 0x42340000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x18) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x1c) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x20) = 3u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x24) = 3u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x28) = 1u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x2c) = 0xffffffffu;
                 *reinterpret_cast<uint32_t*>(evalBuf + 0x30) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x34) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x38) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x3c) = 0x40000000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x40) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x44) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x48) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x4c) = 0x42c80000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x50) = 0x43160000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x54) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x58) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x5c) = 0x461c4000u;
                 *reinterpret_cast<uint32_t*>(evalBuf + 0x60) = 0u;
-            }
-            if (pYebisState[0x3200] == 0) {
-                uint32_t dofMode;
-                if (pYebisState[0x3202] != 0) {
-                    dofMode = *reinterpret_cast<uint32_t*>(evalBuf + 0x60);
-                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x188) = dofMode;
-                } else {
-                    dofMode = *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x188);
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x64) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x68) = 0x3f000000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x6c) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x70) = 0x3f800000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x74) = 0u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x78) = 0x459c4000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x7c) = 0x3f000000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x80) = 0x3f000000u;
+                *reinterpret_cast<uint32_t*>(evalBuf + 0x84) = 0x3dcccccdu;
+
+                sub_e75b50(evalBuf, p4A + 8, p4B + 8, w4);
+                if (viewBytes[0x2bc5] != 0) {
+                    *reinterpret_cast<float*>(evalBuf + 0x08) = *reinterpret_cast<float*>(viewBytes + 0x2bc8);
+                    *reinterpret_cast<uint32_t*>(evalBuf + 0x30) = 0u;
+                    *reinterpret_cast<uint32_t*>(evalBuf + 0x60) = 0u;
                 }
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x18c) = *reinterpret_cast<uint32_t*>(evalBuf + 0x64);
-                std::memcpy(pGlobalPostCfg + 0x190, evalBuf + 0x68, 16);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x78);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x7c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x80);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1ac) = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x0c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x04);
-                if (dofMode == 0 && pYebisState[0x3201] != 0) {
-                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x08);
+                if (pYebisState[0x3200] == 0) {
+                    uint32_t dofMode;
+                    if (pYebisState[0x3202] != 0) {
+                        dofMode = *reinterpret_cast<uint32_t*>(evalBuf + 0x60);
+                        *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x188) = dofMode;
+                    } else {
+                        dofMode = *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x188);
+                    }
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x18c) = *reinterpret_cast<uint32_t*>(evalBuf + 0x64);
+                    std::memcpy(pGlobalPostCfg + 0x190, evalBuf + 0x68, 16);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x78);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x7c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1a8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x80);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1ac) = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x0c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x04);
+                    if (dofMode == 0 && pYebisState[0x3201] != 0) {
+                        *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x08);
+                    }
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x10);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1bc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x14);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x18);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x1c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1cc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x28);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x20);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x24);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x240) = *reinterpret_cast<uint32_t*>(evalBuf + 0x2c);
+                    uint32_t val30 = (*reinterpret_cast<uint8_t*>(GX_VMA(0x5540dd0ULL)) != 0) ? 0u : *reinterpret_cast<uint32_t*>(evalBuf + 0x30);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d0) = val30;
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x34);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x48);
+                    std::memcpy(pGlobalPostCfg + 0x2dc, evalBuf + 0x38, 16);
+                    std::memcpy(pGlobalPostCfg + 0x2ec, evalBuf + 0x4c, 16);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2fc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x5c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x84);
                 }
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1b8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x10);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1bc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x14);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x18);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1c8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x1c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1cc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x28);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x20);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x24);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x240) = *reinterpret_cast<uint32_t*>(evalBuf + 0x2c);
-                uint32_t val30 = (*reinterpret_cast<uint8_t*>(GX_VMA(0x5540dd0ULL)) != 0) ? 0u : *reinterpret_cast<uint32_t*>(evalBuf + 0x30);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d0) = val30;
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x34);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x48);
-                std::memcpy(pGlobalPostCfg + 0x2dc, evalBuf + 0x38, 16);
-                std::memcpy(pGlobalPostCfg + 0x2ec, evalBuf + 0x4c, 16);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2fc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x5c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1d8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x84);
+            } else if (pYebisState[0x3200] == 0) {
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x188) = 0u;
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1ac) = 0u;
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2d0) = 0u;
             }
 
             float w5 = *reinterpret_cast<float*>(viewBytes + 0x2b64);
@@ -678,25 +692,30 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x220) = (v0 != 0 && v4 == 0) ? 1u : 0u;
             }
 
-            float w6 = *reinterpret_cast<float*>(viewBytes + 0x2b60);
-            uint8_t* p6A = static_cast<uint8_t*>(sub_21fa460(*reinterpret_cast<void**>(selfBytes + 0x59a0), viewBytes + 0x2aa8));
-            uint8_t* p6B = static_cast<uint8_t*>(sub_21fa460(*reinterpret_cast<void**>(selfBytes + 0x59a0), viewBytes + 0x2b10));
-            sub_e82290(evalBuf, p6A + 8, p6B + 8, w6);
-            if (pYebisState[0x3200] == 0) {
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1dc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x04);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x08);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x0c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x350) = *reinterpret_cast<uint32_t*>(evalBuf + 0x30);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1ec) = *reinterpret_cast<uint32_t*>(evalBuf + 0x10);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x14);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x18);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x1c);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1fc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x20);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x200) = *reinterpret_cast<uint32_t*>(evalBuf + 0x24);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2ac) = *reinterpret_cast<uint32_t*>(evalBuf + 0x28);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2b0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x2c);
-                pGlobalPostCfg[0x204] = (*reinterpret_cast<uint32_t*>(evalBuf + 0x34) != 0) ? 1 : 0;
+            if (gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectMotionBlur)) {
+                float w6 = *reinterpret_cast<float*>(viewBytes + 0x2b60);
+                uint8_t* p6A = static_cast<uint8_t*>(sub_21fa460(*reinterpret_cast<void**>(selfBytes + 0x59a0), viewBytes + 0x2aa8));
+                uint8_t* p6B = static_cast<uint8_t*>(sub_21fa460(*reinterpret_cast<void**>(selfBytes + 0x59a0), viewBytes + 0x2b10));
+                sub_e82290(evalBuf, p6A + 8, p6B + 8, w6);
+                if (pYebisState[0x3200] == 0) {
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1dc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x04);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x08);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1e8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x0c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x350) = *reinterpret_cast<uint32_t*>(evalBuf + 0x30);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1ec) = *reinterpret_cast<uint32_t*>(evalBuf + 0x10);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x14);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f4) = *reinterpret_cast<uint32_t*>(evalBuf + 0x18);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1f8) = *reinterpret_cast<uint32_t*>(evalBuf + 0x1c);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1fc) = *reinterpret_cast<uint32_t*>(evalBuf + 0x20);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x200) = *reinterpret_cast<uint32_t*>(evalBuf + 0x24);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2ac) = *reinterpret_cast<uint32_t*>(evalBuf + 0x28);
+                    *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x2b0) = *reinterpret_cast<uint32_t*>(evalBuf + 0x2c);
+                    pGlobalPostCfg[0x204] = (*reinterpret_cast<uint32_t*>(evalBuf + 0x34) != 0) ? 1 : 0;
+                }
+            } else if (pYebisState[0x3200] == 0) {
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x1dc) = 0u;
+                pGlobalPostCfg[0x204] = 0;
             }
 
             float w7 = *reinterpret_cast<float*>(viewBytes + 0x2b5c);
@@ -1066,18 +1085,13 @@ void sub_229e0c0(void* pCtx) {
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x08);
     *reinterpret_cast<uint64_t*>(pDrawImpl + 0x78) |= 0x8000000ULL;
 
-    void* resources[1] = { pCBufferObj };
-    uint64_t maskBit = 0x800ULL;
-    for (int i = 0; i < 1; ++i) {
-        uint8_t* pRes = static_cast<uint8_t*>(resources[i]);
-        if (pRes != nullptr) {
-            uint64_t reqMask = maskBit | 0x10000ULL;
-            uint64_t curFlags = *reinterpret_cast<uint32_t*>(pRes + 0x44);
-            if ((curFlags & reqMask) != reqMask) {
-                __sync_fetch_and_or(reinterpret_cast<uint64_t*>(pRes + 0x44), reqMask);
-            }
+    uint8_t* pRes = static_cast<uint8_t*>(pCBufferObj);
+    if (pRes != nullptr) {
+        const uint32_t reqMask = 0x10800u;
+        uint32_t curFlags = *reinterpret_cast<uint32_t*>(pRes + 0x44);
+        if ((curFlags & reqMask) != reqMask) {
+            __sync_fetch_and_or(reinterpret_cast<uint32_t*>(pRes + 0x44), reqMask);
         }
-        maskBit += maskBit;
     }
     *reinterpret_cast<void**>(pDrawImpl + 0xc1a0) = pCBufferObj;
 }
@@ -1454,16 +1468,17 @@ void sub_229cb70(void* pSelf, void* pRenderDevHolder, const void* pCamera,
         alignas(16) uint8_t passCtx[0x870];
 
         if (pRenderDevHolder == nullptr ||
-            reinterpret_cast<uintptr_t>(pRenderDevHolder) == 0x2a2a2a2a2a2a2a2aULL) {
+            reinterpret_cast<uintptr_t>(pRenderDevHolder) == 0x2a2a2a2a2a2a2a2aULL ||
+            !gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectDynamicShadows)) {
             return;
         }
 
+        std::memset(passCtx, 0, sizeof(passCtx));
         for (uint32_t cascadeIdx = 0; cascadeIdx < 4; ++cascadeIdx) {
             std::memcpy(cascadeCam, camBytes, 0x84);
             sub_eac540(pCsmMgr, cascadeCam, camBytes, &lightDir, cascadeIdx);
 
             uint32_t nextIdx = cascadeIdx + 1;
-            std::memset(passCtx, 0, sizeof(passCtx));
             sub_22d4fd0(passCtx, *reinterpret_cast<void**>(pRenderDevHolder),
                         pRenderDevHolder, viewIdx, nextIdx, cascadeCam, nullptr, 0, 0, 0, 0);
 
@@ -1711,8 +1726,8 @@ void sub_229c200(void* pSelf, uint32_t width, uint32_t height) {
         std::memset(initDesc, 0, sizeof(initDesc));
         *reinterpret_cast<uint32_t*>(initDesc + 0x00) = width;
         *reinterpret_cast<uint32_t*>(initDesc + 0x04) = height;
-        *reinterpret_cast<uint32_t*>(initDesc + 0x08) = 0x800;
-        *reinterpret_cast<uint32_t*>(initDesc + 0x0c) = 0x800;
+        *reinterpret_cast<uint32_t*>(initDesc + 0x08) = (width > 0x800u) ? width : 0x800u;
+        *reinterpret_cast<uint32_t*>(initDesc + 0x0c) = (height > 0x800u) ? height : 0x800u;
         *reinterpret_cast<uint64_t*>(initDesc + 0x20) = *reinterpret_cast<uint64_t*>(pDev90 + 0x68);
         *reinterpret_cast<uint64_t*>(initDesc + 0x28) = *reinterpret_cast<uint64_t*>(pDev90 + 0x70);
         *reinterpret_cast<uint64_t*>(initDesc + 0x30) = 0;
@@ -2123,10 +2138,12 @@ bool sub_22979b0(void* pSelf, const void* pInitDesc, void* pFactory) {
     uint8_t* pDev90 = *reinterpret_cast<uint8_t**>(pGlobal6c8 + 0x90);
     alignas(32) uint8_t rtDesc[0x40];
     std::memset(rtDesc, 0, sizeof(rtDesc));
-    *reinterpret_cast<uint32_t*>(rtDesc + 0x00) = *reinterpret_cast<uint32_t*>(pDev90 + 0x80);
-    *reinterpret_cast<uint32_t*>(rtDesc + 0x04) = *reinterpret_cast<uint32_t*>(pDev90 + 0x84);
-    *reinterpret_cast<uint32_t*>(rtDesc + 0x08) = 0x800;
-    *reinterpret_cast<uint32_t*>(rtDesc + 0x0c) = 0x800;
+    const uint32_t initW = *reinterpret_cast<uint32_t*>(pDev90 + 0x80);
+    const uint32_t initH = *reinterpret_cast<uint32_t*>(pDev90 + 0x84);
+    *reinterpret_cast<uint32_t*>(rtDesc + 0x00) = initW;
+    *reinterpret_cast<uint32_t*>(rtDesc + 0x04) = initH;
+    *reinterpret_cast<uint32_t*>(rtDesc + 0x08) = (initW > 0x800u) ? initW : 0x800u;
+    *reinterpret_cast<uint32_t*>(rtDesc + 0x0c) = (initH > 0x800u) ? initH : 0x800u;
     *reinterpret_cast<uint64_t*>(rtDesc + 0x20) = *reinterpret_cast<uint64_t*>(pDev90 + 0x68);
     *reinterpret_cast<uint64_t*>(rtDesc + 0x28) = *reinterpret_cast<uint64_t*>(pDev90 + 0x70);
     *reinterpret_cast<uint64_t*>(rtDesc + 0x30) = 0;

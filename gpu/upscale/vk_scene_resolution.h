@@ -26,8 +26,10 @@ public:
     SceneTargets(const Instance&, Scheduler&, Runtime&, Lookup);
     ~SceneTargets();
     bool SetSize(SceneResolution::Size);
+    void SetBaseSize(SceneResolution::Size base) { base_size = base; size = base; }
     SceneResolution::Size Size() const { return size; }
-    bool Reduced() const { return size != SceneResolution::Size{}; }
+    SceneResolution::Size BaseSize() const { return base_size; }
+    bool Reduced() const { return size != SceneResolution::Size{} && size != base_size; }
     /// A reduced proxy can stand in for the image: a 1920x1080 scene target or, scaled by
     /// the same factor, a half-resolution (960x540) one (toggle SceneHalfRes).
     bool Eligible(const VideoCore::Image&) const;
@@ -108,6 +110,7 @@ private:
     Runtime& runtime;
     Lookup lookup;
     SceneResolution::Size size;
+    SceneResolution::Size base_size{};
     std::unordered_map<u64, std::unique_ptr<Entry>> entries; ///< by Key(uid, level)
     std::unordered_set<u64> tracked; ///< uids with proxies
     bool copying = false;

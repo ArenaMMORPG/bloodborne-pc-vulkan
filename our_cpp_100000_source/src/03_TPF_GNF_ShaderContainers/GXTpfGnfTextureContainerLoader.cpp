@@ -581,26 +581,15 @@ uint32_t GXTpfContainer_CreateTextureArrayFromAllEntries(
     uint32_t srgbFlag  = createFlags & 2u;
     uint32_t flagBit2  = createFlags & 4u;
 
-    for (uint32_t entryIdx = 0; entryIdx < textureCount; ++entryIdx) {
-        const uint8_t* curEntry = firstHdr;
-        for (uint32_t prevIdx = 0; prevIdx < entryIdx; ++prevIdx) {
-            GXTpfTextureSourceView stepView{ tpfBase, curEntry };
-            const GXTpfEntryStrategy* stepStrat = GXTpf_SelectStrategy(static_cast<int8_t>(tpfBase[0x0C]));
-            if (stepStrat == nullptr || !stepStrat->vptr->validateEntry(stepStrat, &stepView)) {
-                return 8;
-            }
-            uint32_t extCount = stepStrat->vptr->getHeaderExtCount(stepStrat, &stepView);
-            uint32_t hdrBytes = stepStrat->vptr->getHeaderByteSize(stepStrat, &stepView);
-            curEntry += hdrBytes;
-            for (uint32_t c = 0; c < extCount; ++c) {
-                uint32_t chunkSize = *reinterpret_cast<const uint32_t*>(curEntry + 0x04);
-                curEntry += chunkSize + 0x08;
-            }
-        }
+    const GXTpfEntryStrategy* strat = GXTpf_SelectStrategy(static_cast<int8_t>(tpfBase[0x0C]));
+    if (strat == nullptr) {
+        return 8;
+    }
 
+    const uint8_t* curEntry = firstHdr;
+    for (uint32_t entryIdx = 0; entryIdx < textureCount; ++entryIdx) {
         GXTpfTextureSourceView view{ tpfBase, curEntry };
-        const GXTpfEntryStrategy* strat = GXTpf_SelectStrategy(static_cast<int8_t>(tpfBase[0x0C]));
-        if (strat == nullptr || !strat->vptr->validateEntry(strat, &view)) {
+        if (!strat->vptr->validateEntry(strat, &view)) {
             return 8;
         }
         if (static_cast<uint8_t>(strat->vptr->getTextureType(strat, &view)) != 0) {
@@ -631,6 +620,14 @@ uint32_t GXTpfContainer_CreateTextureArrayFromAllEntries(
         if (strat->vptr->getHeight(strat, &view) != refHeight) {
             return 8;
         }
+
+        uint32_t extCount = strat->vptr->getHeaderExtCount(strat, &view);
+        uint32_t hdrBytes = strat->vptr->getHeaderByteSize(strat, &view);
+        curEntry += hdrBytes;
+        for (uint32_t c = 0; c < extCount; ++c) {
+            uint32_t chunkSize = *reinterpret_cast<const uint32_t*>(curEntry + 0x04);
+            curEntry += chunkSize + 0x08;
+        }
     }
 
     DLScratchScope scratchScope{};
@@ -658,30 +655,10 @@ uint32_t GXTpfContainer_CreateTextureArrayFromAllEntries(
     uint32_t hasError     = 1;
 
     uint32_t baseSubIdx = 0;
+    curEntry = firstHdr;
     for (uint32_t entryIdx = 0; entryIdx < textureCount; ++entryIdx) {
-        const uint8_t* curEntry = firstHdr;
-        for (uint32_t prevIdx = 0; prevIdx < entryIdx; ++prevIdx) {
-            GXTpfTextureSourceView stepView{ tpfBase, curEntry };
-            const GXTpfEntryStrategy* stepStrat = GXTpf_SelectStrategy(static_cast<int8_t>(tpfBase[0x0C]));
-            if (stepStrat == nullptr || !stepStrat->vptr->validateEntry(stepStrat, &stepView)) {
-                if (heapFallbackAlloc != nullptr) {
-                    heapFallbackAlloc->vptr->deallocate(heapFallbackAlloc, subresources);
-                }
-                DLScratchAlloc_ReleaseMark(scratchScope.savedMark);
-                return 8;
-            }
-            uint32_t extCount = stepStrat->vptr->getHeaderExtCount(stepStrat, &stepView);
-            uint32_t hdrBytes = stepStrat->vptr->getHeaderByteSize(stepStrat, &stepView);
-            curEntry += hdrBytes;
-            for (uint32_t c = 0; c < extCount; ++c) {
-                uint32_t chunkSize = *reinterpret_cast<const uint32_t*>(curEntry + 0x04);
-                curEntry += chunkSize + 0x08;
-            }
-        }
-
         GXTpfTextureSourceView view{ tpfBase, curEntry };
-        const GXTpfEntryStrategy* strat = GXTpf_SelectStrategy(static_cast<int8_t>(tpfBase[0x0C]));
-        if (strat == nullptr || !strat->vptr->validateEntry(strat, &view)) {
+        if (!strat->vptr->validateEntry(strat, &view)) {
             if (heapFallbackAlloc != nullptr) {
                 heapFallbackAlloc->vptr->deallocate(heapFallbackAlloc, subresources);
             }
@@ -706,6 +683,14 @@ uint32_t GXTpfContainer_CreateTextureArrayFromAllEntries(
             dst.slicePitch = slicePitch;
         }
         baseSubIdx += mipLevels8;
+
+        uint32_t extCount = strat->vptr->getHeaderExtCount(strat, &view);
+        uint32_t hdrBytes = strat->vptr->getHeaderByteSize(strat, &view);
+        curEntry += hdrBytes;
+        for (uint32_t c = 0; c < extCount; ++c) {
+            uint32_t chunkSize = *reinterpret_cast<const uint32_t*>(curEntry + 0x04);
+            curEntry += chunkSize + 0x08;
+        }
     }
 
     GXGnmRefCountedResource* createdTexObj = nullptr;
@@ -760,13 +745,17 @@ uint32_t GXTpfContainer_CreateTextureArrayFromAllEntries(
             if (srvOk) {
                 if (outTextureObj != nullptr) {
                     *outTextureObj = createdTexObj;
-                } else if (DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1 && createdTexObj != nullptr) {
+                } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
                     DLAllocator* resAlloc = createdTexObj->allocator;
                     createdTexObj->vptr->dtor(createdTexObj);
                     resAlloc->vptr->deallocate(resAlloc, createdTexObj);
                 }
                 hasError     = 0;
                 resultStatus = 0;
+            } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
+                DLAllocator* resAlloc = createdTexObj->allocator;
+                createdTexObj->vptr->dtor(createdTexObj);
+                resAlloc->vptr->deallocate(resAlloc, createdTexObj);
             }
         }
     }
@@ -942,13 +931,17 @@ uint32_t GXTpfContainer_CreateTexture3DFromEntry(
         if (srvOk) {
             if (outTextureObj != nullptr) {
                 *outTextureObj = createdTexObj;
-            } else if (DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1 && createdTexObj != nullptr) {
+            } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
                 DLAllocator* resAlloc = createdTexObj->allocator;
                 createdTexObj->vptr->dtor(createdTexObj);
                 resAlloc->vptr->deallocate(resAlloc, createdTexObj);
             }
             hasError     = 0;
             resultStatus = 0;
+        } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
+            DLAllocator* resAlloc = createdTexObj->allocator;
+            createdTexObj->vptr->dtor(createdTexObj);
+            resAlloc->vptr->deallocate(resAlloc, createdTexObj);
         }
     }
 
@@ -1134,13 +1127,17 @@ uint32_t GXTpfContainer_CreateTexture2DOrCubeFromEntry(
         if (srvOk) {
             if (outTextureObj != nullptr) {
                 *outTextureObj = createdTexObj;
-            } else if (DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1 && createdTexObj != nullptr) {
+            } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
                 DLAllocator* resAlloc = createdTexObj->allocator;
                 createdTexObj->vptr->dtor(createdTexObj);
                 resAlloc->vptr->deallocate(resAlloc, createdTexObj);
             }
             hasError     = 0;
             resultStatus = 0;
+        } else if (createdTexObj != nullptr && DLAtomic_FetchDecrement32(&createdTexObj->refCount) == 1) {
+            DLAllocator* resAlloc = createdTexObj->allocator;
+            createdTexObj->vptr->dtor(createdTexObj);
+            resAlloc->vptr->deallocate(resAlloc, createdTexObj);
         }
     }
 
@@ -1481,7 +1478,8 @@ int32_t GXTpfContainer_GetEntryFlagsShifted4(const uint8_t* tpfBase, uint32_t en
         *reinterpret_cast<const uint32_t*>(tpfBase + 0x04) == 0 ||
         *reinterpret_cast<const uint32_t*>(tpfBase + 0x08) == 0 ||
         (tpfBase[0x0C] & 0xFB) != 0 ||
-        tpfBase[0x0D] != 3)
+        tpfBase[0x0D] != 3 ||
+        entryIndex >= *reinterpret_cast<const uint32_t*>(tpfBase + 0x08))
     {
         return 0;
     }
@@ -1746,86 +1744,53 @@ uint32_t GXDdsHeader_GetSubresourceOffset(
     uint32_t rawMipCount = *reinterpret_cast<const uint32_t*>(ddsPtr + 0x1C);
     uint32_t totalMips   = (rawMipCount != 0u) ? rawMipCount : 1u;
 
-    uint32_t accumOffset = 0;
+    bool hasDx10 = ((ddsPtr[0x50] & 0x04) != 0 &&
+                    *reinterpret_cast<const uint32_t*>(ddsPtr + 0x54) == 0x30315844u);
+    bool isVolume = hasDx10
+        ? (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x84) == 4u)
+        : ((ddsPtr[0x72] & 0x20) != 0);
 
-    for (uint32_t s = 0; s < sliceIndex; ++s) {
-        for (uint32_t m = 0; m < totalMips; ++m) {
-            uint32_t mipDepth = 1u;
-            bool isVolume = false;
-            if ((ddsPtr[0x50] & 0x04) != 0 &&
-                *reinterpret_cast<const uint32_t*>(ddsPtr + 0x54) == 0x30315844u)
-            {
-                isVolume = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x84) == 4u);
-            } else {
-                isVolume = ((ddsPtr[0x72] & 0x20) != 0);
-            }
+    uint32_t baseHeight    = *reinterpret_cast<const uint32_t*>(ddsPtr + 0x0C);
+    uint32_t baseWidth     = *reinterpret_cast<const uint32_t*>(ddsPtr + 0x10);
+    uint32_t baseDepth     = *reinterpret_cast<const uint32_t*>(ddsPtr + 0x18);
+    uint32_t engineFmt     = GXDdsHeader_GetEnginePixelFormat(ddsPtr);
+    uint32_t bytesPerBlock = GXTpfFormat_GetBytesPerBlock(engineFmt);
+    uint32_t blockW        = GXTpfFormat_GetBlockWidth(engineFmt);
+    uint32_t blockH        = GXTpfFormat_GetBlockHeight(engineFmt);
 
-            if (isVolume) {
-                uint32_t d = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x18)) >> (m & 31u);
-                mipDepth = (d != 0u) ? d : 1u;
-            }
-
-            uint32_t mipHeight = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x0C)) >> (m & 31u);
-            uint32_t mipWidth  = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x10)) >> (m & 31u);
-
-            uint32_t engineFmt     = GXDdsHeader_GetEnginePixelFormat(ddsPtr);
-            uint32_t bytesPerBlock = GXTpfFormat_GetBytesPerBlock(engineFmt);
-            uint32_t blockW        = GXTpfFormat_GetBlockWidth(engineFmt);
-            uint32_t blockH        = GXTpfFormat_GetBlockHeight(engineFmt);
-
-            uint32_t sliceBytes = 0;
-            if (blockW != 0u && blockH != 0u) {
-                uint32_t wMinus1 = (mipWidth != 0u) ? (mipWidth - 1u) : 0u;
-                uint32_t blocksX = (wMinus1 + blockW) / blockW;
-                uint32_t hMinus1 = (mipHeight != 0u) ? (mipHeight - 1u) : 0u;
-                uint32_t blocksY = (hMinus1 + blockH) / blockH;
-                sliceBytes = blocksX * bytesPerBlock * blocksY;
-            }
-            accumOffset += sliceBytes * mipDepth;
+    auto calcMipBytes = [&](uint32_t m) -> uint32_t {
+        if (blockW == 0u || blockH == 0u) {
+            return 0u;
         }
+        uint32_t shift = m & 31u;
+        uint32_t mipDepth = 1u;
+        if (isVolume) {
+            uint32_t d = baseDepth >> shift;
+            mipDepth = (d != 0u) ? d : 1u;
+        }
+        uint32_t mipHeight = baseHeight >> shift;
+        uint32_t mipWidth  = baseWidth >> shift;
+        uint32_t wMinus1   = (mipWidth != 0u) ? (mipWidth - 1u) : 0u;
+        uint32_t blocksX   = (wMinus1 + blockW) / blockW;
+        uint32_t hMinus1   = (mipHeight != 0u) ? (mipHeight - 1u) : 0u;
+        uint32_t blocksY   = (hMinus1 + blockH) / blockH;
+        return (blocksX * bytesPerBlock * blocksY) * mipDepth;
+    };
+
+    uint32_t accumOffset = 0;
+    if (sliceIndex != 0u) {
+        uint32_t fullSliceBytes = 0;
+        for (uint32_t m = 0; m < totalMips; ++m) {
+            fullSliceBytes += calcMipBytes(m);
+        }
+        accumOffset = sliceIndex * fullSliceBytes;
     }
 
     for (uint32_t m = 0; m < mipIndex; ++m) {
-        uint32_t mipDepth = 1u;
-        bool isVolume = false;
-        if ((ddsPtr[0x50] & 0x04) != 0 &&
-            *reinterpret_cast<const uint32_t*>(ddsPtr + 0x54) == 0x30315844u)
-        {
-            isVolume = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x84) == 4u);
-        } else {
-            isVolume = ((ddsPtr[0x72] & 0x20) != 0);
-        }
-
-        if (isVolume) {
-            uint32_t d = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x18)) >> (m & 31u);
-            mipDepth = (d != 0u) ? d : 1u;
-        }
-
-        uint32_t mipHeight = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x0C)) >> (m & 31u);
-        uint32_t mipWidth  = (*reinterpret_cast<const uint32_t*>(ddsPtr + 0x10)) >> (m & 31u);
-
-        uint32_t engineFmt     = GXDdsHeader_GetEnginePixelFormat(ddsPtr);
-        uint32_t bytesPerBlock = GXTpfFormat_GetBytesPerBlock(engineFmt);
-        uint32_t blockW        = GXTpfFormat_GetBlockWidth(engineFmt);
-        uint32_t blockH        = GXTpfFormat_GetBlockHeight(engineFmt);
-
-        uint32_t sliceBytes = 0;
-        if (blockW != 0u && blockH != 0u) {
-            uint32_t wMinus1 = (mipWidth != 0u) ? (mipWidth - 1u) : 0u;
-            uint32_t blocksX = (wMinus1 + blockW) / blockW;
-            uint32_t hMinus1 = (mipHeight != 0u) ? (mipHeight - 1u) : 0u;
-            uint32_t blocksY = (hMinus1 + blockH) / blockH;
-            sliceBytes = blocksX * bytesPerBlock * blocksY;
-        }
-        accumOffset += sliceBytes * mipDepth;
+        accumOffset += calcMipBytes(m);
     }
 
-    uint32_t headerBytes = 0x80u;
-    if ((ddsPtr[0x50] & 0x04) != 0 &&
-        *reinterpret_cast<const uint32_t*>(ddsPtr + 0x54) == 0x30315844u)
-    {
-        headerBytes = 0x94u;
-    }
+    uint32_t headerBytes = hasDx10 ? 0x94u : 0x80u;
     return headerBytes + accumOffset;
 }
 
@@ -2109,6 +2074,9 @@ uint32_t GXConstantBufferArrayOwner_UpdateBufferData(
     uint32_t bufferIndex,
     const void* srcData)
 {
+    if (self == nullptr || self->buffers == nullptr || bufferIndex >= self->bufferCount) {
+        return 8;
+    }
     GXGnmRefCountedResource* targetBuffer = self->buffers[bufferIndex];
     GXGnmCommandContext_UpdateSubresource(
         cmdCtx, cmdCtx + 0xB730, targetBuffer, 0, nullptr, srcData, 0, 0);
@@ -2185,6 +2153,8 @@ uint32_t GXConstantBufferArrayOwner_CreateAndInitialize(
     owner->buffers = static_cast<GXGnmRefCountedResource**>(
         allocator->vptr->allocate(allocator, ptrArrayBytes));
     if ((*outOwner)->buffers == nullptr) {
+        allocator->vptr->deallocate(allocator, owner);
+        *outOwner = nullptr;
         return 9;
     }
 
@@ -2221,6 +2191,7 @@ uint32_t GXConstantBufferArrayOwner_CreateAndInitialize(
                     failedOwner->allocator->vptr->deallocate(failedOwner->allocator, failedOwner->buffers);
                 }
                 allocator->vptr->deallocate(allocator, failedOwner);
+                *outOwner = nullptr;
             }
             return err;
         }
@@ -2242,8 +2213,9 @@ uint32_t GXGammaRampAndFlipPresenter_PresentAndFlip(
 {
     int64_t bufferCount = *reinterpret_cast<int32_t*>(self + 0x328);
     uint8_t* cmdCtx     = *reinterpret_cast<uint8_t**>(self + 0x2D8);
-    int64_t curFlipArg  = *reinterpret_cast<int64_t*>(self + 0x2E0);
-    int64_t slotIdx     = curFlipArg % bufferCount;
+    if (bufferCount <= 0 || cmdCtx == nullptr) {
+        return 8;
+    }
 
     uint64_t curThreadId = DLThread_GetCurrentThreadId();
     if (curThreadId == *reinterpret_cast<uint64_t*>(cmdCtx + 0xB718)) {
@@ -2285,7 +2257,7 @@ uint32_t GXGammaRampAndFlipPresenter_PresentAndFlip(
                 uint32_t submitErr  = GXGnmCommandBuffer_SubmitFlip(
                     cmdCtx + 0x10,
                     vOutHandle,
-                    static_cast<uint64_t>(slotIdx),
+                    static_cast<uint64_t>(surfaceSlotIdx),
                     hwFlipMode,
                     *reinterpret_cast<uint64_t*>(self + 0x2E0));
                 if (submitErr != 0) {

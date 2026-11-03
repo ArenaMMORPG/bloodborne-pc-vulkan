@@ -9,51 +9,23 @@ void sub_28eaf20(uint32_t* pFirst, uint32_t* pLast, uint64_t count);
 
 namespace {
 
-// Helper: Convert 4 float lanes to 4 uint32_t lanes via 64-bit signed truncation (vcvttss2si r64, xmm)
+// Helper: Convert 4 non-negative float lanes in [0, 2^31-1] to 4 uint32_t lanes via SIMD cvttps_epi32
 static inline __m128 ffxCvttPsToU32ViaSi64(__m128 v) {
-    uint32_t c0 = static_cast<uint32_t>(_mm_cvttss_si64(v));
-    uint32_t c1 = static_cast<uint32_t>(_mm_cvttss_si64(_mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(v), 1))));
-    uint32_t c2 = static_cast<uint32_t>(_mm_cvttss_si64(_mm_movehl_ps(v, v)));
-    uint32_t c3 = static_cast<uint32_t>(_mm_cvttss_si64(_mm_castsi128_ps(_mm_shuffle_epi32(_mm_castps_si128(v), 3))));
-    __m128 r0 = _mm_castsi128_ps(_mm_cvtsi32_si128(static_cast<int32_t>(c0)));
-    __m128 r1 = _mm_castsi128_ps(_mm_cvtsi32_si128(static_cast<int32_t>(c1)));
-    __m128 r2 = _mm_castsi128_ps(_mm_cvtsi32_si128(static_cast<int32_t>(c2)));
-    __m128 r3 = _mm_castsi128_ps(_mm_cvtsi32_si128(static_cast<int32_t>(c3)));
-    __m128 res = _mm_insert_ps(r0, r1, 0x10);
-    res = _mm_insert_ps(res, r2, 0x20);
-    res = _mm_insert_ps(res, r3, 0x30);
-    return res;
+    return _mm_castsi128_ps(_mm_cvttps_epi32(v));
 }
 
-// Helper: Clamp (R, G, B, A) in [0, 1] and pack into 32-bit RGBA per lane matching original SIMD code
+// Helper: Clamp (R, G, B, A) in [0, 1] and pack into 32-bit RGBA per lane via direct SIMD shifts
 static inline __m128 ffxPackRgbaSimd(__m128 r, __m128 g, __m128 b, __m128 a) {
     const __m128 vZero = _mm_setzero_ps();
     const __m128 vOne  = _mm_set1_ps(1.0f);
     const __m128 v255  = _mm_set1_ps(255.0f);
-    const __m128 v256  = _mm_set1_ps(256.0f);
-    const __m128 v65536 = _mm_set1_ps(65536.0f);
-    const __m128 v16M  = _mm_set1_ps(16777216.0f);
 
-    r = _mm_mul_ps(_mm_min_ps(_mm_max_ps(r, vZero), vOne), v255);
-    g = _mm_mul_ps(_mm_mul_ps(_mm_min_ps(_mm_max_ps(g, vZero), vOne), v255), v256);
-    b = _mm_mul_ps(_mm_mul_ps(_mm_min_ps(_mm_max_ps(b, vZero), vOne), v255), v65536);
-    a = _mm_mul_ps(_mm_mul_ps(_mm_min_ps(_mm_max_ps(a, vZero), vOne), v255), v16M);
+    __m128i ri = _mm_cvttps_epi32(_mm_mul_ps(_mm_min_ps(_mm_max_ps(r, vZero), vOne), v255));
+    __m128i gi = _mm_slli_epi32(_mm_cvttps_epi32(_mm_mul_ps(_mm_min_ps(_mm_max_ps(g, vZero), vOne), v255)), 8);
+    __m128i bi = _mm_slli_epi32(_mm_cvttps_epi32(_mm_mul_ps(_mm_min_ps(_mm_max_ps(b, vZero), vOne), v255)), 16);
+    __m128i ai = _mm_slli_epi32(_mm_cvttps_epi32(_mm_mul_ps(_mm_min_ps(_mm_max_ps(a, vZero), vOne), v255)), 24);
 
-    __m128 ri = ffxCvttPsToU32ViaSi64(r);
-    __m128 gi = ffxCvttPsToU32ViaSi64(g);
-    __m128 bi = ffxCvttPsToU32ViaSi64(b);
-    __m128 ai = ffxCvttPsToU32ViaSi64(a);
-
-    const __m128 m000000FF = _mm_castsi128_ps(_mm_set1_epi32(0x000000FFu));
-    const __m128 mFFFFFF00 = _mm_castsi128_ps(_mm_set1_epi32(0xFFFFFF00u));
-    const __m128 m00FFFFFF = _mm_castsi128_ps(_mm_set1_epi32(0x00FFFFFFu));
-    const __m128 mFF000000 = _mm_castsi128_ps(_mm_set1_epi32(0xFF000000u));
-    const __m128 m0000FFFF = _mm_castsi128_ps(_mm_set1_epi32(0x0000FFFFu));
-    const __m128 mFFFF0000 = _mm_castsi128_ps(_mm_set1_epi32(0xFFFF0000u));
-
-    __m128 rg = _mm_or_ps(_mm_and_ps(ri, m000000FF), _mm_and_ps(gi, mFFFFFF00));
-    __m128 ba = _mm_or_ps(_mm_and_ps(bi, m00FFFFFF), _mm_and_ps(ai, mFF000000));
-    return _mm_or_ps(_mm_and_ps(rg, m0000FFFF), _mm_and_ps(ba, mFFFF0000));
+    return _mm_castsi128_ps(_mm_or_si128(_mm_or_si128(ri, gi), _mm_or_si128(bi, ai)));
 }
 
 // Helper: 2-iteration Newton-Raphson sqrt via vrsqrtps with zero-guard matching eboot.bin
@@ -722,6 +694,8 @@ void sub_28d02c0(
 
     const __m128 vOne = _mm_set1_ps(1.0f);
     const __m128 v65535 = _mm_set1_ps(65535.0f);
+    const __m128 vEps = _mm_set1_ps(1.0e-7f);
+    span = _mm_max_ps(span, vEps);
     __m128 scale = _mm_mul_ps(_mm_div_ps(vOne, span), v65535);
     __m128 bias  = _mm_sub_ps(_mm_setzero_ps(), _mm_mul_ps(minZ, scale));
 
@@ -745,15 +719,9 @@ void sub_28d02c0(
     const __m128 mLow16  = _mm_castsi128_ps(_mm_set1_epi32(0x0000FFFFu));
     const __m128i mHigh16 = _mm_set1_epi32(static_cast<int32_t>(0xFFFF0000u));
 
+    const __m128i vIdxStep = _mm_set1_epi32(static_cast<int32_t>(0xFFFC0000u));
     do {
-        uint32_t i0 = static_cast<uint32_t>(_mm_extract_ps(idxVec, 0)) + 0xFFFC0000u;
-        uint32_t i1 = static_cast<uint32_t>(_mm_extract_ps(idxVec, 1)) + 0xFFFC0000u;
-        uint32_t i2 = static_cast<uint32_t>(_mm_extract_ps(idxVec, 2)) + 0xFFFC0000u;
-        uint32_t i3 = static_cast<uint32_t>(_mm_extract_ps(idxVec, 3)) + 0xFFFC0000u;
-        __m128i iv = _mm_cvtsi32_si128(static_cast<int32_t>(i0));
-        iv = _mm_insert_epi32(iv, static_cast<int32_t>(i1), 1);
-        iv = _mm_insert_epi32(iv, static_cast<int32_t>(i2), 2);
-        iv = _mm_insert_epi32(iv, static_cast<int32_t>(i3), 3);
+        __m128i iv = _mm_add_epi32(_mm_castps_si128(idxVec), vIdxStep);
         idxVec = _mm_castsi128_ps(iv);
 
         uint64_t off = byteOff;
@@ -762,7 +730,7 @@ void sub_28d02c0(
         __m128 vy = _mm_load_ps(reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + off));
 
         __m128 viewZ = _mm_add_ps(_mm_mul_ps(m22, vy), _mm_add_ps(_mm_mul_ps(m21, vx), _mm_add_ps(m23, _mm_mul_ps(m20, vz))));
-        __m128 keyF  = _mm_add_ps(bias, _mm_mul_ps(scale, viewZ));
+        __m128 keyF  = _mm_min_ps(_mm_max_ps(_mm_add_ps(bias, _mm_mul_ps(scale, viewZ)), _mm_setzero_ps()), v65535);
         __m128 keyI  = ffxCvttPsToU32ViaSi64(keyF);
 
         __m128 packed = _mm_or_ps(_mm_and_ps(keyI, mLow16), _mm_castsi128_ps(_mm_and_si128(iv, mHigh16)));
@@ -812,6 +780,9 @@ void sub_28d0160(
     bool checkNear    = hasNearStart || hasNearRange;
 
     const float kOneZeroTable[2] = { 1.0f, 0.0f };
+    const float farStartSq  = (farStart >= 0.0f) ? (farStart * farStart) : -1.0f;
+    const float nearStartSq = (nearStart > 0.0f) ? (nearStart * nearStart) : 0.0f;
+    const float nearEndSq   = (nearEnd > 0.0f) ? (nearEnd * nearEnd) : 0.0f;
     uint64_t byteOff = 0;
 
     do {
@@ -820,6 +791,13 @@ void sub_28d0160(
         float dy = pos[1] - camY;
         float dz = pos[2] - camZ;
         float distSq = (dx * dx + dy * dy) + dz * dz;
+
+        if (distSq <= farStartSq && (!checkNear || (!noNearRange && distSq >= nearEndSq && distSq >= nearStartSq))) {
+            byteOff += step;
+            --count;
+            continue;
+        }
+
         float dist = std::sqrt(distSq);
 
         float factor;
@@ -906,7 +884,6 @@ void sub_28cfba0(
 
     uint32_t idxSumInt = startIdxOffset + count;
     float curPointIdxF = static_cast<float>(static_cast<int64_t>(idxSumInt));
-    uint64_t fixedNextByteOff = static_cast<uint32_t>(count * 4u + 4u);
 
     uint32_t bBits = static_cast<uint32_t>(_mm_cvttss_si64(_mm_set_ss((colorB * 255.0f) * 65536.0f))) & 0x00FF0000u;
     if (colorB > 1.0f) {
@@ -943,9 +920,10 @@ void sub_28cfba0(
 
         float dt = curTime - *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pTime) + off);
 
-        float nextX = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosX) + fixedNextByteOff);
-        float nextY = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + fixedNextByteOff);
-        float nextZ = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosZ) + fixedNextByteOff);
+        uint64_t nextOff = static_cast<uint32_t>(posByteOff + 4u);
+        float nextX = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosX) + nextOff);
+        float nextY = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + nextOff);
+        float nextZ = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosZ) + nextOff);
 
         float dx = nextX - __builtin_bit_cast(float, pxBits);
         float dy = nextY - __builtin_bit_cast(float, pyBits);
@@ -1309,9 +1287,10 @@ void sub_28ceec0(
         float py = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + off);
         float pz = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosZ) + off);
 
-        float nextX = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosX) + fixedNextByteOff);
-        float nextY = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + fixedNextByteOff);
-        float nextZ = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosZ) + fixedNextByteOff);
+        uint64_t nextOff = static_cast<uint32_t>(posByteOff + 4u);
+        float nextX = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosX) + nextOff);
+        float nextY = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosY) + nextOff);
+        float nextZ = *reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(pPosZ) + nextOff);
 
         float dx = nextX - px;
         float dy = nextY - py;

@@ -234,8 +234,7 @@ int32_t sub_bb71e0(
             sub_2bbf178(
                 reinterpret_cast<const char*>(GX_VMA(0x47ff0ffULL)),
                 reinterpret_cast<const char*>(GX_VMA(0x47ff0f4ULL)));
-        }
-        if (pCtxObj[0] != 0) {
+        } else if (pCtxObj[0] != 0) {
             if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
                 sub_bb1a90(reinterpret_cast<const char*>(GX_VMA(0x47fee42ULL)), 0x9f);
                 sub_bb1a90(reinterpret_cast<const char*>(GX_VMA(0x47ff164ULL)));
@@ -372,8 +371,7 @@ void sub_bb6fe0(void* this_rtt) {
             sub_2bbf178(
                 reinterpret_cast<const char*>(GX_VMA(0x47fedc5ULL)),
                 reinterpret_cast<const char*>(GX_VMA(0x47fee29ULL)));
-        }
-        if (pCtxObj[0] != 0) {
+        } else if (pCtxObj[0] != 0) {
             if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
                 sub_bb1a90(reinterpret_cast<const char*>(GX_VMA(0x47fee42ULL)), 0x45);
                 sub_bb1a90(reinterpret_cast<const char*>(GX_VMA(0x47fee94ULL)));
@@ -1031,10 +1029,13 @@ uint64_t sub_bb6100(void* a1, uint32_t a2, float f0, float f1, float f2, float f
 
 // 0xbb60a0 | 81 B | PPFX::ComputeFNumberFromCoCAndLensParams
 float sub_bb60a0(float fCoC, float fFocusDist, float fLensPower, float fSensorSize) {
-    if (fFocusDist <= 0.0f || fLensPower == 0.0f) {
+    if (fFocusDist <= 0.0f || fLensPower == 0.0f || fCoC == 0.0f) {
         return 1.0f;
     }
     float focalLen = fSensorSize / (fCoC + fCoC);
+    if (focalLen >= fFocusDist) {
+        fFocusDist = focalLen * bits_to_f32(0x3f8147aeu);
+    }
     float num = focalLen * fFocusDist;
     float denom = fFocusDist - focalLen;
     float ratio = (num / denom) / focalLen;
@@ -1260,7 +1261,10 @@ int32_t sub_bb5c90(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1270,10 +1274,6 @@ int32_t sub_bb5c90(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bf37f0(g_pSinglePostEffect(), maskIndex, regPair[2], a4, a5, pfxFmt);
 }
 
@@ -1309,7 +1309,10 @@ int32_t sub_bb5ae0(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1319,10 +1322,6 @@ int32_t sub_bb5ae0(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bf3610(g_pSinglePostEffect(), maskIndex, regPair[2], a4, a5, pfxFmt);
 }
 
@@ -1358,7 +1357,10 @@ int32_t sub_bb5930(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1368,10 +1370,6 @@ int32_t sub_bb5930(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bf3430(g_pSinglePostEffect(), modIndex, regPair[2], a4, a5, pfxFmt);
 }
 
@@ -1406,7 +1404,10 @@ int32_t sub_bb5790(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1416,10 +1417,6 @@ int32_t sub_bb5790(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bf39c0(g_pSinglePostEffect(), regPair[2], a3, a4, pfxFmt);
 }
 
@@ -1453,7 +1450,10 @@ int32_t sub_bb5600(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1463,10 +1463,6 @@ int32_t sub_bb5600(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bf3280(g_pSinglePostEffect(), regPair[2], a3, pfxFmt);
 }
 
@@ -1505,7 +1501,10 @@ int32_t sub_bb5430(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1515,10 +1514,6 @@ int32_t sub_bb5430(
         return hr;
     }
 
-    uint8_t dummyDesc[48];
-    void* pWrapper = regPair[1];
-    uint64_t vtbl = *reinterpret_cast<uint64_t*>(pWrapper);
-    reinterpret_cast<void (*)(void*, void*)>(*reinterpret_cast<uint64_t*>(vtbl + 0x50))(pWrapper, dummyDesc);
     return sub_bda460(
         g_pSinglePostEffect(),
         a2,
@@ -1562,7 +1557,10 @@ int32_t sub_bb5290(
     uint32_t oldFmt = sub_1086cf0(pGnmRenderTarget);
     sub_1086540(pGnmRenderTarget, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    hr = sub_26105f0(self + 0x18, pGnmRenderTarget, regPair);
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_26105f0(self + 0x18, pGnmRenderTarget, regPair);
+    }
     sub_1086540(pGnmRenderTarget, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1618,7 +1616,11 @@ int32_t sub_bb5080(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    int32_t hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    int32_t hr = 0;
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1674,7 +1676,11 @@ int32_t sub_bb4f60(
     uint32_t oldFmt = sub_1089960(pGnmTexture);
     sub_10883f0(pGnmTexture, gnmFormat);
     void* regPair[3] = {nullptr, nullptr, nullptr};
-    int32_t hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    int32_t hr = 0;
+    {
+        std::scoped_lock lk{g_yebis_reg_sync.mtx};
+        hr = sub_2610430(self + 0x18, pGnmTexture, regPair);
+    }
     sub_10883f0(pGnmTexture, oldFmt);
     if (hr < 0) {
         if (g_logEnabled() != 0 && g_logErrorEnabled() != 0) {
@@ -1773,7 +1779,7 @@ int32_t sub_bb4d70(void* this_ctx, int32_t iBackBuffer) {
             reinterpret_cast<const char*>(GX_VMA(0x47fd199ULL)),
             reinterpret_cast<const char*>(GX_VMA(0x47fd185ULL)));
     }
-    if (iBackBuffer >= 0 && iBackBuffer <= *reinterpret_cast<int32_t*>(self + 0x70)) {
+    if (iBackBuffer >= 0 && iBackBuffer < *reinterpret_cast<int32_t*>(self + 0x70)) {
         *reinterpret_cast<int32_t*>(self + 0x88) = iBackBuffer;
         void** ppBackBuffers = *reinterpret_cast<void***>(self + 0x80);
         *reinterpret_cast<void**>(self + 0x78) = ppBackBuffers[iBackBuffer];

@@ -1389,14 +1389,14 @@ inline void MarkConstantBuffersBoundAtomic(
     if (numBuffers == 0) {
         return;
     }
-    std::uint64_t curBit = 1ULL << startSlot;
+    std::uint32_t curBit = 1u << startSlot;
     for (std::uint32_t i = 0; i < numBuffers; ++i) {
         auto* cb = static_cast<std::uint8_t*>(constantBuffers[i]);
         if (cb) {
-            std::uint64_t reqFlags = curBit | stageBitFlag;
-            std::uint64_t existing = *reinterpret_cast<std::uint32_t*>(cb + 0x44);
+            std::uint32_t reqFlags = curBit | static_cast<std::uint32_t>(stageBitFlag);
+            std::uint32_t existing = *reinterpret_cast<std::uint32_t*>(cb + 0x44);
             if ((existing & reqFlags) != reqFlags) {
-                __sync_fetch_and_or(reinterpret_cast<volatile std::uint64_t*>(cb + 0x44), reqFlags);
+                __sync_fetch_and_or(reinterpret_cast<volatile std::uint32_t*>(cb + 0x44), reqFlags);
             }
         }
         curBit <<= 1;
@@ -2109,13 +2109,16 @@ void GXGnmCommandContext_ShutdownAndUnregisterSlot(void* context) {
     CGGfxContextGnm_ResetCommandChunks(base + 0x10);
 
     std::uint16_t slotId = *reinterpret_cast<std::uint16_t*>(base + 0xB724);
-    g_pGXRegisteredCommandContexts[slotId] = nullptr;
+    if (slotId <= 0xFFu) {
+        g_pGXRegisteredCommandContexts[slotId] = nullptr;
+    }
 
     g_GXCommandContextSlotMutex.vptr->Lock(&g_GXCommandContextSlotMutex, 0xFFFFFFFFu);
     if (slotId <= 0xFFu) {
         g_GXCommandContextSlotBitmask[slotId >> 6] &= ~(1ULL << (slotId & 63u));
     }
     g_GXCommandContextSlotMutex.vptr->Unlock(&g_GXCommandContextSlotMutex);
+    *reinterpret_cast<std::uint16_t*>(base + 0xB724) = 0x0100;
 }
 
 // [VMA: 0x2168080 | Size: 572 B]

@@ -42,8 +42,8 @@ struct CGContextStateShadowGnm {
     uint32_t               primitive_topology;     // +0x030
     uint32_t               pad034;                 // +0x034
     void*                  index_buffer;           // +0x038
-    uint32_t               index_format;           // +0x040
-    uint32_t               index_offset;           // +0x044
+    uint32_t               index_offset;           // +0x040
+    uint32_t               index_format;           // +0x044
     void*                  vertex_buffers[32];     // +0x048 (0x100 B)
     uint32_t               vertex_strides[32];     // +0x148 (0x080 B)
     uint32_t               vertex_offsets[32];     // +0x1c8 (0x080 B)
@@ -55,6 +55,7 @@ struct CGContextStateShadowGnm {
     uint32_t               pad4d8[2];              // +0x4d8
     void*                  blend_state;            // +0x4e0
     void*                  depth_stencil_state;    // +0x4e8
+    uint8_t                pad4f0[0x18];           // +0x4f0..+0x507
     void*                  render_target_views[8]; // +0x508 (shifted in shadow: +0x508..+0x547)
     void*                  depth_stencil_view;     // +0x548
     void*                  unordered_access_views[8]; // +0x550..+0x58f
@@ -67,6 +68,7 @@ struct CGContextStateShadowGnm {
     ShaderStageShadowState stages[6];              // +0x5c0..+0x238f (VS=0, PS=1, GS=2, HS=3, DS=4, CS=5)
     void*                  cs_uavs[8];             // +0x2390..+0x23cf
 };
+static_assert(sizeof(CGContextStateShadowGnm) == 0x23d0, "CGContextStateShadowGnm size must be 0x23d0");
 
 // ============================================================================
 // External Guest Bridges for 0x26d4550 .. 0x26d5960
@@ -218,21 +220,6 @@ extern "C" void* sub_26d5740(void* self) {
 // Releases linked command chunk chain (`self + 0x08`, stride `self->u32_18 << 6`) via allocator (`self + 0x00`).
 extern "C" void sub_26d56c0(uint8_t* self) {
     CGDeviceGnm_CreateDeferredContext(self, nullptr, nullptr);
-    void*** alloc_ptr = reinterpret_cast<void***>(*reinterpret_cast<void**>(self + 0x00));
-    if (alloc_ptr) {
-        uint64_t next_off = static_cast<uint64_t>(*reinterpret_cast<uint32_t*>(self + 0x18)) << 6;
-        uint8_t* chunk = *reinterpret_cast<uint8_t**>(self + 0x08);
-        while (chunk) {
-            alloc_ptr = reinterpret_cast<void***>(*reinterpret_cast<void**>(self + 0x00));
-            uint8_t* next_chunk = *reinterpret_cast<uint8_t**>(chunk + next_off);
-            using FreeFn = void (*)(void*, void*);
-            reinterpret_cast<FreeFn>((*alloc_ptr)[14])(alloc_ptr, chunk);
-            chunk = next_chunk;
-        }
-        *reinterpret_cast<uint32_t*>(self + 0x1c) = 0;
-        *reinterpret_cast<uint64_t*>(self + 0x10) = 0;
-        *reinterpret_cast<uint64_t*>(self + 0x08) = 0;
-    }
 }
 
 // VMA: 0x26d56b0 (16 B)

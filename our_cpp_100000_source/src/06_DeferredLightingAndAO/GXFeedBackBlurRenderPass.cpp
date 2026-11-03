@@ -35,7 +35,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <immintrin.h>
+
+#include "gx_direct_vulkan.h"
 
 extern "C" {
 
@@ -191,16 +194,17 @@ using FnVtableRetPtr = void* (*)(void*);
 using FnVtableInitContainer = void (*)(void*, void*, uint32_t);
 using FnVtableFreeContainer = void (*)(void*, void*);
 
-// Atomic resource usage bitflag marker (matches lock or QWORD PTR [res+0x44], mask)
+// Atomic resource usage bitflag marker (32-bit aligned at res+0x44)
 inline void gx_mark_resource_bound(void* pResource, uint64_t bitMask) noexcept {
     if (pResource != nullptr) {
         uint8_t* pBytes = static_cast<uint8_t*>(pResource);
-        uint64_t curFlags = *reinterpret_cast<uint32_t*>(pBytes + 0x44);
-        if ((curFlags & bitMask) != bitMask) {
+        const uint32_t mask32 = static_cast<uint32_t>(bitMask);
+        uint32_t curFlags = *reinterpret_cast<uint32_t*>(pBytes + 0x44);
+        if ((curFlags & mask32) != mask32) {
             __atomic_fetch_or(
-                reinterpret_cast<uint64_t*>(pBytes + 0x44),
-                bitMask,
-                __ATOMIC_SEQ_CST);
+                reinterpret_cast<uint32_t*>(pBytes + 0x44),
+                mask32,
+                __ATOMIC_RELAXED);
         }
     }
 }
@@ -624,10 +628,6 @@ void sub_22af630(
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
     sub_2168a20(pDrawImpl, pDrawImpl + 0xb730, pEnvCBuffer, 0, 0, lightEnvCBufferData, 0, 0);
 
-    alignas(16) uint8_t cullVol[0x510];
-    sub_22919c0(cullVol);
-    sub_2291c30(cullVol, pCameraViewData);
-
     // Update GPU timestamp query if frame counter advanced
     sub_22af5c0(pMgr);
 
@@ -872,6 +872,27 @@ void sub_22ae500(
     }
     if (*reinterpret_cast<uint32_t*>(pMgr + 0x7994) == 2u) {
         return;
+    }
+
+    if (!gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectReflections)) {
+        return;
+    }
+
+    // Throttle dynamic 6-face environment cubemap updates to 30 Hz (1 face per 33.3 ms, matching PS4 30 FPS)
+    // after the initial 6 faces have been rendered at least once.
+    {
+        static uint32_t s_totalFacesRendered = 0;
+        static uint64_t s_lastFaceTimeNs = 0;
+        struct timespec ts{};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t nowNs = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
+        if (s_totalFacesRendered >= 6u && (nowNs - s_lastFaceTimeNs) < 33000000ULL) {
+            return;
+        }
+        s_lastFaceTimeNs = nowNs;
+        if (s_totalFacesRendered < 6u) {
+            ++s_totalFacesRendered;
+        }
     }
 
     alignas(16) float localCamParams[36] = {};
@@ -1517,12 +1538,32 @@ void sub_22ad0e0(void* pTaskContext, void* pViewportState) {
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
     *reinterpret_cast<void**>(pDrawImpl + 0xc1b8) = pVertexShader;
 
-    void* pMergeShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee18ULL)));
-    void* pMergePS = nullptr;
-    if (pMergeShaderObj != nullptr) {
-        void** pVt = *reinterpret_cast<void***>(pMergeShaderObj);
-        pMergePS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pMergeShaderObj);
+    static void* s_cachedPkgSlot = nullptr;
+    static void* s_cachedMergePS = nullptr;
+    static void* s_cachedMaskPS = nullptr;
+    static void* s_cachedFallOffPS = nullptr;
+    if (s_cachedPkgSlot != pShaderPkgSlot || s_cachedMergePS == nullptr) {
+        s_cachedPkgSlot = pShaderPkgSlot;
+        void* pMergeShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee18ULL)));
+        s_cachedMergePS = nullptr;
+        if (pMergeShaderObj != nullptr) {
+            void** pVt = *reinterpret_cast<void***>(pMergeShaderObj);
+            s_cachedMergePS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pMergeShaderObj);
+        }
+        void* pMaskShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee50ULL)));
+        s_cachedMaskPS = nullptr;
+        if (pMaskShaderObj != nullptr) {
+            void** pVt = *reinterpret_cast<void***>(pMaskShaderObj);
+            s_cachedMaskPS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pMaskShaderObj);
+        }
+        void* pFallOffShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee7eULL)));
+        s_cachedFallOffPS = nullptr;
+        if (pFallOffShaderObj != nullptr) {
+            void** pVt = *reinterpret_cast<void***>(pFallOffShaderObj);
+            s_cachedFallOffPS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pFallOffShaderObj);
+        }
     }
+    void* pMergePS = s_cachedMergePS;
 
     float fWidth = static_cast<float>(static_cast<int64_t>(rtWidth));
     float fHeight = static_cast<float>(static_cast<int64_t>(rtHeight));
@@ -1641,12 +1682,7 @@ void sub_22ad0e0(void* pTaskContext, void* pViewportState) {
     *reinterpret_cast<uint64_t*>(pDrawImpl + 0x1968) |= 0x8ULL;
     *reinterpret_cast<void**>(pDrawImpl + 0xd140) = pTex1028;
 
-    void* pMaskShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee50ULL)));
-    void* pMaskPS = nullptr;
-    if (pMaskShaderObj != nullptr) {
-        void** pVt = *reinterpret_cast<void***>(pMaskShaderObj);
-        pMaskPS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pMaskShaderObj);
-    }
+    void* pMaskPS = s_cachedMaskPS;
 
     *reinterpret_cast<void**>(pDrawCtx + 0xa68) = pMaskPS;
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
@@ -1749,12 +1785,7 @@ void sub_22ad0e0(void* pTaskContext, void* pViewportState) {
         *reinterpret_cast<void**>(pSlot1018 + 0x40),
         *reinterpret_cast<void**>(pSlot0fc0 + 0x40));
 
-    void* pFallOffShaderObj = sub_2274be0(pShaderPkgSlot, reinterpret_cast<const char16_t*>(GX_VMA(0x49cee7eULL)));
-    void* pFallOffPS = nullptr;
-    if (pFallOffShaderObj != nullptr) {
-        void** pVt = *reinterpret_cast<void***>(pFallOffShaderObj);
-        pFallOffPS = reinterpret_cast<FnVtableRetPtr>(pVt[3])(pFallOffShaderObj);
-    }
+    void* pFallOffPS = s_cachedFallOffPS;
 
     *reinterpret_cast<void**>(pDrawCtx + 0xa68) = pFallOffPS;
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
@@ -2152,14 +2183,16 @@ void sub_22ac130(void* pTaskContext, void* pTexSlot3, void* pTexSlot33) {
     pGeomCtx = *reinterpret_cast<uint8_t**>(pTask + 0x440);
     gx_draw_fullscreen_quad(pGeomCtx, pShaderRepo);
 
-    // Unbind SRV slots 0 and 33
+    // Unbind SRV slots 0, 3 and 33
     *reinterpret_cast<void**>(pDrawCtx + 0x788) = nullptr;
+    *reinterpret_cast<void**>(pDrawCtx + 0x7a0) = nullptr;
     *reinterpret_cast<uint32_t*>(pDrawCtx + 0x960) = 0;
     srvMax = *reinterpret_cast<uint32_t*>(pDrawCtx + 0x964);
-    *reinterpret_cast<uint32_t*>(pDrawCtx + 0x964) = (srvMax > 1u) ? srvMax : 1u;
+    *reinterpret_cast<uint32_t*>(pDrawCtx + 0x964) = (srvMax > 4u) ? srvMax : 4u;
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
-    *reinterpret_cast<uint64_t*>(pDrawImpl + 0x1968) |= 0x1ULL;
+    *reinterpret_cast<uint64_t*>(pDrawImpl + 0x1968) |= 0x9ULL;
     *reinterpret_cast<void**>(pDrawImpl + 0xd128) = nullptr;
+    *reinterpret_cast<void**>(pDrawImpl + 0xd140) = nullptr;
 
     *reinterpret_cast<void**>(pDrawCtx + 0x890) = nullptr;
     srvMin = *reinterpret_cast<uint32_t*>(pDrawCtx + 0x960);
@@ -2320,6 +2353,8 @@ void sub_22ab850(void* pTaskContext, void* pViewportState) {
 
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
     void* pAlphaBS = *reinterpret_cast<void**>(pDefaultStates + 0x8);
+    *reinterpret_cast<void**>(pDrawCtx + 0x480) = pAlphaBS;
+    *reinterpret_cast<uint32_t*>(pDrawCtx + 0x498) = 0xffffffffu;
     *reinterpret_cast<void**>(pDrawImpl + 0xbc00) = pAlphaBS;
     *reinterpret_cast<uint64_t*>(pDrawImpl + 0xbca0) = 0;
     *reinterpret_cast<uint64_t*>(pDrawImpl + 0xbc98) = 0;
@@ -2327,13 +2362,17 @@ void sub_22ab850(void* pTaskContext, void* pViewportState) {
 
     pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
     pFogDSS = *reinterpret_cast<void**>(pGlobalDd8 + 0x65a8);
+    *reinterpret_cast<void**>(pDrawCtx + 0x210) = pFogDSS;
+    pDrawCtx[0x218] = 0x02;
     *reinterpret_cast<void**>(pDrawImpl + 0xbc08) = pFogDSS;
     pDrawImpl[0xbcb4] = 0x02;
     pDefaultRS = *reinterpret_cast<void**>(pDefaultStates + 0x1f8);
+    *reinterpret_cast<void**>(pDrawCtx + 0x258) = pDefaultRS;
     *reinterpret_cast<void**>(pDrawImpl + 0xb970) = pDefaultRS;
 
     pSlot1070 = *reinterpret_cast<uint8_t**>(pVpState + 0x1070);
     void* pSrvSlot3 = *reinterpret_cast<void**>(pSlot1070 + 0x48);
+    *reinterpret_cast<void**>(pDrawCtx + 0x7a0) = pSrvSlot3;
     *reinterpret_cast<uint64_t*>(pDrawImpl + 0x1968) |= 0x8ULL;
     *reinterpret_cast<void**>(pDrawImpl + 0xd140) = pSrvSlot3;
 
@@ -2393,30 +2432,42 @@ void sub_22ab850(void* pTaskContext, void* pViewportState) {
 
     sub_22740d0(pShaderRepo, pGeomSlot, pTex1068, 0, 0, pArg268, scatterVal, pArg278, 0, passMode, 0);
 
-    // Pop states directly back into pDrawImpl
+    // Pop states directly back into pDrawCtx and pDrawImpl, and unbind SRV slot 3
+    *reinterpret_cast<void**>(pDrawCtx + 0x7a0) = nullptr;
+    pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
+    *reinterpret_cast<uint64_t*>(pDrawImpl + 0x1968) |= 0x8ULL;
+    *reinterpret_cast<void**>(pDrawImpl + 0xd140) = nullptr;
+
     rsIdx = static_cast<uint8_t>(pDrawCtx[0x2090] - 1);
     pDrawCtx[0x2090] = rsIdx;
-    pDrawImpl = *reinterpret_cast<uint8_t**>(pDrawCtx + 0x8);
-    *reinterpret_cast<void**>(pDrawImpl + 0xb970) =
-        reinterpret_cast<void**>(pDrawCtx + 0x1ed0)[rsIdx];
+    void* poppedRS = reinterpret_cast<void**>(pDrawCtx + 0x1ed0)[rsIdx];
+    *reinterpret_cast<void**>(pDrawCtx + 0x258) = poppedRS;
+    *reinterpret_cast<void**>(pDrawImpl + 0xb970) = poppedRS;
 
     dssIdx = static_cast<uint8_t>(pDrawCtx[0x2091] - 1);
     pDrawCtx[0x2091] = dssIdx;
     pDssSlot = pDrawCtx + 0x1f10 + (static_cast<size_t>(dssIdx) << 4);
-    *reinterpret_cast<void**>(pDrawImpl + 0xbc08) = *reinterpret_cast<void**>(pDssSlot);
-    pDrawImpl[0xbcb4] = pDssSlot[0x8];
+    void* poppedDSS = *reinterpret_cast<void**>(pDssSlot);
+    uint8_t poppedStencilRef = pDssSlot[0x8];
+    *reinterpret_cast<void**>(pDrawCtx + 0x210) = poppedDSS;
+    pDrawCtx[0x218] = poppedStencilRef;
+    *reinterpret_cast<void**>(pDrawImpl + 0xbc08) = poppedDSS;
+    pDrawImpl[0xbcb4] = poppedStencilRef;
 
     pDrawCtx[0x1670] &= 0xefu;
 
     bsIdx = static_cast<uint8_t>(pDrawCtx[0x2092] - 1);
     pDrawCtx[0x2092] = bsIdx;
     pBsSlot = pDrawCtx + 0x1f90 + (static_cast<size_t>(bsIdx) << 5);
-    *reinterpret_cast<void**>(pDrawImpl + 0xbc00) = *reinterpret_cast<void**>(pBsSlot);
-    _mm_storeu_ps(
-        reinterpret_cast<float*>(pDrawImpl + 0xbc98),
-        _mm_loadu_ps(reinterpret_cast<const float*>(pBsSlot + 0x8)));
-    *reinterpret_cast<uint32_t*>(pDrawImpl + 0xbcb0) =
-        *reinterpret_cast<uint32_t*>(pBsSlot + 0x18);
+    void* poppedBS = *reinterpret_cast<void**>(pBsSlot);
+    *reinterpret_cast<void**>(pDrawCtx + 0x480) = poppedBS;
+    *reinterpret_cast<void**>(pDrawImpl + 0xbc00) = poppedBS;
+    __m128 bfVec = _mm_loadu_ps(reinterpret_cast<const float*>(pBsSlot + 0x8));
+    _mm_storeu_ps(reinterpret_cast<float*>(pDrawCtx + 0x488), bfVec);
+    _mm_storeu_ps(reinterpret_cast<float*>(pDrawImpl + 0xbc98), bfVec);
+    uint32_t poppedSampleMask = *reinterpret_cast<uint32_t*>(pBsSlot + 0x18);
+    *reinterpret_cast<uint32_t*>(pDrawCtx + 0x498) = poppedSampleMask;
+    *reinterpret_cast<uint32_t*>(pDrawImpl + 0xbcb0) = poppedSampleMask;
 
     if (scatterCtx.strCap >= 8 && scatterCtx.pAllocator != nullptr) {
         void** pAllocVt = *reinterpret_cast<void***>(scatterCtx.pAllocator);

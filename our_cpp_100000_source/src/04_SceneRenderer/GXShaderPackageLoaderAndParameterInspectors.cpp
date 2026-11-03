@@ -732,7 +732,10 @@ int32_t sub_21bf990(void* self, void* outTex, void* outView, uint32_t sliceMode,
         } else {
             *reinterpret_cast<uint8_t**>(linearHeap + 0x10) = newCur;
             MipSliceDesc* mipDescs = reinterpret_cast<MipSliceDesc*>(savedMark);
-            uint32_t r15Div = depthDivisor;
+            uint32_t r15Div = (sliceMode == 0) ? *reinterpret_cast<const uint32_t*>(r12 + 0x18) : depthDivisor;
+            if (r15Div == 0u) {
+                r15Div = 1u;
+            }
 
             if (arrayCount != 0) {
                 uint32_t mipStride = (rawMipCount > 1u) ? rawMipCount : 1u;
@@ -776,9 +779,6 @@ int32_t sub_21bf990(void* self, void* outTex, void* outView, uint32_t sliceMode,
             } else if (sliceMode == 2) {
                 height /= r15Div;
             }
-            if (sliceMode == 0) {
-                r15Div = *reinterpret_cast<const uint32_t*>(r12 + 0x18);
-            }
 
             struct GXTex2D3DDesc {
                 uint32_t width;      // rbp-0x58
@@ -802,9 +802,9 @@ int32_t sub_21bf990(void* self, void* outTex, void* outView, uint32_t sliceMode,
                     uint32_t format;   // rbp-0x70
                     uint32_t viewType; // rbp-0x6c (0x8)
                     uint32_t firstMip; // rbp-0x68 (0)
-                    uint32_t mipCount; // rbp-0x64 (1)
+                    uint32_t mipCount; // rbp-0x64
                     uint64_t reserved; // rbp-0x60 (0)
-                } srvDesc = {gxFormat, 0x08, 0, 1, 0};
+                } srvDesc = {gxFormat, 0x08, 0, mipCount, 0};
 
                 void* curDev = *reinterpret_cast<void**>(*reinterpret_cast<void**>(g_pGXContextSys_55406c8));
                 void* createdTexObj = *reinterpret_cast<void**>(outTex);
@@ -1175,6 +1175,8 @@ inline void* LookupShaderByStageAndName(
     void* foundShader  = nullptr;
 
     if (cur != end) {
+        const uint16_t* lowerTbl = sub_2bbec48();
+        const char16_t* qStrBase = (queryStr.capacity > 7) ? queryStr.ptr : queryStr.buf;
         for (; cur != end; cur += 0x48) {
             if (*reinterpret_cast<const uint32_t*>(cur + 0x08) != targetStage) {
                 continue;
@@ -1183,18 +1185,16 @@ inline void* LookupShaderByStageAndName(
             if (*reinterpret_cast<const uint64_t*>(cur + 0x30) >= 8) {
                 entryStr = *reinterpret_cast<const char16_t* const*>(cur + 0x18);
             }
-            const char16_t* qStr = (queryStr.capacity > 7) ? queryStr.ptr : queryStr.buf;
+            const char16_t* qStr = qStrBase;
 
             int16_t c1 = 0;
             int16_t c2 = 0;
             for (;;) {
                 uint8_t b1 = static_cast<uint8_t>(*entryStr & 0xFFu);
-                const uint16_t* tbl1 = sub_2bbec48();
-                uint16_t low1 = tbl1[b1];
+                uint16_t low1 = lowerTbl[b1];
 
                 uint8_t b2 = static_cast<uint8_t>(*qStr & 0xFFu);
-                const uint16_t* tbl2 = sub_2bbec48();
-                c2 = static_cast<int8_t>(tbl2[b2] & 0xFFu);
+                c2 = static_cast<int8_t>(lowerTbl[b2] & 0xFFu);
 
                 if (static_cast<uint8_t>(low1 & 0xFFu) == 0) {
                     c1 = 0;
@@ -1298,6 +1298,14 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
             const uint8_t* bndHdr = static_cast<const uint8_t*>(*bndReader.headerPtr);
             uint32_t fileCount = *reinterpret_cast<const uint32_t*>(bndHdr + 0x0C);
             if (fileCount != 0) {
+                {
+                    uint8_t* vecBegin = *reinterpret_cast<uint8_t**>(r14Self + 0x10);
+                    uint8_t* vecCap   = *reinterpret_cast<uint8_t**>(r14Self + 0x20);
+                    size_t curCap = static_cast<size_t>(vecCap - vecBegin) / 0x48;
+                    if (curCap < fileCount) {
+                        sub_21bf340(r14Self + 0x08, fileCount);
+                    }
+                }
                 for (uint32_t idx = 0; idx < fileCount; ++idx) {
                     if (bndReader.headerPtr == nullptr || *bndReader.headerPtr == nullptr) {
                         continue;
@@ -1397,16 +1405,15 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                     sub_21bc7b0(pathForBase, &baseNameW);
 
                     if (extPtr != nullptr) {
-                        auto matchExtCI = [](const char16_t* cand, const char16_t* targetExt) -> bool {
+                        const uint16_t* lowerTbl = sub_2bbec48();
+                        auto matchExtCI = [lowerTbl](const char16_t* cand, const char16_t* targetExt) -> bool {
                             size_t i = 0;
                             for (;;) {
                                 uint8_t bT = static_cast<uint8_t>(targetExt[i] & 0xFFu);
-                                const uint16_t* t1 = sub_2bbec48();
-                                uint16_t lowT = t1[bT];
+                                uint16_t lowT = lowerTbl[bT];
 
                                 uint8_t bC = static_cast<uint8_t>(cand[i] & 0xFFu);
-                                const uint16_t* t2 = sub_2bbec48();
-                                int16_t lowC = static_cast<int8_t>(t2[bC] & 0xFFu);
+                                int16_t lowC = static_cast<int8_t>(lowerTbl[bC] & 0xFFu);
 
                                 if (static_cast<uint8_t>(lowT & 0xFFu) == 0) {
                                     return lowC == 0;
@@ -1453,12 +1460,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<uint32_t*>(shObj + 0x0C) = 0;
                                 *reinterpret_cast<uintptr_t**>(shObj + 0x00) = g_vtable_535f910;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a5f70(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 4;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a5f70(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 4;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         } else if (matchExtCI(extPtr, kWStr_ExtVpo_49d2836)) {
                             // .vpo -> Stage 5 (GXVertexShader, 0x28 B)
@@ -1471,12 +1478,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<void**>(shObj + 0x20) = nullptr;
                                 *reinterpret_cast<void**>(shObj + 0x18) = nullptr;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a6510(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 5;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a6510(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 5;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         } else if (matchExtCI(extPtr, kWStr_ExtGpo_49d2854)) {
                             // .gpo -> Stage 3 (GXGeometryShader, 0x28 B)
@@ -1489,12 +1496,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<void**>(shObj + 0x20) = nullptr;
                                 *reinterpret_cast<void**>(shObj + 0x18) = nullptr;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a57f0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 3;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a57f0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 3;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         } else if (matchExtCI(extPtr, kWStr_ExtDpo_49d284a)) {
                             // .dpo -> Stage 1 (GXDomainShader, 0x18 B)
@@ -1505,12 +1512,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<uint32_t*>(shObj + 0x0C) = 0;
                                 *reinterpret_cast<uintptr_t**>(shObj + 0x00) = g_vtable_535f880;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a4cc0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 1;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a4cc0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 1;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         } else if (matchExtCI(extPtr, kWStr_ExtHpo_49d2840)) {
                             // .hpo -> Stage 2 (GXHullShader, 0x18 B)
@@ -1521,12 +1528,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<uint32_t*>(shObj + 0x0C) = 0;
                                 *reinterpret_cast<uintptr_t**>(shObj + 0x00) = g_vtable_535f8b0;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a51a0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 2;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a51a0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 2;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         } else if (matchExtCI(extPtr, kWStr_ExtCpo_49d2862)) {
                             // .cpo -> Stage 0 (GXComputeShader, 0x18 B)
@@ -1537,12 +1544,12 @@ bool sub_21bd870(void* self, const void* bndData, uint64_t bndSize) {
                                 *reinterpret_cast<uint32_t*>(shObj + 0x0C) = 0;
                                 *reinterpret_cast<uintptr_t**>(shObj + 0x00) = g_vtable_535f850;
                                 *reinterpret_cast<void**>(shObj + 0x10) = nullptr;
+                                sub_21a47e0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
+                                stagingEntry.shaderObj   = shObj;
+                                stagingEntry.shaderStage = 0;
+                                uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
+                                shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             }
-                            sub_21a47e0(shObj, entryBuf.dataPtr, entryBuf.dataSize, 0, 0);
-                            stagingEntry.shaderObj   = shObj;
-                            stagingEntry.shaderStage = 0;
-                            uintptr_t* shVtbl = *reinterpret_cast<uintptr_t**>(shObj);
-                            shaderCodeSize = reinterpret_cast<uint32_t(*)(void*)>(shVtbl[0x10 / 8])(shObj);
                             matchedAny = true;
                         }
 
@@ -1710,19 +1717,6 @@ void sub_21bd6c0(void* self) {
 
     uint8_t* rbx = *reinterpret_cast<uint8_t**>(r14 + 0x10);
     if (rbx != nullptr) {
-        uint8_t* r12 = *reinterpret_cast<uint8_t**>(r14 + 0x18);
-        for (uint8_t* p = rbx; p != r12; p += 0x48) {
-            if (*reinterpret_cast<uint64_t*>(p + 0x30) >= 8) {
-                void* strBuf = *reinterpret_cast<void**>(p + 0x18);
-                void* strAlloc = *reinterpret_cast<void**>(p + 0x38);
-                uintptr_t* strVtbl = *reinterpret_cast<uintptr_t**>(strAlloc);
-                reinterpret_cast<void(*)(void*, void*)>(strVtbl[0x70 / 8])(strAlloc, strBuf);
-            }
-            *reinterpret_cast<uint64_t*>(p + 0x30) = 7;
-            *reinterpret_cast<uint64_t*>(p + 0x28) = 0;
-            *reinterpret_cast<uint16_t*>(p + 0x18) = 0;
-        }
-        rbx = *reinterpret_cast<uint8_t**>(r14 + 0x10);
         void* vecAlloc = *reinterpret_cast<void**>(r14 + 0x28);
         uintptr_t* vecVtbl = *reinterpret_cast<uintptr_t**>(vecAlloc);
         reinterpret_cast<void(*)(void*, void*)>(vecVtbl[0x70 / 8])(vecAlloc, rbx);
@@ -1742,19 +1736,6 @@ void sub_21bd630(void* self) {
 
     uint8_t* rbx = *reinterpret_cast<uint8_t**>(r14 + 0x10);
     if (rbx != nullptr) {
-        uint8_t* r15 = *reinterpret_cast<uint8_t**>(r14 + 0x18);
-        for (uint8_t* p = rbx; p != r15; p += 0x48) {
-            if (*reinterpret_cast<uint64_t*>(p + 0x30) >= 8) {
-                void* strBuf = *reinterpret_cast<void**>(p + 0x18);
-                void* strAlloc = *reinterpret_cast<void**>(p + 0x38);
-                uintptr_t* strVtbl = *reinterpret_cast<uintptr_t**>(strAlloc);
-                reinterpret_cast<void(*)(void*, void*)>(strVtbl[0x70 / 8])(strAlloc, strBuf);
-            }
-            *reinterpret_cast<uint64_t*>(p + 0x30) = 7;
-            *reinterpret_cast<uint64_t*>(p + 0x28) = 0;
-            *reinterpret_cast<uint16_t*>(p + 0x18) = 0;
-        }
-        rbx = *reinterpret_cast<uint8_t**>(r14 + 0x10);
         void* vecAlloc = *reinterpret_cast<void**>(r14 + 0x28);
         uintptr_t* vecVtbl = *reinterpret_cast<uintptr_t**>(vecAlloc);
         reinterpret_cast<void(*)(void*, void*)>(vecVtbl[0x70 / 8])(vecAlloc, rbx);
@@ -1850,7 +1831,7 @@ void sub_21bd250(void* self, void* context) {
             for (;;) {
                 sub_e48400(*rbx, context);
                 uint32_t* r15Item = static_cast<uint32_t*>(*rbx);
-                if (r15Item[0] >= 3u) {
+                if (r15Item == nullptr || r15Item[0] >= 3u) {
                     if (r15Item != nullptr) {
                         void* shHeap = *reinterpret_cast<void**>(g_pShaderHeap_5540680);
                         sub_e483a0(r15Item);

@@ -928,7 +928,15 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
     std::optional<SceneResolution::Size> pass_size;
     const bool reduced = ReducedPass(pipeline, pass_size);
-    push_data.scene_size = reduced ? SceneResolution::Pack(scene_targets->Size()) : 0;
+    if (reduced) {
+        const auto size = scene_targets->Size();
+        const auto base = scene_targets->BaseSize();
+        const u32 eff_w = std::max(1u, u32(std::lround(double(size.width) * 1920.0 / double(base.width))));
+        const u32 eff_h = std::max(1u, u32(std::lround(double(size.height) * 1080.0 / double(base.height))));
+        push_data.scene_size = SceneResolution::Pack({eff_w, eff_h});
+    } else {
+        push_data.scene_size = 0;
+    }
 
     RenderState state;
     state.width = instance.GetMaxFramebufferWidth();
@@ -948,12 +956,14 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         state.height = size.height ? size.height : 1080;
     }
     if (reduced) {
-        // Half-resolution passes keep the scene's factor (proxy / native = scene / 1920).
+        // Half-resolution passes keep the scene's factor (proxy / native = scene / base).
         const auto size = scene_targets->Size();
+        const auto base = scene_targets->BaseSize();
         const auto proxy = pass_size.value_or(size);
         state.width = proxy.width;
         state.height = proxy.height;
-        target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
+        target_scale = {float(size.width) / float(base.width),
+                        float(size.height) / float(base.height)};
     }
     if (FrameCapture::Active()) {
         std::array<const VideoCore::ImageInfo*, Gcn::NUM_COLOR_BUFFERS> colors{};

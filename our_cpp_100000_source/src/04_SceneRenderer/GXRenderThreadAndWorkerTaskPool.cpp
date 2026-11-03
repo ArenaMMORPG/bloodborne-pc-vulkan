@@ -86,10 +86,11 @@ void* GXGlobalSingleton56a6c38_EnsureInitializedA() {
     if (void* existing = *reinterpret_cast<void**>(GX_VMA(0x56a6c38ULL)); existing != nullptr) {
         return existing;
     }
+    bool guarded_mtx = false;
     if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a5740ULL)) == 0) {
         if (reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbe538ULL))(reinterpret_cast<void*>(GX_VMA(0x56a5740ULL))) != 0) {
             *reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) = 0;
-            reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a5740ULL)));
+            guarded_mtx = true;
         }
     }
     if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) == 0) {
@@ -107,12 +108,16 @@ void* GXGlobalSingleton56a6c38_EnsureInitializedA() {
         }
         *reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) = 1;
     }
+    if (guarded_mtx) {
+        reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a5740ULL)));
+    }
     if (void* existing = *reinterpret_cast<void**>(GX_VMA(0x56a6c38ULL)); existing != nullptr) {
         return existing;
     }
+    bool guarded_obj = false;
     if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a6c98ULL)) == 0) {
         if (reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbe538ULL))(reinterpret_cast<void*>(GX_VMA(0x56a6c98ULL))) != 0) {
-            reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a6c98ULL)));
+            guarded_obj = true;
         }
     }
     uintptr_t raw_obj = GX_VMA(0x56a6c40ULL);
@@ -146,6 +151,9 @@ void* GXGlobalSingleton56a6c38_EnsureInitializedA() {
     *reinterpret_cast<uint64_t*>(obj2 + 0x48) = 0;
     *reinterpret_cast<uint64_t*>(obj2 + 0x40) = 0;
     *reinterpret_cast<uint64_t*>(GX_VMA(0x56a6c38ULL)) = reinterpret_cast<uint64_t>(obj2);
+    if (guarded_obj) {
+        reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a6c98ULL)));
+    }
     return obj2;
 }
 
@@ -153,70 +161,7 @@ void* GXGlobalSingleton56a6c38_EnsureInitializedA() {
 // [3] 0x21b9b80 (473 B) - GXGlobalSingleton56a6c38_EnsureInitializedB
 // ============================================================================
 void* GXGlobalSingleton56a6c38_EnsureInitializedB() {
-    if (void* existing = *reinterpret_cast<void**>(GX_VMA(0x56a6c38ULL)); existing != nullptr) {
-        return existing;
-    }
-    if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a5740ULL)) == 0) {
-        if (reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbe538ULL))(reinterpret_cast<void*>(GX_VMA(0x56a5740ULL))) != 0) {
-            *reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) = 0;
-            reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a5740ULL)));
-        }
-    }
-    if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) == 0) {
-        uintptr_t raw_mtx = GX_VMA(0x56a5720ULL);
-        uintptr_t align_off = (0ULL - (raw_mtx & 0xFFFFFFFFULL)) & 7ULL;
-        auto* mtx = reinterpret_cast<uint8_t*>(raw_mtx + align_off);
-        mtx[0x10] = 0;
-        *reinterpret_cast<uint64_t*>(mtx) = GX_VMA(0x52b6230ULL);
-        bool ok = reinterpret_cast< bool (*)(void*) >(GX_VMA(0x207ee80ULL))(mtx);
-        if (!ok) {
-            int32_t res = reinterpret_cast<FnIntPtr>(GX_VMA(0x2083fe0ULL))(mtx + 0x08);
-            if (res == 0) {
-                mtx[0x10] = 1;
-            }
-        }
-        *reinterpret_cast<uint8_t*>(GX_VMA(0x56a573fULL)) = 1;
-    }
-    if (void* existing = *reinterpret_cast<void**>(GX_VMA(0x56a6c38ULL)); existing != nullptr) {
-        return existing;
-    }
-    if (*reinterpret_cast<uint8_t*>(GX_VMA(0x56a6c98ULL)) == 0) {
-        if (reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbe538ULL))(reinterpret_cast<void*>(GX_VMA(0x56a6c98ULL))) != 0) {
-            reinterpret_cast<FnVoidPtr>(GX_VMA(0x2bbe558ULL))(reinterpret_cast<void*>(GX_VMA(0x56a6c98ULL)));
-        }
-    }
-    uintptr_t raw_obj = GX_VMA(0x56a6c40ULL);
-    uintptr_t obj_off = (0ULL - (raw_obj & 0xFFFFFFFFULL)) & 7ULL;
-    auto* obj = reinterpret_cast<uint8_t*>(raw_obj + obj_off);
-    *reinterpret_cast<uint64_t*>(obj + 0x00) = GX_VMA(0x53b3ba0ULL);
-    *reinterpret_cast<uint64_t*>(obj + 0x10) = 0;
-    *reinterpret_cast<uint64_t*>(obj + 0x08) = 0;
-
-    auto** heap_slot = reinterpret_cast<uint8_t**>(GX_VMA(0x5540668ULL));
-    uint8_t* heap = *heap_slot;
-    if (heap == nullptr) {
-        heap = static_cast<uint8_t*>(reinterpret_cast<FnPtrVoid>(GX_VMA(0x207bbf0ULL))()) + 0x458;
-        *heap_slot = heap;
-    }
-    uint64_t heap_caps = 0;
-    auto* heap_vtbl = *reinterpret_cast<void (***)(void*, void*, uint32_t)>(heap);
-    heap_vtbl[4](&heap_caps, heap, 0);
-    if ((heap_caps & 0x20ULL) == 0) {
-        reinterpret_cast<void (*)(uint32_t, uint32_t, const char*)>(GX_VMA(0x20b55b0ULL))(
-            0, 0x3e, reinterpret_cast<const char*>(GX_VMA(0x4737dc0ULL)));
-    }
-
-    uintptr_t obj_off2 = (0ULL - (raw_obj & 0xFFFFFFFFULL)) & 7ULL;
-    auto* obj2 = reinterpret_cast<uint8_t*>(raw_obj + obj_off2);
-    *reinterpret_cast<uint64_t*>(obj2 + 0x30) = 0;
-    *reinterpret_cast<uint64_t*>(obj2 + 0x28) = 0;
-    *reinterpret_cast<uint64_t*>(obj2 + 0x20) = 0;
-    *reinterpret_cast<uint64_t*>(obj2 + 0x38) = reinterpret_cast<uint64_t>(heap);
-    *reinterpret_cast<uint64_t*>(obj2 + 0x00) = GX_VMA(0x53b6d00ULL);
-    *reinterpret_cast<uint64_t*>(obj2 + 0x48) = 0;
-    *reinterpret_cast<uint64_t*>(obj2 + 0x40) = 0;
-    *reinterpret_cast<uint64_t*>(GX_VMA(0x56a6c38ULL)) = reinterpret_cast<uint64_t>(obj2);
-    return obj2;
+    return GXGlobalSingleton56a6c38_EnsureInitializedA();
 }
 
 // ============================================================================
@@ -824,7 +769,7 @@ void GXWorkStealingDeque_Dtor(void* self) {
     auto* base = static_cast<uint8_t*>(self);
     auto destroy_mtx = [](uint8_t* mtx_obj) {
         *reinterpret_cast<uint64_t*>(mtx_obj + 0x00) = GX_VMA(0x52b6230ULL);
-        if (reinterpret_cast< bool (*)(void*) >(GX_VMA(0x207ee80ULL))(mtx_obj)) {
+        if (reinterpret_cast< bool (*)(void*) >(GX_VMA(0x207ee80ULL))(mtx_obj) || mtx_obj[0x10] != 0) {
             uint32_t err = static_cast<uint32_t>(
                 reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbfee8ULL))(mtx_obj + 0x08));
             if (err != 0x80020010u) {
@@ -844,25 +789,6 @@ void GXWorkStealingDeque_Dtor(void* self) {
             }
         }
         *reinterpret_cast<uint64_t*>(mtx_obj + 0x00) = GX_VMA(0x53b2fa0ULL);
-        if (mtx_obj[0x10] != 0) {
-            uint32_t err = static_cast<uint32_t>(
-                reinterpret_cast<FnIntPtr>(GX_VMA(0x2bbfee8ULL))(mtx_obj + 0x08));
-            if (err != 0x80020010u) {
-                if (err != 0) {
-                    if (err == 0x80020016u) {
-                        reinterpret_cast<void (*)(const char*, uint32_t, const char*)>(GX_VMA(0x20b55b0ULL))(
-                            reinterpret_cast<const char*>(GX_VMA(0x493c20eULL)),
-                            0x55,
-                            reinterpret_cast<const char*>(GX_VMA(0x493c275ULL)));
-                    }
-                    reinterpret_cast<void (*)(const char*, uint32_t, const char*)>(GX_VMA(0x20b55b0ULL))(
-                        reinterpret_cast<const char*>(GX_VMA(0x493c20eULL)),
-                        0x57,
-                        reinterpret_cast<const char*>(GX_VMA(0x493c2aeULL)));
-                }
-                mtx_obj[0x10] = 0;
-            }
-        }
     };
 
     destroy_mtx(base + 0x50);
@@ -947,11 +873,7 @@ void GXWorkerTaskPool_WaitForIdleWorkers(void* self) {
                     _mm_mfence();
                     __atomic_exchange_n(reinterpret_cast<uint32_t*>(base + 0x18), 0u, __ATOMIC_SEQ_CST);
                 } else if (wake_cnt != 0) {
-                    uint32_t dec_iters = wake_cnt;
-                    while (dec_iters != 0) {
-                        __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), 1u, __ATOMIC_SEQ_CST);
-                        --dec_iters;
-                    }
+                    __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), wake_cnt, __ATOMIC_SEQ_CST);
                 }
 
                 uint32_t signaled = 0;
@@ -975,6 +897,7 @@ void GXWorkerTaskPool_WaitForIdleWorkers(void* self) {
                     return;
                 }
             }
+            _mm_pause();
         }
 
         uint32_t total_w = *reinterpret_cast<uint32_t*>(base + 0x08);
@@ -984,6 +907,7 @@ void GXWorkerTaskPool_WaitForIdleWorkers(void* self) {
                 auto* state_ptr = reinterpret_cast<volatile uint32_t*>(
                     workers_base + static_cast<size_t>(idx) * 0x530ULL + 0x528ULL);
                 while (*state_ptr != 2u) {
+                    _mm_pause();
                 }
             }
         }
@@ -1042,11 +966,7 @@ void GXWorkerTaskPool_FlushAndExecuteAllTasks(void* self) {
             _mm_mfence();
             __atomic_exchange_n(reinterpret_cast<uint32_t*>(base + 0x18), 0u, __ATOMIC_SEQ_CST);
         } else if (wake_cnt != 0) {
-            uint32_t dec_iters = wake_cnt;
-            while (dec_iters != 0) {
-                __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), 1u, __ATOMIC_SEQ_CST);
-                --dec_iters;
-            }
+            __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), wake_cnt, __ATOMIC_SEQ_CST);
         }
         uint32_t signaled = 0;
         if (wake_cnt != 0) {
@@ -1091,6 +1011,7 @@ void GXWorkerTaskPool_FlushAndExecuteAllTasks(void* self) {
                         break;
                     }
                 }
+                _mm_pause();
             }
             if (restart_exec) {
                 continue;
@@ -1103,6 +1024,7 @@ void GXWorkerTaskPool_FlushAndExecuteAllTasks(void* self) {
                     auto* state_ptr = reinterpret_cast<volatile uint32_t*>(
                         workers_base + static_cast<size_t>(idx) * 0x530ULL + 0x528ULL);
                     while (*state_ptr != 2u) {
+                        _mm_pause();
                     }
                 }
             }
@@ -1148,9 +1070,7 @@ void GXWorkerTaskPool_WakeWorkers(void* self, void* queue, uint32_t max_workers)
 
     if (*reinterpret_cast<uint8_t*>(base + 0x68) != 0) {
         if (wake_cnt != 0) {
-            for (uint32_t i = 0; i < wake_cnt; ++i) {
-                __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), 1u, __ATOMIC_SEQ_CST);
-            }
+            __atomic_fetch_sub(reinterpret_cast<uint32_t*>(base + 0x18), wake_cnt, __ATOMIC_SEQ_CST);
         }
     } else {
         uint32_t rem_idle = avail_workers - wake_cnt;
@@ -1185,6 +1105,7 @@ void GXWorkerTaskPool_ShutdownAndDestroy(void* self) {
         int32_t expected_idle = static_cast<int32_t>(worker_count - 1u);
         auto* idle_ptr = reinterpret_cast<volatile int32_t*>(base + 0x18);
         while (expected_idle > *idle_ptr) {
+            _mm_pause();
         }
         void* wake_sem = *reinterpret_cast<void**>(base + 0x20);
         if (wake_sem != nullptr) {
@@ -1372,6 +1293,7 @@ bool GXWorkerTaskPool_Initialize(void* self, const void* init_desc, const uint64
     int32_t expected_idle = static_cast<int32_t>(*reinterpret_cast<uint32_t*>(base + 0x08) - 1u);
     auto* idle_ptr = reinterpret_cast<volatile int32_t*>(base + 0x18);
     while (expected_idle > *idle_ptr) {
+        _mm_pause();
     }
 
     if (*reinterpret_cast<uint32_t*>(base + 0x08) >= 2u) {
@@ -1508,14 +1430,17 @@ bool GXParallelForTask_SplitAndDispatch(void* self, void* worker_pool) {
     int32_t cur_start = *reinterpret_cast<int32_t*>(task + 0x10);
     int32_t cur_end = *reinterpret_cast<int32_t*>(task + 0x14);
     int32_t grain = *reinterpret_cast<int32_t*>(task + 0x18);
+    if (grain <= 0) {
+        grain = 1;
+    }
 
     int32_t total_items = cur_end - cur_start;
     int32_t max_chunks = total_items / grain;
     int32_t worker_cnt = *reinterpret_cast<int32_t*>(pool + 0x08);
     int32_t num_splits = (max_chunks > worker_cnt) ? worker_cnt : max_chunks;
-    int32_t base_items_per_split = total_items / num_splits;
 
     if (num_splits > 0) {
+        int32_t base_items_per_split = total_items / num_splits;
         int32_t remainder = total_items - num_splits * base_items_per_split;
         int32_t loop_cnt = ~((~worker_cnt >= ~max_chunks) ? ~worker_cnt : ~max_chunks);
         size_t pool_slot_off = 0;
@@ -1587,14 +1512,13 @@ bool GXParallelForTask_TrySplitHalf(void* self, void** out_split_task) {
     uint8_t* slot_ptr = *reinterpret_cast<uint8_t**>(global_tp + 0x00) + static_cast<size_t>(worker_id) * 0x60ULL;
 
     auto* new_task = static_cast<uint8_t*>(GXInternalTaskPool_AllocateTaskNode(slot_ptr));
+    if (new_task == nullptr) {
+        return false;
+    }
     *reinterpret_cast<void**>(new_task + 0x08) = cb;
     *reinterpret_cast<int32_t*>(new_task + 0x10) = mid;
     *reinterpret_cast<int32_t*>(new_task + 0x14) = end;
     *reinterpret_cast<int32_t*>(new_task + 0x18) = sub_grain;
-
-    if (new_task == nullptr) {
-        return false;
-    }
 
     *reinterpret_cast<int32_t*>(task + 0x14) = mid;
     *out_split_task = new_task;
@@ -1630,14 +1554,13 @@ bool GXParallelForTask_TrySplitGrain(void* self, void** out_split_task) {
     uint8_t* slot_ptr = *reinterpret_cast<uint8_t**>(global_tp + 0x00) + static_cast<size_t>(worker_id) * 0x60ULL;
 
     auto* new_task = static_cast<uint8_t*>(GXInternalTaskPool_AllocateTaskNode(slot_ptr));
+    if (new_task == nullptr) {
+        return false;
+    }
     *reinterpret_cast<void**>(new_task + 0x08) = cb;
     *reinterpret_cast<int32_t*>(new_task + 0x10) = start;
     *reinterpret_cast<int32_t*>(new_task + 0x14) = split_pt;
     *reinterpret_cast<int32_t*>(new_task + 0x18) = grain;
-
-    if (new_task == nullptr) {
-        return false;
-    }
 
     *reinterpret_cast<int32_t*>(task + 0x10) = split_pt;
     *out_split_task = new_task;
@@ -1859,15 +1782,11 @@ void GXInternalTaskPool_UpdateTelemetryCounters() {
 void GXInternalTaskPool_ShutdownGlobal() {
     void* global_tp = *reinterpret_cast<void**>(GX_VMA(0x56a6c28ULL));
     if (global_tp != nullptr) {
+        void* sys_heap = *reinterpret_cast<void**>(GX_VMA(0x5540680ULL));
         GXInternalTaskPool_Dtor(global_tp);
-        global_tp = *reinterpret_cast<void**>(GX_VMA(0x56a6c28ULL));
-        if (global_tp != nullptr) {
-            void* sys_heap = *reinterpret_cast<void**>(GX_VMA(0x5540680ULL));
-            GXInternalTaskPool_Dtor(global_tp);
-            auto* h_vtbl = *reinterpret_cast<void (***)(void*, void*)>(sys_heap);
-            h_vtbl[14](sys_heap, global_tp);
-            *reinterpret_cast<uint64_t*>(GX_VMA(0x56a6c28ULL)) = 0;
-        }
+        auto* h_vtbl = *reinterpret_cast<void (***)(void*, void*)>(sys_heap);
+        h_vtbl[14](sys_heap, global_tp);
+        *reinterpret_cast<uint64_t*>(GX_VMA(0x56a6c28ULL)) = 0;
     }
 }
 

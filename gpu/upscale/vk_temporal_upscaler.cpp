@@ -250,6 +250,7 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
             render_height = h;
         }
     }
+    scene_targets.SetBaseSize({render_width, render_height});
     // Scene depth copied into the output-size UI depth by a blit (depth aspect).
     const auto features = instance.GetPhysicalDevice()
                               .getFormatProperties(vk::Format::eD32SfloatS8Uint)
@@ -347,11 +348,11 @@ float Halton(u32 index, u32 base) {
 } // namespace
 
 bool TemporalUpscaler::ReducedScene(const VideoCore::Image& color) const {
-    return !scaled_session && scene_targets.Reduced() && scene_targets.EligibleScene(color);
+    return scene_targets.Reduced() && scene_targets.EligibleScene(color);
 }
 
 bool TemporalUpscaler::RasterScaling() const {
-    return !scaled_session && scene_targets.Reduced() && !done_this_frame;
+    return scene_targets.Reduced() && !done_this_frame;
 }
 
 bool TemporalUpscaler::OnFrameStart() {
@@ -448,7 +449,8 @@ bool TemporalUpscaler::OnFrameStart() {
     } else {
         const auto active_size = active && depth_blit
             ? SceneResolution::ForPreset(preset, {target_width, target_height})
-            : SceneResolution::Size{render_width, render_height};
+            : scene_targets.BaseSize();
+        scene_targets.SetSize(active_size);
         BbSettings::Get().active_render_width = active_size.width;
         BbSettings::Get().active_render_height = active_size.height;
     }
@@ -1745,7 +1747,7 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
     vk::Image source = color.GetImage();
     auto source_layout = vk::ImageLayout::eTransferSrcOptimal;
     u32 source_width = color.info.size.width, source_height = color.info.size.height;
-    if (!scaled_session && camera_motion.Depth() && scene_targets.Reduced() &&
+    if (camera_motion.Depth() && scene_targets.Reduced() &&
         scene_targets.EligibleScene(color)) {
         VideoCore::ImageViewInfo view;
         view.format = color.info.pixel_format;
@@ -1754,8 +1756,8 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
                                               vk::AccessFlagBits2::eTransferRead);
         source = proxy.image;
         source_layout = proxy.layout;
-        source_width = render_width;
-        source_height = render_height;
+        source_width = scene_targets.Size().width;
+        source_height = scene_targets.Size().height;
     } else {
         runtime.Transit(&texture_cache.GetImage(color_id), vk::ImageLayout::eTransferSrcOptimal,
                         vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
@@ -1918,7 +1920,9 @@ void TemporalUpscaler::RunScaled() {
     vk::Image depth_image = depth.GetImage(), color_image = color.GetImage();
     vk::ImageView depth_view{}, color_view{};
     u32 source_width = iw, source_height = ih;
-    if (!scaled_session) {
+    if (!scaled_session ||
+        (scene_targets.Reduced() && scene_targets.EligibleScene(color) &&
+         scene_targets.EligibleScene(depth))) {
         VideoCore::ImageViewInfo ci, di;
         ci.format = color.info.pixel_format;
         di.format = depth_format;

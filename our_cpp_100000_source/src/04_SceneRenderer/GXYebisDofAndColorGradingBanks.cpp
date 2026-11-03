@@ -91,7 +91,7 @@ extern "C" {
     uint32_t sub_2184cf0(void* param_sys, uint32_t slot, void* ctx);
     uint32_t sub_2184de0(void* param_sys, uint32_t slot, void* ctx, uint32_t index);
     void sub_2184ff0(void* param_sys, uint32_t slot, uint32_t bank_id, uint32_t unk, void* ctx, float weight);
-    void sub_2185b50(void* param_sys, uint32_t slot);
+    void sub_2185b50(void* param_sys, uint32_t slot, uint32_t bank_id, uint32_t override_slot_idx, float blend_time);
     bool sub_2185e00(void* param_sys, uint32_t slot, uint32_t inner_id, uint32_t bank_id);
     void* sub_2186da0(void* param_sys, uint32_t slot, uint32_t bank_id, uint32_t inner_id, int64_t fallback);
     void sub_21874c0(void* param_sys, uint32_t slot);
@@ -411,8 +411,8 @@ extern "C" void sub_21f1570(uint8_t* self, DLAllocator* alloc) {
         sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
     } else {
         sentinel->next = sentinel;
+        sentinel->prev = sentinel;
     }
-    sentinel->prev = sentinel;
     *reinterpret_cast<HashNode**>(self + 0x10) = sentinel;
 
     *reinterpret_cast<uint64_t*>(self + 0x30) = 0;
@@ -437,10 +437,7 @@ extern "C" void sub_21f1570(uint8_t* self, DLAllocator* alloc) {
     *reinterpret_cast<uint32_t*>(self + 0x80) = 0x3f666666U;
     *reinterpret_cast<uint32_t*>(self + 0x84) = 0x40900000U;
 
-    *reinterpret_cast<uint64_t*>(self + 0x88) = 0;
-    *reinterpret_cast<uint64_t*>(self + 0x90) = 0x3f000000ULL;
-    *reinterpret_cast<uint64_t*>(self + 0x98) = 0x3f4ccccd00000000ULL;
-    *reinterpret_cast<uint64_t*>(self + 0xa0) = 0x409000003f666666ULL;
+    std::memcpy(self + 0x88, self + 0x68, 0x20);
     *reinterpret_cast<uint32_t*>(self + 0xa8) = 0;
 
     sub_2bbe578(self + 0xd8, heap_info, 0x81);
@@ -461,12 +458,6 @@ extern "C" void sub_21f1570(uint8_t* self, DLAllocator* alloc) {
     sub_e789d0(self + 0x160);
     sub_e78a80(self + 0x160);
 
-    *reinterpret_cast<uint64_t*>(self + 0x68) = 0;
-    *reinterpret_cast<uint64_t*>(self + 0x70) = 0x3f000000ULL;
-    *reinterpret_cast<uint32_t*>(self + 0x78) = 0;
-
-    std::memcpy(self + 0x88, self + 0x68, 0x20);
-    *reinterpret_cast<uint32_t*>(self + 0xa8) = 0;
     sub_29354e0(self + 0xb0, reinterpret_cast<const char16_t*>(GX_VMA(0x49d85f0ULL)), 0);
 }
 
@@ -591,6 +582,17 @@ extern "C" void sub_21ef830(uint8_t* self) {
     uint64_t list_builder[6]{};
     sub_236c4d0(list_builder, gui_obj);
 
+    auto release_ref_str = [](uint8_t* s) {
+        if (s && --(*reinterpret_cast<uint32_t*>(s + 0x38)) == 0) {
+            DLAllocator* str_alloc = *reinterpret_cast<DLAllocator**>(GX_VMA(0x5540e10ULL));
+            if (*reinterpret_cast<uint64_t*>(s + 0x20) >= 8) {
+                DLAllocator* buf_alloc = *reinterpret_cast<DLAllocator**>(s + 0x28);
+                buf_alloc->vptr->Free(buf_alloc, *reinterpret_cast<void**>(s + 0x08));
+            }
+            str_alloc->vptr->Free(str_alloc, s);
+        }
+    };
+
     uint64_t dummy_str[2]{};
     sub_2ba7d40(dummy_str, reinterpret_cast<const char16_t*>(GX_VMA(0x49d27c0ULL)));
     uint64_t item_desc[2]{};
@@ -604,16 +606,8 @@ extern "C" void sub_21ef830(uint8_t* self) {
     }
 
     void* dummy_node = sub_236c900(list_builder, item_desc, 0);
-    if (ref_str) {
-        if (--(*reinterpret_cast<uint32_t*>(ref_str + 0x38)) == 0) {
-            DLAllocator* str_alloc = *reinterpret_cast<DLAllocator**>(GX_VMA(0x5540e10ULL));
-            if (*reinterpret_cast<uint64_t*>(ref_str + 0x20) >= 8) {
-                DLAllocator* buf_alloc = *reinterpret_cast<DLAllocator**>(ref_str + 0x28);
-                buf_alloc->vptr->Free(buf_alloc, *reinterpret_cast<void**>(ref_str + 0x08));
-            }
-            str_alloc->vptr->Free(str_alloc, ref_str);
-        }
-    }
+    release_ref_str(ref_str);
+    release_ref_str(reinterpret_cast<uint8_t*>(dummy_str[0]));
     if (dummy_node) {
         sub_e779a0(self + 0x230, list_builder);
     }
@@ -641,6 +635,7 @@ extern "C" void sub_21ef830(uint8_t* self) {
                 sub_2ba7d40(entry_str, reinterpret_cast<const char16_t*>(GX_VMA(0x49cbef4ULL)), in_cur->key);
                 uint64_t entry_desc[2] = {entry_str[0], entry_str[1]};
                 void* entry_node = sub_236c900(list_builder, entry_desc, 0);
+                release_ref_str(reinterpret_cast<uint8_t*>(entry_str[0]));
                 if (entry_node) {
                     sub_e779a0(in_cur->value, list_builder);
                 }
@@ -828,11 +823,17 @@ extern "C" void sub_21e72a0(
     uint32_t flag);
 
 // 0x21eeee0 (698 B): GXParamBankManagerF_PurgeInvalidEntriesInBank
-extern "C" void sub_21eeee0(uint8_t* self, void* unused_rsi, uint32_t bank_id) {
+extern "C" void sub_21eeee0(
+    uint8_t* self,
+    void* unused_rsi,
+    uint32_t bank_id,
+    uint32_t override_slot_idx,
+    float blend_time)
+{
     uint8_t* sys_root = *reinterpret_cast<uint8_t**>(GX_VMA(0x5540dd8ULL));
     uint8_t* param_sys = *reinterpret_cast<uint8_t**>(sys_root + 0x5ad0);
     uint32_t slot = *reinterpret_cast<uint32_t*>(param_sys + 0x38);
-    sub_2185b50(param_sys, slot);
+    sub_2185b50(param_sys, slot, bank_id, override_slot_idx, blend_time);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = (unused_rsi != nullptr) ? 1 : 1;
 
     uint64_t h = ComputeParamBankHash(static_cast<uint64_t>(bank_id) ^ 0xdeadbeefULL);
@@ -954,8 +955,8 @@ extern "C" void sub_21ee760(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
                     sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                 } else {
                     in_s->next = in_s;
+                    in_s->prev = in_s;
                 }
-                in_s->prev = in_s;
                 *reinterpret_cast<HashNode**>(new_inner + 0x08) = in_s;
                 *reinterpret_cast<uint64_t*>(new_inner + 0x28) = 0;
                 *reinterpret_cast<uint64_t*>(new_inner + 0x30) = 0;
@@ -974,6 +975,7 @@ extern "C" void sub_21ee760(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             HashNode* new_out_node = static_cast<HashNode*>(n_alloc->vptr->AllocateAligned(n_alloc, 0x20, 8));
             if (!new_out_node) {
                 sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                return;
             }
             new_out_node->next = head ? head : new_out_node;
             new_out_node->prev = head ? head->prev : new_out_node;
@@ -991,19 +993,7 @@ extern "C" void sub_21ee760(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             InsertResult ins_res{};
             HashNode* first_out = (*reinterpret_cast<HashNode**>(self + 0x10))->next;
             sub_21f02b0(&ins_res, self + 0x08, &first_out->key, HashIteratorPair{nullptr, nullptr, first_out});
-
-            uint64_t h2 = ComputeParamBankHash(raw_key);
-            uint64_t m2 = *reinterpret_cast<uint64_t*>(self + 0x50);
-            uint64_t b2 = h2 & m2;
-            if (*reinterpret_cast<uint64_t*>(self + 0x58) <= b2) b2 += ~(m2 >> 1);
-            out_cur = *reinterpret_cast<HashNode**>(*reinterpret_cast<uint8_t**>(self + 0x30) + b2 * 48 + 0x10);
-            if (out_cur != outer_sentinel) {
-                HashNode* out_e2 = (*reinterpret_cast<HashNode**>(*reinterpret_cast<uint8_t**>(self + 0x30) + (b2 * 2 + 1) * 24 + 0x10))->next;
-                while (out_cur != out_e2 && out_cur->key < bank_id) {
-                    out_cur = out_cur->next;
-                }
-                if (out_cur == out_e2 || out_cur->key > bank_id) out_cur = outer_sentinel;
-            }
+            out_cur = ins_res.node ? ins_res.node : first_out;
         }
 
         for (uint32_t i = 0; i < count; ++i) {
@@ -1033,9 +1023,11 @@ extern "C" void sub_21ee760(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             } else {
                 DLAllocator* alloc = *reinterpret_cast<DLAllocator**>(self + 0x00);
                 uint8_t* entry = static_cast<uint8_t*>(alloc->vptr->AllocateAligned(alloc, 0xe0, 8));
-                if (entry) {
-                    sub_e75d90(entry);
+                if (!entry) {
+                    sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
+                sub_e75d90(entry);
                 sub_e75f70(entry);
                 *reinterpret_cast<uint32_t*>(entry + 0xd8) = inner_id;
                 *reinterpret_cast<uint32_t*>(entry + 0xdc) = bank_id;
@@ -1047,6 +1039,7 @@ extern "C" void sub_21ee760(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
                 HashNode* new_in_node = static_cast<HashNode*>(in_n_alloc->vptr->AllocateAligned(in_n_alloc, 0x20, 8));
                 if (!new_in_node) {
                     sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
                 new_in_node->next = in_head ? in_head : new_in_node;
                 new_in_node->prev = in_head ? in_head->prev : new_in_node;
@@ -1327,8 +1320,8 @@ extern "C" void sub_21ec470(uint8_t* self, DLAllocator* alloc) {
         sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
     } else {
         sentinel->next = sentinel;
+        sentinel->prev = sentinel;
     }
-    sentinel->prev = sentinel;
     *reinterpret_cast<HashNode**>(self + 0x10) = sentinel;
 
     *reinterpret_cast<uint64_t*>(self + 0x30) = 0;
@@ -1381,7 +1374,7 @@ extern "C" void sub_21ec470(uint8_t* self, DLAllocator* alloc) {
     };
 
     init_dof_block(self + 0x68);
-    init_dof_block(self + 0xf0);
+    sub_2bbe578(self + 0xf0, self + 0x68, 0x88);
     *reinterpret_cast<uint32_t*>(self + 0x178) = 0;
 
     sub_2bbe578(self + 0x1a8, heap_info, 0x81);
@@ -1402,9 +1395,6 @@ extern "C" void sub_21ec470(uint8_t* self, DLAllocator* alloc) {
     sub_e75d90(self + 0x230);
     sub_e75f70(self + 0x230);
 
-    init_dof_block(self + 0x68);
-    sub_2bbe578(self + 0xf0, self + 0x68, 0x88);
-    *reinterpret_cast<uint32_t*>(self + 0x178) = 0;
     sub_29354e0(self + 0x180, reinterpret_cast<const char16_t*>(GX_VMA(0x49d85f0ULL)), 0);
 }
 
@@ -1527,10 +1517,22 @@ extern "C" void sub_21ea730(uint8_t* self) {
     uint64_t list_builder[6]{};
     sub_236c4d0(list_builder, gui_obj);
 
+    auto release_ref_str = [](uint8_t* s) {
+        if (s && --(*reinterpret_cast<uint32_t*>(s + 0x38)) == 0) {
+            DLAllocator* str_alloc = *reinterpret_cast<DLAllocator**>(GX_VMA(0x5540e10ULL));
+            if (*reinterpret_cast<uint64_t*>(s + 0x20) >= 8) {
+                DLAllocator* buf_alloc = *reinterpret_cast<DLAllocator**>(s + 0x28);
+                buf_alloc->vptr->Free(buf_alloc, *reinterpret_cast<void**>(s + 0x08));
+            }
+            str_alloc->vptr->Free(str_alloc, s);
+        }
+    };
+
     uint64_t dummy_str[2]{};
     sub_2ba7d40(dummy_str, reinterpret_cast<const char16_t*>(GX_VMA(0x49d27c0ULL)));
     uint64_t item_desc[2] = {dummy_str[0], dummy_str[1]};
     void* dummy_node = sub_236c900(list_builder, item_desc, 0);
+    release_ref_str(reinterpret_cast<uint8_t*>(dummy_str[0]));
     if (dummy_node) {
         sub_e72260(self + 0x5a0, list_builder);
     }
@@ -1557,6 +1559,7 @@ extern "C" void sub_21ea730(uint8_t* self) {
                 sub_2ba7d40(entry_str, reinterpret_cast<const char16_t*>(GX_VMA(0x49cbef4ULL)), in_cur->key);
                 uint64_t entry_desc[2] = {entry_str[0], entry_str[1]};
                 void* entry_node = sub_236c900(list_builder, entry_desc, 0);
+                release_ref_str(reinterpret_cast<uint8_t*>(entry_str[0]));
                 if (entry_node) {
                     sub_e72260(in_cur->value, list_builder);
                 }
@@ -1752,11 +1755,17 @@ extern "C" void* sub_21e9ff0(void* self_unused, uint32_t bank_id, uint32_t inner
 }
 
 // 0x21e9d30 (698 B): GXParamBankManagerG_PurgeInvalidEntriesInBank
-extern "C" void sub_21e9d30(uint8_t* self, void* unused_rsi, uint32_t bank_id) {
+extern "C" void sub_21e9d30(
+    uint8_t* self,
+    void* unused_rsi,
+    uint32_t bank_id,
+    uint32_t override_slot_idx,
+    float blend_time)
+{
     uint8_t* sys_root = *reinterpret_cast<uint8_t**>(GX_VMA(0x5540dd8ULL));
     uint8_t* param_sys = *reinterpret_cast<uint8_t**>(sys_root + 0x5ad0);
     uint32_t slot = *reinterpret_cast<uint32_t*>(param_sys + 0x40);
-    sub_2185b50(param_sys, slot);
+    sub_2185b50(param_sys, slot, bank_id, override_slot_idx, blend_time);
     *reinterpret_cast<uint8_t*>(GX_VMA(0x5540678ULL)) = (unused_rsi != nullptr) ? 1 : 1;
 
     uint64_t h = ComputeParamBankHash(static_cast<uint64_t>(bank_id) ^ 0xdeadbeefULL);
@@ -1876,8 +1885,8 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
                     sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
                 } else {
                     in_s->next = in_s;
+                    in_s->prev = in_s;
                 }
-                in_s->prev = in_s;
                 *reinterpret_cast<HashNode**>(new_inner + 0x08) = in_s;
                 *reinterpret_cast<uint64_t*>(new_inner + 0x28) = 0;
                 *reinterpret_cast<uint64_t*>(new_inner + 0x30) = 0;
@@ -1896,6 +1905,7 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             HashNode* new_out_node = static_cast<HashNode*>(n_alloc->vptr->AllocateAligned(n_alloc, 0x20, 8));
             if (!new_out_node) {
                 sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                return;
             }
             new_out_node->next = head ? head : new_out_node;
             new_out_node->prev = head ? head->prev : new_out_node;
@@ -1913,19 +1923,7 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             InsertResult ins_res{};
             HashNode* first_out = (*reinterpret_cast<HashNode**>(self + 0x10))->next;
             sub_21eb1b0(&ins_res, self + 0x08, &first_out->key, HashIteratorPair{nullptr, nullptr, first_out});
-
-            uint64_t h2 = ComputeParamBankHash(raw_key);
-            uint64_t m2 = *reinterpret_cast<uint64_t*>(self + 0x50);
-            uint64_t b2 = h2 & m2;
-            if (*reinterpret_cast<uint64_t*>(self + 0x58) <= b2) b2 += ~(m2 >> 1);
-            out_cur = *reinterpret_cast<HashNode**>(*reinterpret_cast<uint8_t**>(self + 0x30) + b2 * 48 + 0x10);
-            if (out_cur != outer_sentinel) {
-                HashNode* out_e2 = (*reinterpret_cast<HashNode**>(*reinterpret_cast<uint8_t**>(self + 0x30) + (b2 * 2 + 1) * 24 + 0x10))->next;
-                while (out_cur != out_e2 && out_cur->key < bank_id) {
-                    out_cur = out_cur->next;
-                }
-                if (out_cur == out_e2 || out_cur->key > bank_id) out_cur = outer_sentinel;
-            }
+            out_cur = ins_res.node ? ins_res.node : first_out;
         }
 
         for (uint32_t i = 0; i < count; ++i) {
@@ -1955,9 +1953,11 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
             } else {
                 DLAllocator* alloc = *reinterpret_cast<DLAllocator**>(self + 0x00);
                 uint8_t* entry = static_cast<uint8_t*>(alloc->vptr->AllocateAligned(alloc, 0x2a8, 8));
-                if (entry) {
-                    sub_e715a0(entry);
+                if (!entry) {
+                    sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
+                sub_e715a0(entry);
                 sub_e71740(entry);
                 *reinterpret_cast<uint32_t*>(entry + 0x290) = inner_id;
                 *reinterpret_cast<uint32_t*>(entry + 0x294) = bank_id;
@@ -1993,13 +1993,17 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
 
                     uint64_t cap = *reinterpret_cast<uint64_t*>(tmp_str + 0x20);
                     if (cap >= 8) {
+                        void* heap_buf = *reinterpret_cast<void**>(tmp_str + 0x08);
                         if (cap + 1 >= 0x81) {
-                            sub_20b55b0(
-                                reinterpret_cast<const char*>(GX_VMA(0x4940298ULL)),
-                                0x120,
-                                reinterpret_cast<const char*>(GX_VMA(0x4940300ULL)));
+                            DLAllocator* s_alloc = *reinterpret_cast<DLAllocator**>(tmp_str + 0x28);
+                            if (s_alloc && heap_buf) {
+                                s_alloc->vptr->Free(s_alloc, heap_buf);
+                            } else {
+                                sub_2bbe588(heap_buf);
+                            }
+                        } else {
+                            tmp_str[0x129] &= 0xfdU;
                         }
-                        tmp_str[0x129] &= 0xfdU;
                     }
                 } else {
                     const void* base_path = sub_2183880(param_sys, ctx);
@@ -2011,6 +2015,7 @@ extern "C" void sub_21e9420(uint8_t* self, void* ctx, uint32_t bank_id, uint32_t
                 HashNode* new_in_node = static_cast<HashNode*>(in_n_alloc->vptr->AllocateAligned(in_n_alloc, 0x20, 8));
                 if (!new_in_node) {
                     sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
+                    continue;
                 }
                 new_in_node->next = in_head ? in_head : new_in_node;
                 new_in_node->prev = in_head ? in_head->prev : new_in_node;
@@ -2237,8 +2242,8 @@ extern "C" void sub_21e8960(uint8_t* self, DLAllocator* alloc) {
         sub_20b55b0(nullptr, 0x109, reinterpret_cast<const char*>(GX_VMA(0x4737d80ULL)));
     } else {
         sentinel->next = sentinel;
+        sentinel->prev = sentinel;
     }
-    sentinel->prev = sentinel;
     *reinterpret_cast<HashNode**>(self + 0x10) = sentinel;
 
     *reinterpret_cast<uint64_t*>(self + 0x30) = 0;
@@ -2282,14 +2287,10 @@ extern "C" void sub_21e8960(uint8_t* self, DLAllocator* alloc) {
     *reinterpret_cast<uint32_t*>(self + 0x78) = 0;
 
     const char16_t* lut_prefix = reinterpret_cast<const char16_t*>(GX_VMA(0x49c574eULL));
-    size_t len1 = sub_2bbf228(lut_prefix);
-    sub_29354e0(self + 0x80, lut_prefix, len1);
-
-    size_t len2 = sub_2bbf228(lut_prefix);
-    sub_29354e0(self + 0x130, lut_prefix, len2);
-
-    size_t len3 = sub_2bbf228(lut_prefix);
-    sub_29354e0(self + 0x1e0, lut_prefix, len3);
+    size_t lut_len = sub_2bbf228(lut_prefix);
+    sub_29354e0(self + 0x80, lut_prefix, lut_len);
+    sub_29354e0(self + 0x130, lut_prefix, lut_len);
+    sub_29354e0(self + 0x1e0, lut_prefix, lut_len);
 
     *reinterpret_cast<uint64_t*>(self + 0x290) = 0;
     *reinterpret_cast<uint64_t*>(self + 0x298) = 0;
@@ -2388,7 +2389,12 @@ extern "C" void sub_21e72a0(
     DLAllocator* alloc2 = *reinterpret_cast<DLAllocator**>(gui_mgr + 0x00);
     char16_t* desc_buf = static_cast<char16_t*>(alloc2->vptr->AllocateRaw(alloc2, desc_bytes));
 
-    if (!name_buf || !desc_buf) return;
+    if (!name_buf || !desc_buf) {
+        DLAllocator* a = *reinterpret_cast<DLAllocator**>(gui_mgr + 0x00);
+        if (name_buf) a->vptr->Free(a, name_buf);
+        if (desc_buf) a->vptr->Free(a, desc_buf);
+        return;
+    }
 
     DLAllocator* alloc3 = *reinterpret_cast<DLAllocator**>(gui_mgr + 0x00);
     uint8_t* enum_obj = static_cast<uint8_t*>(alloc3->vptr->AllocateAligned(alloc3, 0x20, 8));
@@ -2407,6 +2413,7 @@ extern "C" void sub_21e72a0(
             }
             *reinterpret_cast<uint32_t*>(enum_obj + 0x18) = item_count;
         } else {
+            inner_alloc->vptr->Free(inner_alloc, enum_obj);
             enum_obj = nullptr;
         }
     }
@@ -2421,7 +2428,13 @@ extern "C" void sub_21e72a0(
 
     if (!enum_obj) {
         DLAllocator* a = *reinterpret_cast<DLAllocator**>(gui_mgr + 0x00);
+        if (val_wrapper) {
+            uintptr_t vtbl = *reinterpret_cast<uintptr_t*>(val_wrapper);
+            reinterpret_cast<void (*)(void*)>(*reinterpret_cast<uintptr_t*>(vtbl))(val_wrapper);
+            a->vptr->Free(a, val_wrapper);
+        }
         a->vptr->Free(a, name_buf);
+        a->vptr->Free(a, desc_buf);
         return;
     }
 

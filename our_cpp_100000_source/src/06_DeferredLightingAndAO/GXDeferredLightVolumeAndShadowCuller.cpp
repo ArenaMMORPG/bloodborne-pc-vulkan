@@ -1838,21 +1838,46 @@ void sub_2293060(void* pSelf, void* pRenderCtx) {
         sub_20b55b0(nullptr, 0x3e, reinterpret_cast<const char*>(GX_VMA(0x4737dc0ULL)));
     }
 
+    uint8_t* selfBytes = static_cast<uint8_t*>(pSelf);
+    uint8_t** pItemCur = *reinterpret_cast<uint8_t***>(selfBytes + 0x08);
+    uint8_t** pItemEnd = *reinterpret_cast<uint8_t***>(selfBytes + 0x10);
+    const size_t initialCount = static_cast<size_t>(pItemEnd - pItemCur);
+
+    GXLightSortItem16 inlineSortBuf[128];
+    bool usingInlineSortBuf = (initialCount > 0 && initialCount <= 128);
+
     struct LocalSortVec {
         uint64_t pad00;
         GXLightSortItem16* begin;
         GXLightSortItem16* end;
         GXLightSortItem16* cap;
         uint8_t* alloc;
-    } sortVec = { 0, nullptr, nullptr, nullptr, pTlsAlloc };
-
-    uint8_t* selfBytes = static_cast<uint8_t*>(pSelf);
-    uint8_t** pItemCur = *reinterpret_cast<uint8_t***>(selfBytes + 0x08);
-    uint8_t** pItemEnd = *reinterpret_cast<uint8_t***>(selfBytes + 0x10);
+    } sortVec = {
+        0,
+        usingInlineSortBuf ? inlineSortBuf : nullptr,
+        usingInlineSortBuf ? inlineSortBuf : nullptr,
+        usingInlineSortBuf ? (inlineSortBuf + 128) : nullptr,
+        pTlsAlloc
+    };
 
     while (pItemCur != pItemEnd) {
         uint8_t* pObj = *pItemCur;
         if (sortVec.end == sortVec.cap) {
+            if (usingInlineSortBuf) {
+                sortVec.begin = nullptr;
+                sortVec.end = nullptr;
+                sortVec.cap = nullptr;
+                usingInlineSortBuf = false;
+                for (size_t k = 0; k < 128; ++k) {
+                    if (sortVec.end == sortVec.cap) {
+                        sub_22935c0(&sortVec);
+                    }
+                    if (sortVec.end != nullptr) {
+                        *sortVec.end = inlineSortBuf[k];
+                    }
+                    ++sortVec.end;
+                }
+            }
             sub_22935c0(&sortVec);
         }
         if (sortVec.end != nullptr) {
@@ -1910,7 +1935,7 @@ void sub_2293060(void* pSelf, void* pRenderCtx) {
         : *reinterpret_cast<void**>(pGlobal6c8 + 0x10);
     sub_2194340(pGlobal6c8, pSubTarget, encodedCount);
 
-    if (sortVec.begin != nullptr) {
+    if (sortVec.begin != nullptr && !usingInlineSortBuf) {
         void* vtbl = *reinterpret_cast<void**>(sortVec.alloc);
         (*reinterpret_cast<void (**)(void*, void*)>(static_cast<uint8_t*>(vtbl) + 0x70))(sortVec.alloc, sortVec.begin);
     }
@@ -1947,24 +1972,33 @@ uint32_t sub_2292dc0(const void* pSelf, const void* pVolume) {
         return 0;
     }
     const uint8_t* planesBase = selfBytes + 0x160;
-    alignas(16) __m128 edges[36];
-    sub_2668a30(planesBase, edges);
+    struct CachedFrustumEdges {
+        alignas(16) uint8_t planes[0x60];
+        alignas(16) __m128  edges[36];
+        bool                valid;
+    };
+    static thread_local CachedFrustumEdges s_edgeCache{};
+    if (!s_edgeCache.valid || std::memcmp(s_edgeCache.planes, planesBase, 0x60) != 0) {
+        std::memcpy(s_edgeCache.planes, planesBase, 0x60);
+        sub_2668a30(planesBase, s_edgeCache.edges);
 
-    const __m128 signFlipXY = _mm_setr_ps(-1.0f, -1.0f, 1.0f, 1.0f);
-    const __m128 maskXYZ = _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0));
-    const __m128 unitW = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
+        const __m128 signFlipXY = _mm_setr_ps(-1.0f, -1.0f, 1.0f, 1.0f);
+        const __m128 maskXYZ = _mm_castsi128_ps(_mm_setr_epi32(-1, -1, -1, 0));
+        const __m128 unitW = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
 
-    for (size_t i = 0; i < 36; i += 3) {
-        edges[i + 0] = _mm_or_ps(_mm_and_ps(_mm_mul_ps(signFlipXY, edges[i + 0]), maskXYZ), unitW);
-        edges[i + 1] = _mm_and_ps(_mm_mul_ps(signFlipXY, edges[i + 1]), maskXYZ);
-        edges[i + 2] = _mm_and_ps(_mm_mul_ps(signFlipXY, edges[i + 2]), maskXYZ);
+        for (size_t i = 0; i < 36; i += 3) {
+            s_edgeCache.edges[i + 0] = _mm_or_ps(_mm_and_ps(_mm_mul_ps(signFlipXY, s_edgeCache.edges[i + 0]), maskXYZ), unitW);
+            s_edgeCache.edges[i + 1] = _mm_and_ps(_mm_mul_ps(signFlipXY, s_edgeCache.edges[i + 1]), maskXYZ);
+            s_edgeCache.edges[i + 2] = _mm_and_ps(_mm_mul_ps(signFlipXY, s_edgeCache.edges[i + 2]), maskXYZ);
+        }
+        s_edgeCache.valid = true;
     }
 
     const uint8_t* volBytes = static_cast<const uint8_t*>(pVolume);
     float radius = *reinterpret_cast<const float*>(volBytes + 0x20);
     float radiusSq = radius * radius;
     for (uint32_t i = 0; i < 12; ++i) {
-        float distSq = sub_20ad260(pVolume, &edges[i * 3], 0, 0, 0);
+        float distSq = sub_20ad260(pVolume, &s_edgeCache.edges[i * 3], 0, 0, 0);
         if (radiusSq > distSq) {
             return 1;
         }
@@ -2042,9 +2076,11 @@ uint32_t sub_2292b80(const void* pSelf, const void* pPoint) {
     for (size_t i = 0; i < 6; ++i) {
         __m128 pl = _mm_load_ps(reinterpret_cast<const float*>(selfBytes + kPlaneOffsets[i]));
         __m128 prod = _mm_mul_ps(pt4, pl);
-        prod = _mm_hadd_ps(prod, prod);
-        prod = _mm_hadd_ps(prod, prod);
-        if (_mm_movemask_ps(_mm_cmplt_ps(prod, zero)) != 0x0f) {
+        __m128 shuf = _mm_movehdup_ps(prod);
+        __m128 sums = _mm_add_ps(prod, shuf);
+        shuf = _mm_movehl_ps(shuf, sums);
+        prod = _mm_add_ss(sums, shuf);
+        if (!_mm_comilt_ss(prod, zero)) {
             return 0;
         }
     }
@@ -2111,17 +2147,21 @@ uint32_t sub_22928a0(const void* pSelf, const void* pAABB) {
 
         __m128 pVert = _mm_or_ps(_mm_and_ps(bMin, geZero), _mm_andnot_ps(geZero, bMax));
         __m128 pDot = _mm_mul_ps(pl, pVert);
-        pDot = _mm_hadd_ps(pDot, pDot);
-        pDot = _mm_hadd_ps(pDot, pDot);
-        if (_mm_movemask_ps(_mm_cmplt_ps(zero, pDot)) != 0) {
+        __m128 pShuf = _mm_movehdup_ps(pDot);
+        __m128 pSums = _mm_add_ps(pDot, pShuf);
+        pShuf = _mm_movehl_ps(pShuf, pSums);
+        pDot = _mm_add_ss(pSums, pShuf);
+        if (_mm_comilt_ss(zero, pDot)) {
             return 0;
         }
 
         __m128 nVert = _mm_or_ps(_mm_and_ps(bMax, geZero), _mm_and_ps(bMin, _mm_xor_ps(geZero, allOnes)));
         __m128 nDot = _mm_mul_ps(pl, nVert);
-        nDot = _mm_hadd_ps(nDot, nDot);
-        nDot = _mm_hadd_ps(nDot, nDot);
-        if (_mm_movemask_ps(_mm_cmplt_ps(zero, nDot)) != 0) {
+        __m128 nShuf = _mm_movehdup_ps(nDot);
+        __m128 nSums = _mm_add_ps(nDot, nShuf);
+        nShuf = _mm_movehl_ps(nShuf, nSums);
+        nDot = _mm_add_ss(nSums, nShuf);
+        if (_mm_comilt_ss(zero, nDot)) {
             anyIntersect = 1;
         }
     }
@@ -2236,7 +2276,9 @@ void sub_2291c30(void* pSelf, const void* pCameraDesc) {
 
     float tanHalfFov = sub_2bbe648(*reinterpret_cast<const float*>(selfBytes + 0x140) * 0.5f);
     float tanRef = sub_2bbe648(0.47996554f); // 0x3ef5be0b
-    float heightScale = static_cast<float>(static_cast<int64_t>(*reinterpret_cast<uint32_t*>(selfBytes + 0x114))) / 720.0f;
+    const uint32_t rawHeight = *reinterpret_cast<uint32_t*>(selfBytes + 0x114);
+    const uint32_t lodRefHeight = (rawHeight > 1080u) ? 1080u : rawHeight;
+    float heightScale = static_cast<float>(static_cast<int64_t>(lodRefHeight)) / 720.0f;
     float lodScale = (tanHalfFov / tanRef) / heightScale;
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x130), _mm_mul_ps(camAxisZ, _mm_set1_ps(lodScale)));
     *reinterpret_cast<float*>(selfBytes + 0x150) = lodScale;
@@ -2251,8 +2293,12 @@ void sub_2291c30(void* pSelf, const void* pCameraDesc) {
         _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0xd0 + i * 0x10), m);
     }
 
-    alignas(16) __m128 viewWorldCols[4];
-    invertMatrix4x4Culler(reinterpret_cast<const __m128*>(selfBytes + 0x10), viewWorldCols);
+    alignas(16) __m128 viewWorldCols[4] = {
+        _mm_load_ps(reinterpret_cast<const float*>(camBytes + 0x00)),
+        _mm_load_ps(reinterpret_cast<const float*>(camBytes + 0x10)),
+        _mm_load_ps(reinterpret_cast<const float*>(camBytes + 0x20)),
+        _mm_load_ps(reinterpret_cast<const float*>(camBytes + 0x30))
+    };
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x50), viewWorldCols[0]);
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x60), viewWorldCols[1]);
     _mm_store_ps(reinterpret_cast<float*>(selfBytes + 0x70), viewWorldCols[2]);
@@ -3032,10 +3078,10 @@ void sub_2290470(void* pSelf, uint8_t flagVal) {
             selfBytes[0x401] = 0;
         }
         pPayload = pPacket + pPacket[1] + 4;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c70ULL);
+        *reinterpret_cast<uint64_t*>(pPayload + 0x08) = static_cast<uint64_t>(flagVal);
+        *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
     }
-    *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c70ULL);
-    *reinterpret_cast<uint64_t*>(pPayload + 0x08) = static_cast<uint64_t>(flagVal);
-    *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
 }
 
 // ============================================================================
@@ -3080,10 +3126,10 @@ void sub_22902d0(void* pSelf, const __m128* pViewMat, const __m128* pProjMat) {
             selfBytes[0x401] = 0;
         }
         pPayload = pPacket + pPacket[1] + 4;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c60ULL);
+        *reinterpret_cast<__m128**>(pPayload + 0x08) = pArenaMats;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
     }
-    *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c60ULL);
-    *reinterpret_cast<__m128**>(pPayload + 0x08) = pArenaMats;
-    *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
 
     sub_22911b0(selfBytes, pViewMat, pProjMat);
 }
@@ -3119,10 +3165,10 @@ void sub_22901d0(void* pSelf, uint32_t slot, void* pResource) {
             selfBytes[0x401] = 0;
         }
         pPayload = pPacket + pPacket[1] + 4;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c20ULL);
+        *reinterpret_cast<uint64_t*>(pPayload + 0x08) = static_cast<uint64_t>(slot);
+        *reinterpret_cast<void**>(pPayload + 0x10) = pResource;
     }
-    *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c20ULL);
-    *reinterpret_cast<uint64_t*>(pPayload + 0x08) = static_cast<uint64_t>(slot);
-    *reinterpret_cast<void**>(pPayload + 0x10) = pResource;
 }
 
 // ============================================================================
@@ -3161,10 +3207,10 @@ void sub_22900a0(void* pSelf, uint32_t extraVal, const __m128* pVec) {
             selfBytes[0x401] = 0;
         }
         pPayload = pPacket + pPacket[1] + 4;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c10ULL);
+        *reinterpret_cast<uint8_t**>(pPayload + 0x08) = pArenaBlock;
+        *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
     }
-    *reinterpret_cast<uint64_t*>(pPayload + 0x00) = GX_VMA(0x2290c10ULL);
-    *reinterpret_cast<uint8_t**>(pPayload + 0x08) = pArenaBlock;
-    *reinterpret_cast<uint64_t*>(pPayload + 0x10) = 0;
 }
 
 } // extern "C"
