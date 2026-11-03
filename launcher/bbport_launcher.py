@@ -81,11 +81,16 @@ FSR411_BUILD_ERRORS = {
 # Choices: (label, value). The first entry is the default. Labels are translated when shown.
 UI_LANGUAGES = [("Как в системе", ""), ("Русский", "ru"), ("English", "en"), ("Português (Brasil)", "pt_BR"),
                 ("简体中文", "zh_CN")]
-UPSCALERS = [("FSR 4", "fsr4"), ("FSR 4.1.1", "fsr411"), ("FSR 3", "fsr3"),
-             ("DLSS (NVIDIA RTX)", "dlss"),
-             ("TAA (нативное сглаживание)", "taa"), ("Выключен", "off")]
-PRESETS = [("Native AA", 0), ("Quality (x1.5)", 1), ("Balanced (x1.7)", 2),
-           ("Performance (x2)", 3), ("Ultra Performance (x3)", 4)]
+UPSCALERS = [("DLSS (NVIDIA RTX)", "dlss"), ("FSR 3.1", "fsr3"), ("FSR 4", "fsr4"),
+             ("FSR 4.1.1", "fsr411"), ("TAA (нативное сглаживание)", "taa"),
+             ("FXAA", "fxaa"), ("Выключен (Native 100%)", "off")]
+DLSS_PRESETS = [("DLSS 4.5 (Preset M — 2nd Gen Transformer)", "13"),
+                ("DLSS 4.5 (Preset L — 2nd Gen Transformer)", "12"),
+                ("DLSS 4 (Preset K — Transformer)", "11"),
+                ("DLSS (Auto / Default Preset)", "0")]
+ANISOTROPIC_LEVELS = [("16x", "16"), ("8x", "8"), ("4x", "4"), ("2x", "2"), ("Выкл. (1x)", "1")]
+PRESETS = [("Native 100% / DLAA", 0), ("Quality (67% Scale)", 1), ("Balanced (58% Scale)", 2),
+           ("Performance (50% Scale)", 3), ("Ultra Performance (33% Scale)", 4)]
 # Output aspect ratios and their resolutions (gpu/shim/bbport_settings.cpp, the same lists): the
 # game keeps its 1920x1080 frame; for another aspect ratio its camera sees more to the sides (above
 # and below) and the UI keeps to the screen edges, changed live. Auto: the monitor's group.
@@ -225,11 +230,14 @@ DEFAULTS = {
 
 # bbport.ini keys the launcher edits; the rest of the file is kept.
 INI_DEFAULTS = {
-    "upscaler": "fsr4",
-    "preset": "4",
+    "upscaler": "off",
+    "preset": "0",
+    "dlss_preset": "11",
+    "anisotropic": "16",
+    "fps_limit": "0",
     "sharpen": "1",
     "sharpness": "0.50",
-    "object_motion": "1",
+    "object_motion": "0",
     "show_fps": "1",
     "output_res": "1920x1080",
     "model_lod": "0",
@@ -397,8 +405,9 @@ def game_environment(s):
         env["BB_FRAME_STATS"] = "1"
     if s.get("save_log"):
         env["BB_SAVE_LOG"] = "1"
-    # Always use the new native Vulkan in-place memory model (BB_PC_MODEL=1)
-    env["BB_PC_MODEL"] = "1"
+    # Use the DirectBuffers / DirectTextures Split PC VRAM model (BB_PC_MODEL=0) & all C++20 GX modules
+    env["BB_PC_MODEL"] = os.environ.get("BB_PC_MODEL", "0")
+    env["BB_GX_MODULES"] = os.environ.get("BB_GX_MODULES", "all")
     env.pop("BB_AS_0_3", None)
     # The GPU chosen by name: its index in Vulkan's order now (BB_GPU_ID). One not found (taken
     # out, renamed by a driver update) leaves the choice to the port. BB_GPU_ID from the shell
@@ -837,10 +846,20 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.dlss_row.add_suffix(self.dlss_reset_button)
         upscaler.add(self.dlss_row)
         self.update_dlss_row()
-        self.preset_row = combo_row(tr("Пресет"), None, PRESETS, int(self.ini.get("preset", "4")))
+        self.dlss_preset_row = combo_row(
+            tr("Модель DLSS (Пресет)"),
+            tr("Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0"),
+            DLSS_PRESETS, self.ini.get("dlss_preset", "11"))
+        upscaler.add(self.dlss_preset_row)
+        self.preset_row = combo_row(tr("Режим масштабирования"), None, PRESETS, int(self.ini.get("preset", "0")))
         self.preset_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         self.output_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         upscaler.add(self.preset_row)
+        self.aniso_row = combo_row(
+            tr("Анизотропная фильтрация"),
+            tr("Чёткость текстур пола и стен под острым углом (меняется в игре на лету)"),
+            ANISOTROPIC_LEVELS, self.ini.get("anisotropic", "16"))
+        upscaler.add(self.aniso_row)
         self.sharpen_row = Adw.SwitchRow(title=tr("Резкость (RCAS)"),
                                          active=self.ini.get("sharpen") == "1")
         upscaler.add(self.sharpen_row)
@@ -887,8 +906,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         frames.add(self.fps_row)
         self.limit_row = Adw.SpinRow.new_with_range(0, 480, 1)
         self.limit_row.set_title(tr("Ограничение FPS"))
-        self.limit_row.set_subtitle(tr("0 — без ограничения; укажите число, чтобы ограничить FPS"))
-        self.limit_row.set_value(self.settings["fps_limit"])
+        self.limit_row.set_subtitle(tr("0 — без ограничения; хранится в bbport.ini и меняется в игре"))
+        ini_fps_limit = int(self.ini.get("fps_limit", "0") or 0)
+        self.limit_row.set_value(ini_fps_limit if ini_fps_limit > 0 else self.settings["fps_limit"])
         frames.add(self.limit_row)
         page.add(frames)
 
@@ -1231,6 +1251,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.ini.update({
             "upscaler": combo_value(self.upscaler_row),
             "preset": str(combo_value(self.preset_row)),
+            "dlss_preset": str(combo_value(self.dlss_preset_row)),
+            "anisotropic": str(combo_value(self.aniso_row)),
+            "fps_limit": str(int(self.limit_row.get_value())),
             "sharpen": "1" if self.sharpen_row.get_active() else "0",
             "sharpness": f"{self.sharpness_row.get_value():.2f}",
             "object_motion": "1" if self.motion_row.get_active() else "0",
