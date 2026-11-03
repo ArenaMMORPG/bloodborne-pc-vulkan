@@ -14,4 +14,7 @@ void PatchImage(unsigned char* image, std::uint64_t size);
 
 /// Applies what the player changed on the port's pages (each presented frame).
 void Poll();
+
+/// True while a keybind row in the native System menu is waiting for key/mouse input.
+bool CapturesInput();
 } // namespace BbGameMenu

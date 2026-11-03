@@ -419,7 +419,7 @@ int* PS4_SYSV_ABI __Error() {
 } // namespace Libraries::Kernel
 
 extern "C" int bbgpu_overlay_captures_input(void) {
-    return BbOverlay::CapturesInput() ? 1 : 0;
+    return (BbOverlay::CapturesInput() || BbGameMenu::CapturesInput()) ? 1 : 0;
 }
 
 extern "C" void bbgpu_mouse_take(double* dx, double* dy, int* wheel_up, int* wheel_down) {

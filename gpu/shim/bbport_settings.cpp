@@ -18,180 +18,52 @@ namespace BbSettings {
 
 namespace {
 
-constexpr KeyOption kAttackR1Opts[] = {
-    {"Mouse Left", "Mouse Left (LMB)", "ЛКМ (Мышь левая)"},
-    {"Mouse Right", "Mouse Right (RMB)", "ПКМ (Мышь правая)"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-    {"E", "Key E", "Клавиша E"},
-    {"R", "Key R", "Клавиша R"},
-    {"F", "Key F", "Клавиша F"},
-    {"Q", "Key Q", "Клавиша Q"},
-    {"H", "Key H", "Клавиша H"},
-};
-constexpr KeyOption kStrongR2Opts[] = {
-    {"Left Shift+Mouse Left, Mouse X1", "Shift+LMB / Mouse X1", "Shift+ЛКМ / Мышь X1"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-    {"Mouse Right", "Mouse Right (RMB)", "ПКМ (Мышь правая)"},
-    {"Mouse Middle", "Mouse Middle (MMB)", "Колёсико мыши (СКМ)"},
-    {"Left Alt+Mouse Left", "Alt + Mouse Left", "Alt + ЛКМ"},
-    {"G", "Key G", "Клавиша G"},
-    {"V", "Key V", "Клавиша V"},
-    {"Z", "Key Z", "Клавиша Z"},
-    {"X", "Key X", "Клавиша X"},
-};
-constexpr KeyOption kFirearmL2Opts[] = {
-    {"Mouse Right", "Mouse Right (RMB)", "ПКМ (Мышь правая)"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-    {"Mouse Middle", "Mouse Middle (MMB)", "Колёсико мыши (СКМ)"},
-    {"Q", "Key Q", "Клавиша Q"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"Left Alt", "Left Alt", "Левый Alt"},
-    {"V", "Key V", "Клавиша V"},
-    {"C", "Key C", "Клавиша C"},
-    {"F", "Key F", "Клавиша F"},
-};
-constexpr KeyOption kTransformL1Opts[] = {
-    {"E, Mouse X2", "E / Mouse Side X2", "E / Боковая мышь X2"},
-    {"E", "Key E", "Клавиша E"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Q", "Key Q", "Клавиша Q"},
-    {"R", "Key R", "Клавиша R"},
-    {"F", "Key F", "Клавиша F"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"Left Alt", "Left Alt", "Левый Alt"},
-    {"Z", "Key Z", "Клавиша Z"},
-    {"X", "Key X", "Клавиша X"},
-};
-constexpr KeyOption kDodgeOpts[] = {
-    {"Space", "Space", "Пробел (Space)"},
-    {"Left Alt", "Left Alt", "Левый Alt"},
-    {"Left Shift", "Left Shift", "Левый Shift"},
-    {"Left Ctrl", "Left Ctrl", "Левый Ctrl"},
-    {"C", "Key C", "Клавиша C"},
-    {"V", "Key V", "Клавиша V"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-};
-constexpr KeyOption kSprintOpts[] = {
-    {"Left Shift", "Left Shift (+Dodge=Jump)", "Лев. Shift (+Укл.=Прыжок)"},
-    {"Space", "Space (+Dodge=Jump)", "Пробел (+Укл.=Прыжок)"},
-    {"Left Ctrl", "Left Ctrl", "Левый Ctrl"},
-    {"Left Alt", "Left Alt", "Левый Alt"},
-    {"CapsLock", "CapsLock", "CapsLock"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-};
-constexpr KeyOption kHealOpts[] = {
-    {"Q", "Key Q", "Клавиша Q"},
-    {"E", "Key E", "Клавиша E"},
-    {"R", "Key R", "Клавиша R"},
-    {"F", "Key F", "Клавиша F"},
-    {"V", "Key V", "Клавиша V"},
-    {"C", "Key C", "Клавиша C"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"1", "Key 1", "Клавиша 1"},
-    {"3", "Key 3", "Клавиша 3"},
-    {"Mouse Middle", "Mouse Middle (MMB)", "Колёсико мыши (СКМ)"},
-    {"Mouse X1", "Mouse Side X1", "Боковая мышь X1"},
-    {"Mouse X2", "Mouse Side X2", "Боковая мышь X2"},
-};
-constexpr KeyOption kItemOpts[] = {
-    {"Tab, R", "R / Tab", "R / Tab"},
-    {"R", "Key R", "Клавиша R"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"E", "Key E", "Клавиша E"},
-    {"Q", "Key Q", "Клавиша Q"},
-    {"F", "Key F", "Клавиша F"},
-    {"V", "Key V", "Клавиша V"},
-    {"X", "Key X", "Клавиша X"},
-    {"Z", "Key Z", "Клавиша Z"},
-    {"Mouse Middle", "Mouse Middle (MMB)", "Колёсико мыши (СКМ)"},
-};
-constexpr KeyOption kInteractOpts[] = {
-    {"F, Return", "F / Enter", "F / Enter"},
-    {"E, Return", "E / Enter", "E / Enter"},
-    {"R, Return", "R / Enter", "R / Enter"},
-    {"Q, Return", "Q / Enter", "Q / Enter"},
-    {"Space, Return", "Space / Enter", "Пробел / Enter"},
-    {"V, Return", "V / Enter", "V / Enter"},
-    {"C, Return", "C / Enter", "C / Enter"},
-};
-constexpr KeyOption kLockOnOpts[] = {
-    {"C, Mouse Middle", "C / Mouse Middle", "C / Колёсико мыши (СКМ)"},
-    {"Mouse Middle", "Mouse Middle (MMB)", "Колёсико мыши (СКМ)"},
-    {"C", "Key C", "Клавиша C"},
-    {"Q", "Key Q", "Клавиша Q"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"V", "Key V", "Клавиша V"},
-    {"X", "Key X", "Клавиша X"},
-    {"Z", "Key Z", "Клавиша Z"},
-    {"Left Alt", "Left Alt", "Левый Alt"},
-};
-constexpr KeyOption kGesturesOpts[] = {
-    {"G", "Key G (Personal: Bksp)", "Клавиша G (Вещи: Bksp)"},
-    {"T", "Key T", "Клавиша T"},
-    {"Y", "Key Y", "Клавиша Y"},
-    {"B", "Key B", "Клавиша B"},
-    {"N", "Key N", "Клавиша N"},
-    {"Tab", "Key Tab", "Клавиша Tab"},
-    {"Z", "Key Z", "Клавиша Z"},
-    {"X", "Key X", "Клавиша X"},
-};
-
-#define BB_KEY_DEF(ini, en, ru, hen, hru, opts) \
-    {ini, en, ru, hen, hru, opts[0].ini_value, opts, int(sizeof(opts) / sizeof(opts[0]))}
-
 constexpr KeyActionDef kKeyDefs[KeyActionCount] = {
-    BB_KEY_DEF("key.r1", "Attack (R1)", "Обычный удар (R1)",
-               "Right-hand weapon light attack (R1). Move: WASD | Walk: Left Ctrl + WASD",
-               "Быстрый удар оружием в правой руке (R1). Движение: WASD | Шаг: Left Ctrl + WASD",
-               kAttackR1Opts),
-    BB_KEY_DEF("key.r2", "Strong Attack (R2)", "Сильный удар (R2)",
-               "Right-hand heavy / charged attack (R2). Hold for visceral backstab trigger",
-               "Сильная / заряженная атака (R2). Удерживайте со спины для оглушения",
-               kStrongR2Opts),
-    BB_KEY_DEF("key.l2", "Firearm / Parry (L2)", "Выстрел / Парирование (L2)",
-               "Left-hand firearm shot or two-handed L2 attack (parry enemy attacks)",
-               "Выстрел из пистолета в левой руке или особая атака L2 (парирование врагов)",
-               kFirearmL2Opts),
-    BB_KEY_DEF("key.l1", "Transform Weapon (L1)", "Трансформация (L1)",
-               "Trick weapon transformation (L1). Press after dodge or R1 for transform attack",
-               "Трансформация оружия-обманки (L1). После удара или уворота — атака с трансформацией",
-               kTransformL1Opts),
-    BB_KEY_DEF("key.dodge", "Dodge / Backstep", "Уклонение / Отскок",
-               "Quickstep / Roll (with WASD) or Backstep (standing still). Instant response",
-               "Отскок / Перекат (с WASD) или шаг назад (стоя на месте). Срабатывает без задержки",
-               kDodgeOpts),
-    BB_KEY_DEF("key.sprint", "Sprint & Jump (Hold)", "Бег и прыжок (удерж.)",
-               "Hold to Sprint; press Dodge while sprinting to Jump! Climb ladders fast",
-               "Удерживайте для бега; нажмите Уклонение на бегу для ПРЫЖКА! Быстрый спуск по лестницам",
-               kSprintOpts),
-    BB_KEY_DEF("key.triangle", "Heal / Blood Vial", "Лечение (Пузырёк)",
-               "Use Blood Vial to restore HP (Triangle)",
-               "Использовать Пузырёк крови для лечения (Треугольник)",
-               kHealOpts),
-    BB_KEY_DEF("key.square", "Use Quick Item", "Применить предмет",
-               "Use selected quick item: Molotov, Bolt Paper, Hunter Tool (Square)",
-               "Применить выбранный предмет: коктейль Молотова, бумага, инструмент (Квадрат)",
-               kItemOpts),
-    BB_KEY_DEF("key.cross", "Interact / Confirm", "Действие / ОК",
-               "Talk, open doors, pick up items, light lamps, confirm in menus (Cross)",
-               "Говорить, открывать двери, подбирать предметы, зажигать фонари, ОК в меню (Крест)",
-               kInteractOpts),
-    BB_KEY_DEF("key.r3", "Lock-On Target (R3)", "Захват цели (R3)",
-               "Lock camera onto enemy or reset camera forward (R3). Switch target: move mouse",
-               "Захват цели камерой или центрирование камеры (R3). Смена цели: движение мыши",
-               kLockOnOpts),
-    BB_KEY_DEF("key.touchpad", "Gestures / Touchpad", "Жесты / Тачпад",
-               "Gestures menu. Personal Effects: Backspace | Switch weapons: 1/2 | Items: Wheel/3/4",
-               "Меню жестов. Личные вещи: Backspace | Смена оружия: 1/2 | Предметы: Колесо мыши / 3 / 4",
-               kGesturesOpts),
+    {"key.r1", "Attack (R1)", "Обычный удар (R1)",
+     "Right-hand weapon light attack (R1). Select & press any key/mouse button (or 2+ keys)",
+     "Быстрый удар оружием в правой руке (R1). Выберите и нажмите любую клавишу/кнопку мыши (или 2+)",
+     "Mouse Left"},
+    {"key.r2", "Strong Attack (R2)", "Сильный удар (R2)",
+     "Right-hand heavy / charged attack (R2). Hold from behind for visceral backstab",
+     "Сильная / заряженная атака (R2). Удерживайте со спины для оглушения",
+     "Left Shift+Mouse Left"},
+    {"key.l2", "Firearm / Parry (L2)", "Выстрел / Парирование (L2)",
+     "Left-hand firearm shot or two-handed L2 attack (parry enemy attacks)",
+     "Выстрел из пистолета в левой руке или особая атака L2 (парирование врагов)",
+     "Mouse Right"},
+    {"key.l1", "Transform Weapon (L1)", "Трансформация (L1)",
+     "Trick weapon transformation (L1). Press after dodge or R1 for transform attack",
+     "Трансформация оружия-обманки (L1). После удара или уворота — атака с трансформацией",
+     "E"},
+    {"key.dodge", "Dodge / Backstep", "Уклонение / Отскок",
+     "Quickstep / Roll (with WASD) or Backstep (standing still). Instant response",
+     "Отскок / Перекат (с WASD) или шаг назад (стоя на месте). Срабатывает без задержки",
+     "Space"},
+    {"key.sprint", "Sprint & Jump (Hold)", "Бег и прыжок (удерж.)",
+     "Hold to Sprint; press Dodge while sprinting to Jump! Climb ladders fast",
+     "Удерживайте для бега; нажмите Уклонение на бегу для ПРЫЖКА! Быстрый спуск по лестницам",
+     "Left Shift"},
+    {"key.triangle", "Heal / Blood Vial", "Лечение (Пузырёк)",
+     "Use Blood Vial to restore HP (Triangle)",
+     "Использовать Пузырёк крови для лечения (Треугольник)",
+     "Q"},
+    {"key.square", "Use Quick Item", "Применить предмет",
+     "Use selected quick item: Molotov, Bolt Paper, Hunter Tool (Square)",
+     "Применить выбранный предмет: коктейль Молотова, бумага, инструмент (Квадрат)",
+     "R, Tab"},
+    {"key.cross", "Interact / Confirm", "Действие / ОК",
+     "Talk, open doors, pick up items, light lamps, confirm in menus (Cross)",
+     "Говорить, открывать двери, подбирать предметы, зажигать фонари, ОК в меню (Крест)",
+     "F, Enter"},
+    {"key.r3", "Lock-On Target (R3)", "Захват цели (R3)",
+     "Lock camera onto enemy or reset camera forward (R3). Switch target: move mouse",
+     "Захват цели камерой или центрирование камеры (R3). Смена цели: движение мыши",
+     "C, Mouse Middle"},
+    {"key.touchpad", "Gestures / Touchpad", "Жесты / Тачпад",
+     "Gestures menu. Personal Effects: Backspace | Switch weapons: 1/2 | Items: Wheel/3/4",
+     "Меню жестов. Личные вещи: Backspace | Смена оружия: 1/2 | Предметы: Колесо мыши / 3 / 4",
+     "G"},
 };
-#undef BB_KEY_DEF
 
 std::mutex key_mutex;
 std::array<std::string, KeyActionCount> key_bindings = [] {
@@ -291,6 +163,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                 } else {
                     trimmed.clear();
                 }
+                if (trimmed == "E, Mouse X2") trimmed = "E";
+                else if (trimmed == "Left Shift+Mouse Left, Mouse X1") trimmed = "Left Shift+Mouse Left";
+                else if (trimmed == "Tab, R") trimmed = "R, Tab";
+                else if (trimmed == "F, Return") trimmed = "F, Enter";
                 if (!trimmed.empty()) {
                     std::scoped_lock lock{key_mutex};
                     key_bindings[k] = trimmed;
@@ -323,23 +199,48 @@ void SetKeyBinding(int action, const std::string& value) {
     key_bindings[idx] = value.empty() ? kKeyDefs[idx].default_val : value;
 }
 
-int GetKeyOptionIndex(int action) {
-    const int idx = std::clamp(action, 0, KeyActionCount - 1);
-    const std::string cur = GetKeyBinding(idx);
-    const auto& def = kKeyDefs[idx];
-    for (int i = 0; i < def.option_count; ++i) {
-        if (cur == def.options[i].ini_value) {
-            return i;
+std::string FormatKeyBinding(const std::string& raw, bool russian) {
+    (void)russian;
+    auto trim = [](std::string s) {
+        const auto a = s.find_first_not_of(" \t");
+        if (a == std::string::npos) return std::string{};
+        return s.substr(a, s.find_last_not_of(" \t") - a + 1);
+    };
+    auto pretty_token = [](const std::string& tok) -> std::string {
+        if (tok == "Return") return "Enter";
+        if (tok == "Mouse X1") return "Mouse 4";
+        if (tok == "Mouse X2") return "Mouse 5";
+        return tok;
+    };
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+        const std::size_t comma = raw.find(',', pos);
+        std::string alt = trim(raw.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos));
+        pos = comma == std::string::npos ? raw.size() : comma + 1;
+        if (alt.empty()) continue;
+        std::string chord_out;
+        std::size_t p2 = 0;
+        while (p2 < alt.size()) {
+            const std::size_t plus = alt.find('+', p2);
+            // Handle "Keypad +" where '+' is the last character
+            std::string tok;
+            if (plus != std::string::npos && plus + 1 < alt.size()) {
+                tok = trim(alt.substr(p2, plus - p2));
+                p2 = plus + 1;
+            } else {
+                tok = trim(alt.substr(p2));
+                p2 = alt.size();
+            }
+            if (tok.empty()) continue;
+            if (!chord_out.empty()) chord_out += " + ";
+            chord_out += pretty_token(tok);
         }
+        if (chord_out.empty()) continue;
+        if (!out.empty()) out += " / ";
+        out += chord_out;
     }
-    return 0;
-}
-
-void SetKeyOptionIndex(int action, int option_index) {
-    const int idx = std::clamp(action, 0, KeyActionCount - 1);
-    const auto& def = kKeyDefs[idx];
-    const int opt = std::clamp(option_index, 0, def.option_count - 1);
-    SetKeyBinding(idx, def.options[opt].ini_value);
+    return out.empty() ? raw : out;
 }
 
 void ResetKeyBindingsToDefault() {

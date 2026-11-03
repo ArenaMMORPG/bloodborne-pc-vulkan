@@ -312,11 +312,12 @@ enum { MOUSE_KEY=SDL_SCANCODE_COUNT, MOUSE_WHEEL_UP=MOUSE_KEY+SDL_BUTTON_X2+1, M
 static const struct { const char *name; int code; } mouse_keys[]={
     {"Mouse Left",MOUSE_KEY+SDL_BUTTON_LEFT}, {"Mouse Right",MOUSE_KEY+SDL_BUTTON_RIGHT},
     {"Mouse Middle",MOUSE_KEY+SDL_BUTTON_MIDDLE}, {"Mouse X1",MOUSE_KEY+SDL_BUTTON_X1},
-    {"Mouse X2",MOUSE_KEY+SDL_BUTTON_X2}, {"Wheel Up",MOUSE_WHEEL_UP}, {"Wheel Down",MOUSE_WHEEL_DOWN},
+    {"Mouse X2",MOUSE_KEY+SDL_BUTTON_X2}, {"Mouse 4",MOUSE_KEY+SDL_BUTTON_X1},
+    {"Mouse 5",MOUSE_KEY+SDL_BUTTON_X2}, {"Wheel Up",MOUSE_WHEEL_UP}, {"Wheel Down",MOUSE_WHEEL_DOWN},
 };
 enum { PAD_LEFT_TRIGGER=SDL_GAMEPAD_BUTTON_COUNT, PAD_RIGHT_TRIGGER }; /* triggers as buttons */
-/* keys[i] needs mods[i] held too when mods[i] is not -1 (a chord: "Left Shift+Mouse Left"). */
-typedef struct { int key_count, pad_count; int keys[MAX_BIND]; int mods[MAX_BIND]; int pad[MAX_BIND]; } Binding;
+/* keys[i] needs mods[i] (and mods2[i]) held too when not -1 (a chord: "Left Shift+Mouse Left"). */
+typedef struct { int key_count, pad_count; int keys[MAX_BIND]; int mods[MAX_BIND]; int mods2[MAX_BIND]; int pad[MAX_BIND]; } Binding;
 static Binding bindings[IN_COUNT];
 static int bindings_ready;
 
@@ -356,9 +357,10 @@ static void bind_defaults(void) {
         {IN_LEFT,SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {IN_RIGHT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
     };
     memset(bindings,0,sizeof bindings);
+    for (int i=0;i<IN_COUNT;++i) for (int j=0;j<MAX_BIND;++j) bindings[i].mods[j]=bindings[i].mods2[j]=NONE;
     for (size_t i=0;i<sizeof(keys)/sizeof(*keys);++i) {
         Binding *b=&bindings[keys[i].input];
-        b->mods[b->key_count]=keys[i].mod; b->keys[b->key_count++]=keys[i].key;
+        b->mods[b->key_count]=keys[i].mod; b->mods2[b->key_count]=NONE; b->keys[b->key_count++]=keys[i].key;
     }
     for (size_t i=0;i<sizeof(pads)/sizeof(*pads);++i) {
         Binding *b=&bindings[pads[i].input]; b->pad[b->pad_count++]=pads[i].button;
@@ -371,6 +373,7 @@ static int pad_button_from_name(const char *name) {
     return b==SDL_GAMEPAD_BUTTON_INVALID ? -1 : (int)b;
 }
 static int key_from_name(const char *name) {
+    if (!SDL_strcasecmp(name,"Enter")) return SDL_SCANCODE_RETURN;
     for (size_t i=0;i<sizeof(mouse_keys)/sizeof(*mouse_keys);++i)
         if (!SDL_strcasecmp(name,mouse_keys[i].name)) return mouse_keys[i].code;
     const SDL_Scancode s=SDL_GetScancodeFromName(name);
@@ -417,18 +420,32 @@ static void load_bindings(void) {
             for (char *end=name+strlen(name); end>name && end[-1]==' ';) *--end=0;
             if (!*name) continue;
             if (keyboard) {
-                /* A chord: "<modifier>+<key>" ("Keypad +" is one key: nothing after its '+'). */
-                int mod=-1;
-                char *plus=strrchr(name,'+');
+                /* A chord: "<mod>+<key>" or "<mod1>+<mod2>+<key>" ("Keypad +" is one key: nothing after its '+'). */
+                int mod=-1, mod2=-1;
+                char *plus=strchr(name,'+');
                 if (plus && plus>name && plus[1]) {
                     *plus=0;
                     mod=key_from_name(name);
-                    if (mod<0) *plus='+'; else name=plus+1;
-                    while (*name==' ') ++name;
+                    if (mod<0) *plus='+';
+                    else {
+                        name=plus+1;
+                        while (*name==' ') ++name;
+                        char *plus2=strchr(name,'+');
+                        if (plus2 && plus2>name && plus2[1]) {
+                            *plus2=0;
+                            mod2=key_from_name(name);
+                            if (mod2<0) *plus2='+';
+                            else { name=plus2+1; while (*name==' ') ++name; }
+                        }
+                    }
                 }
                 const int s=key_from_name(name);
                 if (s<0) printf("Runtime: controls: unknown key \"%s\" for %s\n",name,line+4);
-                else if (b->key_count<MAX_BIND) { b->mods[b->key_count]=mod; b->keys[b->key_count++]=s; }
+                else if (b->key_count<MAX_BIND) {
+                    b->mods[b->key_count]=mod;
+                    b->mods2[b->key_count]=mod2;
+                    b->keys[b->key_count++]=s;
+                }
             } else {
                 const int button=pad_button_from_name(name);
                 if (button<0) printf("Runtime: controls: unknown gamepad button \"%s\" for %s\n",name,line+4);
@@ -482,14 +499,15 @@ static int chord_held(const bool *k, int code) {
     for (int input=0;input<IN_COUNT;++input)
         for (int i=0;i<bindings[input].key_count;++i)
             if (bindings[input].keys[i]==code && bindings[input].mods[i]>=0 &&
-                code_down(k,bindings[input].mods[i])) return 1;
+                code_down(k,bindings[input].mods[i]) &&
+                (bindings[input].mods2[i]<0 || code_down(k,bindings[input].mods2[i]))) return 1;
     return 0;
 }
 static int key_down(const bool *k, int input) {
     for (int i=0;i<bindings[input].key_count;++i) {
-        const int code=bindings[input].keys[i], mod=bindings[input].mods[i];
+        const int code=bindings[input].keys[i], mod=bindings[input].mods[i], mod2=bindings[input].mods2[i];
         if (!code_down(k,code)) continue;
-        if (mod>=0 ? code_down(k,mod) : !chord_held(k,code)) return 1;
+        if (mod>=0 ? (code_down(k,mod) && (mod2<0 || code_down(k,mod2))) : !chord_held(k,code)) return 1;
     }
     return 0;
 }

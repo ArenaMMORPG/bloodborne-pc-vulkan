@@ -38,6 +38,7 @@
 #include <SDL3/SDL.h>
 
 #include "bbgpu.h"
+#include "bbport_game_menu.h"
 #include "bbport_guest_code_hooks.h"
 #include "bbport_overlay.h"
 #include "bbport_toggles.h"
@@ -499,7 +500,7 @@ void PS4_SYSV_ABI OnListUpdate(std::uint64_t, const Core::GuestRegisterSnapshot*
         return;
     }
     list_focus_ms.store(NowMs(), std::memory_order_relaxed);
-    if (BbOverlay::CapturesInput() || !pointer_in.load(std::memory_order_relaxed)) {
+    if (BbOverlay::CapturesInput() || BbGameMenu::CapturesInput() || !pointer_in.load(std::memory_order_relaxed)) {
         return;
     }
     const float x = pointer_x.load(std::memory_order_relaxed);
@@ -605,7 +606,7 @@ int OnEvent(const void* sdl_event, void* sdl_window) {
     default:
         break;
     }
-    const bool ours = !bbgpu_mouse_captured() && !BbOverlay::MenuOpen() && InMenu();
+    const bool ours = !bbgpu_mouse_captured() && !BbOverlay::MenuOpen() && !BbGameMenu::CapturesInput() && InMenu();
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {
         left_held.store(false, std::memory_order_relaxed);
         repeat_press.store(0, std::memory_order_relaxed);
@@ -690,7 +691,7 @@ void OnPad(std::uint32_t* buttons, const std::uint8_t* sticks) {
     static std::uint32_t holding = 0;
     static std::int64_t until_ms = 0, repeat_ms = 0;
     const std::int64_t now = NowMs();
-    if (!InMenu() || BbOverlay::CapturesInput()) {
+    if (!InMenu() || BbOverlay::CapturesInput() || BbGameMenu::CapturesInput()) {
         presses.store(0, std::memory_order_relaxed);
         repeat_press.store(0, std::memory_order_relaxed);
         holding = 0;

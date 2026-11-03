@@ -20,6 +20,7 @@
 
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
+#include <SDL3/SDL.h>
 #include <fmt/format.h>
 
 namespace BbGameMenu {
@@ -74,7 +75,8 @@ struct Layout {
 };
 constexpr Layout ControlsLayout{0x4934065, 113020, 0, 6}; // "ControllSetting"
 constexpr u32 TextName = 0xc8, TextHelp = 0xc9; // SP_menu text / SP_one-line help
-constexpr u32 ScreenSoundItem = 110001;         // "Screen/Sound" in the System menu: ours follow it
+constexpr u32 ControlsItem = 110000;            // "Controls" in the System menu: Keybinds follow it
+constexpr u32 ScreenSoundItem = 110001;         // "Screen/Sound" in the System menu: Display/Effects follow it
 
 const u8 MsgLookupPrologue[] = {0x89, 0xf0, 0x48, 0x8b, 0x77, 0x08, 0x48, 0x8b, 0x34, 0xc6};
 const u8 AddPageItemPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
@@ -225,6 +227,13 @@ void RefreshOutputs(int aspect) {
     }
 }
 
+void RefreshKeyText(int k) {
+    const std::string raw = BbSettings::GetKeyBinding(k);
+    const std::string en = BbSettings::FormatKeyBinding(raw, false);
+    const std::string ru = BbSettings::FormatKeyBinding(raw, true);
+    SetDynamic(CustomKeyTexts + u32(k), en.c_str(), ru.c_str());
+}
+
 /// The rows' values of settings `s`.
 void Fill(const BbSettings::Values& s, int* values) {
     values[Aspect] = s.aspect;
@@ -245,21 +254,8 @@ void Fill(const BbSettings::Values& s, int* values) {
     values[MouseSens] =
         s.mouse_look ? std::clamp(int(std::lround(s.mouse_sensitivity / MouseSensStep)), 1, MouseSensSteps - 1) : 0;
     for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
-        const auto& def = BbSettings::GetKeyActionDef(k);
-        const std::string cur = BbSettings::GetKeyBinding(k);
-        int idx = def.option_count; // custom slot if not in preset list
-        for (int i = 0; i < def.option_count; ++i) {
-            if (cur == def.options[i].ini_value) {
-                idx = i;
-                break;
-            }
-        }
-        if (idx == def.option_count) {
-            SetDynamic(CustomKeyTexts + u32(k), ("Custom: " + cur).c_str(), ("Своя: " + cur).c_str());
-        } else {
-            SetDynamic(CustomKeyTexts + u32(k), def.options[0].label_en, def.options[0].label_ru);
-        }
-        values[FirstKey + k] = idx;
+        RefreshKeyText(k);
+        values[FirstKey + k] = 0;
     }
 }
 
@@ -403,27 +399,23 @@ void DefineTexts() {
 
     const auto add_key_row = [&](int k) {
         const auto& def = BbSettings::GetKeyActionDef(k);
-        std::vector<u32> choices;
-        choices.reserve(std::size_t(def.option_count + 1));
-        for (int i = 0; i < def.option_count; ++i) {
-            choices.push_back(AddText(def.options[i].label_en, def.options[i].label_ru));
-        }
-        choices.push_back(CustomKeyTexts + u32(k));
+        // Two slots (0: normal, 1: "Default" button trigger) both pointing to the dynamic buffer.
+        std::vector<u32> choices = {CustomKeyTexts + u32(k), CustomKeyTexts + u32(k)};
         row(Field(FirstKey + k), def.name_en, def.name_ru, def.help_en, def.help_ru,
             std::move(choices), Kind::Select);
     };
 
-    page("Controls: Combat", "Клавиши: Бой",
-         "Attack, parry, weapon transform, dodge, sprint and jump (applied live)",
-         "Удары, выстрел/парирование, трансформация, уворот, бег и прыжок (на лету)",
+    page("Keybinds: Combat", "Клавиши: Бой",
+         "Select any action and press 1 or 2+ keys/mouse buttons, then release all to apply",
+         "Выберите действие и нажмите 1 или 2+ клавиши/кнопки мыши, затем отпустите все",
          ControlsLayout);
     for (int k = BbSettings::KeyAttackR1; k <= BbSettings::KeySprint; ++k) {
         add_key_row(k);
     }
 
-    page("Controls: Actions", "Клавиши: Действия",
-         "Heal, items, interact, lock-on, gestures and mouse camera speed (applied live)",
-         "Лечение, предметы, действие, захват цели, жесты и скорость мыши (на лету)",
+    page("Keybinds: Actions", "Клавиши: Действия",
+         "Select any action and press 1 or 2+ keys/mouse buttons, then release all to apply",
+         "Выберите действие и нажмите 1 или 2+ клавиши/кнопки мыши, затем отпустите все",
          ControlsLayout);
     for (int k = BbSettings::KeyHealTriangle; k <= BbSettings::KeyGestures; ++k) {
         add_key_row(k);
@@ -569,13 +561,6 @@ void AddRows(void* page, const std::vector<Row>& rows) {
             if (row.field == Upscaler && !UpscalerAvailable(int(i))) {
                 continue; // the list's values are the upscaler numbers, not positions
             }
-            if (int(row.field) >= int(FirstKey) && int(row.field) < int(FirstKey) + int(BbSettings::KeyActionCount)) {
-                const int k = row.field - FirstKey;
-                const auto& def = BbSettings::GetKeyActionDef(k);
-                if (int(i) == def.option_count && values[row.field] != def.option_count) {
-                    continue; // only show the custom slot when a custom key is bound
-                }
-            }
             alignas(16) u8 value[ValueSize] = {};
             *reinterpret_cast<u32*>(value) = u32(i);
             Game<Make>(MakeText)(value + 8, TextName, row.choices[i]);
@@ -628,14 +613,174 @@ void* const factories[MaxPages] = {
     reinterpret_cast<void*>(&PageFactory<2>), reinterpret_cast<void*>(&PageFactory<3>),
     reinterpret_cast<void*>(&PageFactory<4>), reinterpret_cast<void*>(&PageFactory<5>)};
 
+// ---- Direct Keybind Capture in the Native Bloodborne Menu ----
+enum class CapturePhase { WaitInitialRelease, WaitPressAndRelease, WaitEscapeRelease };
+std::atomic<int> capturing_action{-1};
+CapturePhase capture_phase = CapturePhase::WaitInitialRelease;
+std::vector<std::string> captured_tokens;
+std::string last_capture_preview;
+std::atomic<long long> capture_cooldown_ms{0};
+std::atomic<long long> last_capture_step_ms{0};
+
+long long NowSteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+bool IsModifierToken(const std::string& tok) {
+    return tok == "Left Shift" || tok == "Right Shift" || tok == "Left Ctrl" ||
+           tok == "Right Ctrl" || tok == "Left Alt" || tok == "Right Alt";
+}
+
+std::vector<std::string> CollectDownTokens(bool* escape_down) {
+    std::vector<std::string> out;
+    if (escape_down) *escape_down = false;
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) return out;
+    int num_keys = 0;
+    const bool* keys = SDL_GetKeyboardState(&num_keys);
+    if (keys) {
+        if (num_keys > SDL_SCANCODE_ESCAPE && keys[SDL_SCANCODE_ESCAPE]) {
+            if (escape_down) *escape_down = true;
+        }
+        for (int sc = 4; sc < std::min(num_keys, int(SDL_SCANCODE_COUNT)); ++sc) {
+            if (sc == SDL_SCANCODE_ESCAPE || !keys[sc]) continue;
+            const char* raw_name = SDL_GetScancodeName(SDL_Scancode(sc));
+            if (!raw_name || !*raw_name) continue;
+            std::string name = raw_name;
+            if (name == "Return") name = "Enter";
+            out.push_back(std::move(name));
+        }
+    }
+    const SDL_MouseButtonFlags mb = SDL_GetMouseState(nullptr, nullptr);
+    if (mb & SDL_BUTTON_LMASK) out.emplace_back("Mouse Left");
+    if (mb & SDL_BUTTON_RMASK) out.emplace_back("Mouse Right");
+    if (mb & SDL_BUTTON_MMASK) out.emplace_back("Mouse Middle");
+    if (mb & SDL_BUTTON_X1MASK) out.emplace_back("Mouse 4");
+    if (mb & SDL_BUTTON_X2MASK) out.emplace_back("Mouse 5");
+    return out;
+}
+
+void UpdateKeyRowDisplay(u8* row, int k) {
+    u8* items = row + RowValues;
+    items += (0 - reinterpret_cast<std::uintptr_t>(items)) & 7;
+    const u64 count = *reinterpret_cast<u64*>(row + RowCount);
+    for (u64 i = 0; i < count && i < 2; ++i) {
+        *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(CustomKeyTexts + u32(k));
+    }
+    Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
+}
+
+void PlayMenuClickSound() {
+    if (*reinterpret_cast<int*>(image_base + 0x557fc64) <= 0) {
+        *reinterpret_cast<u64*>(image_base + 0x557fc60) = 0x3e8;
+        *reinterpret_cast<u64*>(image_base + 0x557fc68) = image_base + 0x4933d56;
+    }
+}
+
+void StepKeyCapture(u8* row, int k) {
+    last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+    bool escape_down = false;
+    const std::vector<std::string> down = CollectDownTokens(&escape_down);
+
+    if (capture_phase == CapturePhase::WaitInitialRelease) {
+        if (!escape_down && down.empty()) {
+            capture_phase = CapturePhase::WaitPressAndRelease;
+        }
+        return;
+    }
+    if (capture_phase == CapturePhase::WaitEscapeRelease) {
+        if (!escape_down && down.empty()) {
+            RefreshKeyText(k);
+            UpdateKeyRowDisplay(row, k);
+            capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
+            capturing_action.store(-1, std::memory_order_relaxed);
+        }
+        return;
+    }
+    if (escape_down) {
+        capture_phase = CapturePhase::WaitEscapeRelease;
+        return;
+    }
+    for (const std::string& tok : down) {
+        if (captured_tokens.size() < 3 &&
+            std::find(captured_tokens.begin(), captured_tokens.end(), tok) == captured_tokens.end()) {
+            captured_tokens.push_back(tok);
+        }
+    }
+    if (!down.empty() && !captured_tokens.empty()) {
+        std::string preview = "[ ";
+        for (std::size_t i = 0; i < captured_tokens.size(); ++i) {
+            if (i > 0) preview += " + ";
+            preview += captured_tokens[i];
+        }
+        preview += " ... ]";
+        if (preview != last_capture_preview) {
+            last_capture_preview = preview;
+            SetDynamic(CustomKeyTexts + u32(k), preview.c_str(), preview.c_str());
+            UpdateKeyRowDisplay(row, k);
+        }
+        return;
+    }
+    if (down.empty() && !captured_tokens.empty()) {
+        // Order modifiers first so chords like Left Shift + Mouse Left are canonical.
+        std::stable_partition(captured_tokens.begin(), captured_tokens.end(), IsModifierToken);
+        std::string new_binding;
+        for (std::size_t i = 0; i < captured_tokens.size(); ++i) {
+            if (i > 0) new_binding += "+";
+            new_binding += captured_tokens[i];
+        }
+        BbSettings::SetKeyBinding(k, new_binding);
+        BbSettings::Save();
+        RefreshKeyText(k);
+        UpdateKeyRowDisplay(row, k);
+        PlayMenuClickSound();
+        capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
+        capturing_action.store(-1, std::memory_order_relaxed);
+    }
+}
+
 // ---- Hooks ----
 using RowInputFn = u64 (PS4_SYSV_ABI*)(u8*, u64, u64, u64, u64, u64, double);
 RowInputFn row_input_original = nullptr;
+constexpr u64 IsConfirmPressed = 0x1adfec0;
 
 u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, double frame_time) {
+    int* const val_ptr = *reinterpret_cast<int**>(row + RowValue);
     // The game asks the open page's rows: the resolution row is alive while it does.
-    if (*reinterpret_cast<int**>(row + RowValue) == &values[OutputRes]) {
+    if (val_ptr == &values[OutputRes]) {
         RefreshOutputRow(row);
+    }
+    if (val_ptr >= &values[FirstKey] && val_ptr < &values[int(FirstKey) + int(BbSettings::KeyActionCount)]) {
+        const int k = int(val_ptr - &values[FirstKey]);
+        // If the page's "Defaults" button was pressed, it sets values[FirstKey + k] = 1.
+        if (values[FirstKey + k] != 0) {
+            values[FirstKey + k] = 0;
+            applied[FirstKey + k] = 0;
+            BbSettings::SetKeyBinding(k, BbSettings::GetKeyActionDef(k).default_val);
+            RefreshKeyText(k);
+            UpdateKeyRowDisplay(row, k);
+            BbSettings::Save();
+        }
+        const int active_k = capturing_action.load(std::memory_order_relaxed);
+        if (active_k == k) {
+            StepKeyCapture(row, k);
+            return 0;
+        }
+        if (active_k < 0 && NowSteadyMs() >= capture_cooldown_ms.load(std::memory_order_relaxed)) {
+            const u8 in = u8(a1);
+            if (in != 0 && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in)) {
+                PlayMenuClickSound();
+                captured_tokens.clear();
+                last_capture_preview.clear();
+                capture_phase = CapturePhase::WaitInitialRelease;
+                last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                capturing_action.store(k, std::memory_order_relaxed);
+                SetDynamic(CustomKeyTexts + u32(k), "[ Press key(s)... ]", "[ Нажмите клавишу... ]");
+                UpdateKeyRowDisplay(row, k);
+            }
+        }
+        return 0;
     }
     return row_input_original(row, a1, a2, a3, a4, a5, frame_time);
 }
@@ -644,6 +789,7 @@ using LookupFn = const char16_t* (PS4_SYSV_ABI*)(void*, u32, u32, u32);
 using AddFn = void* (PS4_SYSV_ABI*)(void*, void*, void*, void*);
 LookupFn lookup_original = nullptr;
 AddFn add_original = nullptr;
+std::atomic<const void*> controls_item_text{nullptr};
 std::atomic<const void*> screen_sound_text{nullptr};
 
 const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 category, u32 id) {
@@ -720,8 +866,9 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
         std::printf("Game menu: text %#x/%u%s from %#llx\n", category, id, building_page >= 0 ? " (our page)" : "",
                     (unsigned long long)(reinterpret_cast<u64>(__builtin_return_address(0)) - image_base));
     }
-    if (category == TextName && id == ScreenSoundItem && text) {
-        screen_sound_text = text;
+    if (category == TextName && (id == ControlsItem || id == ScreenSoundItem) && text) {
+        if (id == ControlsItem) controls_item_text = text;
+        if (id == ScreenSoundItem) screen_sound_text = text;
         bool cyrillic = false;
         for (const char16_t* c = text; *c; ++c) {
             cyrillic = cyrillic || (*c >= 0x400 && *c < 0x500);
@@ -749,10 +896,24 @@ void AddItem(void* menu, u32 name, u32 help, void* factory) {
 
 void* PS4_SYSV_ABI AddHook(void* menu, void* pair, void* function, void* out) {
     void* result = add_original(menu, pair, function, out);
+    const void* item_text = *reinterpret_cast<const void* const*>(pair);
+    const void* controls_text = controls_item_text.load();
     const void* screen_sound = screen_sound_text.load();
-    if (screen_sound && *reinterpret_cast<const void* const*>(pair) == screen_sound) {
-        for (std::size_t i = 0; i < pages.size() && i < MaxPages; ++i) {
+    // Place Keybinds: Combat and Keybinds: Actions right under Controls (110000).
+    if (controls_text && item_text == controls_text) {
+        for (std::size_t i = 2; i < pages.size() && i < MaxPages; ++i) {
             AddItem(menu, pages[i].name, pages[i].help, factories[i]);
+        }
+    }
+    // Place Display and Effects right under Environment / Screen & Sound (110001).
+    if (screen_sound && item_text == screen_sound) {
+        for (std::size_t i = 0; i < 2 && i < pages.size(); ++i) {
+            AddItem(menu, pages[i].name, pages[i].help, factories[i]);
+        }
+        if (!controls_text) {
+            for (std::size_t i = 2; i < pages.size() && i < MaxPages; ++i) {
+                AddItem(menu, pages[i].name, pages[i].help, factories[i]);
+            }
         }
     }
     return result;
@@ -835,7 +996,7 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     }
     default_values[MouseSens] = 5;
     for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
-        default_values[FirstKey + k] = 0;
+        default_values[FirstKey + k] = 1; // 1 triggers default reset when "Defaults" is clicked
     }
     for (int f = 0; f < FieldCount; ++f) {
         default_bytes[f] = u8(default_values[f]);
@@ -854,6 +1015,17 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
                 pages.size());
 }
 
+bool CapturesInput() {
+    const long long now = NowSteadyMs();
+    if (capturing_action.load(std::memory_order_relaxed) >= 0) {
+        if (now - last_capture_step_ms.load(std::memory_order_relaxed) > 400) {
+            capturing_action.store(-1, std::memory_order_relaxed);
+            return false;
+        }
+        return true;
+    }
+    return now < capture_cooldown_ms.load(std::memory_order_relaxed);
+}
 
 void Poll() {
     if (!values_valid) {
@@ -914,15 +1086,6 @@ void Poll() {
     if (now_values[MouseSens] != 0) {
         s.mouse_sensitivity =
             std::clamp(now_values[MouseSens], 1, MouseSensSteps - 1) * MouseSensStep;
-    }
-    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
-        const int field = FirstKey + k;
-        if (now_values[field] != applied[field]) {
-            const auto& def = BbSettings::GetKeyActionDef(k);
-            if (now_values[field] >= 0 && now_values[field] < def.option_count) {
-                BbSettings::SetKeyOptionIndex(k, now_values[field]);
-            }
-        }
     }
     BbGuestHooks::ApplyGameEffects();
     std::memcpy(applied, now_values, sizeof(now_values));

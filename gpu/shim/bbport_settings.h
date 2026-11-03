@@ -65,12 +65,6 @@ enum KeyAction : int {
     KeyActionCount
 };
 
-struct KeyOption {
-    const char* ini_value;
-    const char* label_en;
-    const char* label_ru;
-};
-
 struct KeyActionDef {
     const char* ini_key;
     const char* name_en;
@@ -78,15 +72,12 @@ struct KeyActionDef {
     const char* help_en;
     const char* help_ru;
     const char* default_val;
-    const KeyOption* options;
-    int option_count;
 };
 
 const KeyActionDef& GetKeyActionDef(int action);
 std::string GetKeyBinding(int action);
 void SetKeyBinding(int action, const std::string& value);
-int GetKeyOptionIndex(int action);
-void SetKeyOptionIndex(int action, int option_index);
+std::string FormatKeyBinding(const std::string& raw, bool russian = false);
 void ResetKeyBindingsToDefault();
 /// Output aspect ratios, and the output resolutions of each: the upscaler's output and the UI's
 /// targets, changed live. The game keeps its 1920x1080 frame; for another aspect ratio its camera,
