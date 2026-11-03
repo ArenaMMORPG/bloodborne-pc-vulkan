@@ -776,6 +776,7 @@ private:
         Gcn::Sampler clean_sharp{};
         u32 bias_bits = 0;
         Gcn::BorderColorBuffer bc_base{};
+        u8 forced_aniso = 16;
         bool forced_aniso_off = false;
         std::array<u64, 3> touched_ticks{~0ULL, ~0ULL, ~0ULL}; // [0]=gfx_color, [1]=cs_color, [2]=depth
         std::array<vk::Sampler, 3> handles{};

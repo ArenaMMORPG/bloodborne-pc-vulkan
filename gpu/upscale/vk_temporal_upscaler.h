@@ -217,6 +217,7 @@ private:
     SceneTargets& scene_targets;
     int applied_preset = -1;
     int applied_upscaler = -1;
+    int applied_dlss_preset = -1;
     bool dispatched_last_frame = false;
     bool last_active = false, last_jitter = false;
 
@@ -343,6 +344,15 @@ private:
     vk::UniqueImageView extra_sharpen_view;
     u32 extra_sharpen_width = 0, extra_sharpen_height = 0;
     vk::UniqueImageView ui_storage_view;
+    // Live preset resampling in scaled_session when the chosen preset differs from startup BB_RENDER_RES.
+    VideoCore::HostImage live_color_image;
+    VideoCore::HostImage live_depth_image;
+    vk::UniqueImageView live_color_view;
+    vk::UniqueImageView live_depth_view;
+    u32 live_input_w = 0, live_input_h = 0;
+    vk::Format live_color_fmt = vk::Format::eUndefined;
+    vk::Format live_depth_fmt = vk::Format::eUndefined;
+    void EnsureLiveInputResources(u32 w, u32 h, vk::Format color_fmt, vk::Format depth_fmt);
 };
 
 } // namespace Vulkan

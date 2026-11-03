@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_settings.h"
+#include "bbport_frame_rate.h"
 #include <cmath>
 
 #include <algorithm>
@@ -161,6 +162,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.mouse_invert_y = i != 0;
     } else if (key == "mouse_sensitivity") {
         v.mouse_sensitivity = Clamp(f, 0.05f, 20.0f);
+    } else if (key == "dlss_preset") {
+        v.dlss_preset = (i == 0) ? 0 : 11;
+    } else if (key == "anisotropic") {
+        v.anisotropic = (i >= 16) ? 16 : (i >= 8) ? 8 : (i >= 4) ? 4 : 0;
+    } else if (key == "fps_limit") {
+        v.fps_limit = (i <= 0) ? 0 : std::clamp(i, 30, 1000);
     } else {
         for (int k = 0; k < KeyActionCount; ++k) {
             if (key == kKeyDefs[k].ini_key) {
@@ -439,6 +446,15 @@ void Load() {
             Set(v, key, value);
         }
     }
+    if (const char* env = std::getenv("BB_ANISO")) {
+        Set(v, "anisotropic", env);
+    }
+    if (const char* env = std::getenv("BB_FPS_LIMIT")) {
+        if (std::atoi(env) > 0) {
+            Set(v, "fps_limit", env);
+        }
+    }
+    BbFrameRate::SetLimit(v.fps_limit.load());
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
     v.startup_object_motion = v.object_motion;
@@ -488,17 +504,12 @@ bool FixedRenderSession() {
 
 int RenderPreset() {
     const auto& v = Get();
-    return FixedRenderSession() ? v.startup_preset :
-        v.upscaler == UpscalerTaa ? NativeAA : v.preset.load();
+    return v.upscaler == UpscalerTaa ? NativeAA : v.preset.load();
 }
 
 bool ResolutionNeedsRestart() {
     const auto& v = Get();
-    // TAA needs the live path (native guest targets): run.sh selects it on restart.
-    return FixedRenderSession() &&
-        (v.preset != v.startup_preset || CurrentOutput() != v.startup_output ||
-         (v.upscaler == UpscalerOff) != (v.startup_upscaler == UpscalerOff) ||
-         (v.upscaler == UpscalerTaa) != (v.startup_upscaler == UpscalerTaa));
+    return FixedRenderSession() && CurrentOutput() != v.startup_output;
 }
 
 void Save() {
@@ -546,6 +557,9 @@ void Save() {
     put("mouse_look", flag(v.mouse_look));
     put("mouse_invert_y", flag(v.mouse_invert_y));
     put("mouse_sensitivity", fixed(v.mouse_sensitivity, 2));
+    put("dlss_preset", std::to_string(v.dlss_preset.load()));
+    put("anisotropic", std::to_string(v.anisotropic.load()));
+    put("fps_limit", std::to_string(v.fps_limit.load()));
     for (int k = 0; k < KeyActionCount; ++k) {
         put(kKeyDefs[k].ini_key, GetKeyBinding(k));
     }

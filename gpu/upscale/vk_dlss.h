@@ -52,6 +52,7 @@ public:
         u32 input_width, input_height, output_width, output_height;
         int quality;
         bool hdr;
+        int preset = 11; ///< 11 = DLSS 4 Transformer (Preset K), 0 = DLSS 3 CNN Default
         bool operator==(const FeatureDesc&) const = default;
     };
     struct Frame {

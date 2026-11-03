@@ -356,10 +356,13 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     // the present).
     int rate = std::clamp(mode, 30, MaxRate);
     if (const char* limit = std::getenv("BB_FPS_LIMIT"); limit && std::atoi(limit) > 0) {
-        rate = std::min(rate, std::clamp(std::atoi(limit), 30, MaxRate));
+        rate = std::min(rate, std::clamp(std::atoi(limit), 30, 1000));
     }
     live->shortest = 1.0f / float(rate);
     base_rate = rate;
+    if (const int saved = live_limit.load(std::memory_order_relaxed); saved > 0) {
+        live->shortest = 1.0f / float(std::clamp(saved, 30, 1000));
+    }
     // The core first: without all three the game keeps its own frame rate.
     if (!(HookPacerMode() && HookPacerLate() && HookStep())) {
         std::printf("Frame rate: the game's frame pacer is not the expected code: 30 FPS\n");
@@ -415,7 +418,7 @@ void SetLimit(int fps) {
     if (!unlocked.load(std::memory_order_relaxed) || !live) {
         return;
     }
-    const int rate = fps > 0 ? std::clamp(fps, 30, MaxRate) : base_rate;
+    const int rate = fps > 0 ? std::clamp(fps, 30, 1000) : base_rate;
     live->shortest = 1.0f / float(rate);
     std::printf("Frame rate: limit %d FPS (live)\n", rate);
 }

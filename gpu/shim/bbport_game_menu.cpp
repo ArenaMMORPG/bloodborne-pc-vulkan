@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "bbport_frame_rate.h"
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
 #include "games/bloodborne_menu_pointer.h"
@@ -153,7 +154,7 @@ bool RussianTexts() {
 }
 
 // Texts that change while the game runs (the chosen aspect ratio's resolutions, "Auto (21:9)",
-// and the 5 dynamic rows inside the unified Controls page):
+// the 6 dynamic rows inside the unified Controls page, and the 6 dynamic rows inside Display):
 // fixed buffers rewritten in place, so a text the game holds stays valid.
 constexpr u32 DynamicBase = IdBase + 0x8000;
 constexpr std::size_t DynamicLength = 128;
@@ -164,12 +165,18 @@ constexpr u32 OutputSlots = 12;   ///< BbSettings::OutputList
 constexpr int ControlsSlotCount = 6; ///< all 6 visible rows in Controls scroll across 20 items
 constexpr int TotalControlsItems = BbSettings::KeyActionCount + 7; ///< 13 keybinds + Mouse Speed + 6 native settings
 constexpr int MaxControlsScroll = TotalControlsItems - ControlsSlotCount;
-std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount> dynamic_texts{};
+constexpr int DisplaySlotCount = 6; ///< all 6 visible rows in Display scroll across 9 items
+constexpr int TotalDisplayItems = 9;
+constexpr int MaxDisplayScroll = TotalDisplayItems - DisplaySlotCount;
+std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount + 3 * DisplaySlotCount> dynamic_texts{};
 constexpr u32 AutoText = DynamicBase;                                       ///< "Auto (21:9)"
 constexpr u32 OutputTexts = DynamicBase + 1;                                ///< the resolutions (OutputSlots)
 constexpr u32 ControlsSlotName = OutputTexts + OutputSlots;                 ///< 6 dynamic row labels in Controls
 constexpr u32 ControlsSlotHelp = ControlsSlotName + ControlsSlotCount;      ///< 6 dynamic row helps in Controls
 constexpr u32 ControlsSlotVal = ControlsSlotHelp + ControlsSlotCount;       ///< 6 dynamic row values in Controls
+constexpr u32 DisplaySlotName = ControlsSlotVal + ControlsSlotCount;        ///< 6 dynamic row labels in Display
+constexpr u32 DisplaySlotHelp = DisplaySlotName + DisplaySlotCount;         ///< 6 dynamic row helps in Display
+constexpr u32 DisplaySlotVal = DisplaySlotHelp + DisplaySlotCount;          ///< 6 dynamic row values in Display
 
 void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
     const std::u16string text = Utf16(utf8);
@@ -204,7 +211,8 @@ enum Field : int {
     Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod,
     FirstEffect,
     FirstSlot = FirstEffect + BbSettings::EffectCount,
-    FieldCount = int(FirstSlot) + ControlsSlotCount
+    FirstDisplaySlot = FirstSlot + ControlsSlotCount,
+    FieldCount = int(FirstDisplaySlot) + DisplaySlotCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -248,6 +256,8 @@ void RefreshOutputs(int aspect) {
     }
 }
 
+void SyncDisplayStateFromSettings();
+
 /// The rows' values of settings `s`.
 void Fill(const BbSettings::Values& s, int* values) {
     values[Aspect] = s.aspect;
@@ -268,6 +278,9 @@ void Fill(const BbSettings::Values& s, int* values) {
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         values[FirstSlot + slot] = 0;
     }
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        values[FirstDisplaySlot + slot] = 0;
+    }
 }
 
 void LoadValues() {
@@ -275,6 +288,7 @@ void LoadValues() {
     menu_outputs = BbSettings::Outputs(aspect);
     RefreshOutputs(aspect);
     Fill(BbSettings::Get(), values);
+    SyncDisplayStateFromSettings();
     output_row_aspect = values[Aspect];
     for (int f = 0; f < FieldCount; ++f) {
         bytes[f] = u8(values[f]);
@@ -320,46 +334,20 @@ void DefineTexts() {
             {f, AddText(en, ru), AddText(help_en, help_ru), std::move(choices), kind});
     };
 
-    // Two pages of the ControllSetting layout's six rows (the game's other layouts are fixed
-    // forms): the picture, then the game's effects. Choices are the game's pop-up rows
-    // (SelectRow). The other patches (intros, the free camera, the debug menu), the game's own AA
-    // and the FPS counter are in the overlay menu and the launcher.
-    page("Display", "Изображение", "Aspect ratio, resolution, upscaler and detail (bbport)",
-         "Соотношение сторон, разрешение, апскейлер и детализация (bbport)", ControlsLayout);
-    row(Aspect, "Aspect ratio", "Соотношение сторон",
-        "Of the final frame: wider sees more to the sides, the UI keeps to the screen edges",
-        "Готового кадра: шире - больше видно по бокам, интерфейс у краёв экрана",
-        [] {
-            std::vector<u32> aspects = {AutoText};
-            for (int a = BbSettings::AspectAuto + 1; a < BbSettings::AspectCount; ++a) {
-                aspects.push_back(AddText(BbSettings::AspectKey(a), BbSettings::AspectKey(a)));
-            }
-            return aspects;
-        }(),
-        Kind::Select);
-    {
-        std::vector<u32> outputs;
-        for (u32 i = 0; i < OutputSlots; ++i) outputs.push_back(OutputTexts + i);
-        row(OutputRes, "Resolution", "Разрешение", "Size of the final frame and the UI",
-            "Размер готового кадра и интерфейса", std::move(outputs), Kind::Select);
+    // Scrollable 9-item Display page (Aspect Ratio, Resolution, FPS Limit, Anti-Aliasing,
+    // Upscaler, Upscaler Mode, Sharpness, Anisotropic Filtering, Model Detail):
+    page("Display", "Изображение",
+         "Resolution, FPS limit, Anti-Aliasing (DLAA/TAA/FXAA), Upscaler (DLSS 4/FSR) & Filtering",
+         "Разрешение, лимит FPS, сглаживание (DLAA/TAA/FXAA), апскейлер (DLSS 4/FSR) и фильтрация",
+         ControlsLayout);
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        pages.back().rows.push_back(
+            {Field(FirstDisplaySlot + slot),
+             DisplaySlotName + u32(slot),
+             DisplaySlotHelp + u32(slot),
+             {DisplaySlotVal + u32(slot), DisplaySlotVal + u32(slot)},
+             Kind::Select});
     }
-    row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing",
-        "Временной апскейлер и сглаживание",
-        {off, AddText("FSR 3.1", "FSR 3.1"), AddText("FSR 4", "FSR 4"), AddText("FSR 4.1.1", "FSR 4.1.1"),
-         AddText("TAA", "TAA"), AddText("DLSS", "DLSS")},
-        Kind::Select);
-    row(Preset, "Quality preset", "Пресет", "Scene resolution relative to the output",
-        "Разрешение сцены относительно вывода",
-        {AddText("Native AA", "Native AA"), AddText("Quality", "Quality"), AddText("Balanced", "Balanced"),
-         AddText("Performance", "Performance"), AddText("Ultra Performance", "Ultra Performance")},
-        Kind::Select);
-    row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
-        "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
-    row(ModelLod, "Model detail", "Детализация", "Level of detail of models (after a restart)",
-        "Детализация моделей (после перезапуска)",
-        {AddText("Highest", "Максимальная"), AddText("Game default", "Как в игре"),
-         AddText("Lower", "Ниже"), AddText("Lowest", "Минимальная")},
-        Kind::Select);
 
     page("Effects", "Эффекты", "The game's effects (bbport; the first seven at once)",
          "Эффекты игры (bbport; первые семь сразу)", ControlsLayout);
@@ -572,11 +560,17 @@ void AddRows(void* page, const std::vector<Row>& rows) {
 }
 
 std::atomic<int> building_page{-1}; // while the game builds one of our pages (its menu thread)
+void InitDisplayPage(void* page);
+
 // Called by the game's menu code (guest threads, System V ABI like the game), one set per page.
 template <int P>
 void PS4_SYSV_ABI Rows(void* page, void*) {
-    LoadValues();
-    AddRows(page, pages[P].rows);
+    if constexpr (P == 0) {
+        InitDisplayPage(page);
+    } else {
+        LoadValues();
+        AddRows(page, pages[P].rows);
+    }
 }
 template <int P>
 void* PS4_SYSV_ABI Content(void* a, void* b) {
@@ -626,11 +620,24 @@ u8* slot_rows[ControlsSlotCount] = {};
 int controls_scroll = 0;
 bool controls_wrapped_from_top = false;
 
-int GetSelectedControlsRow() {
-    if (!active_controls_page) return 0;
-    int sel = *reinterpret_cast<int*>(active_controls_page + 0xae8);
-    if (sel < 0) sel = *reinterpret_cast<int*>(active_controls_page + 0xae4);
+u8* active_display_page = nullptr;
+u8* display_slot_rows[DisplaySlotCount] = {};
+int display_scroll = 0;
+bool display_wrapped_from_top = false;
+
+int GetSelectedPageRow(u8* page) {
+    if (!page) return 0;
+    int sel = *reinterpret_cast<int*>(page + 0xae8);
+    if (sel < 0) sel = *reinterpret_cast<int*>(page + 0xae4);
     return sel;
+}
+
+int GetSelectedControlsRow() {
+    return GetSelectedPageRow(active_controls_page);
+}
+
+int GetSelectedDisplayRow() {
+    return GetSelectedPageRow(active_display_page);
 }
 
 long long NowSteadyMs() {
@@ -845,20 +852,18 @@ void DestroyMovieClip(u8* mc) {
     *reinterpret_cast<u32*>(mc + 0x48) = 0;
 }
 
-void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
-    if (!row || !active_controls_page) return;
+void SyncPageSlotSliderWidget(u8* page, u8* row, int slot, int slider_val, bool is_focused) {
+    if (!row || !page) return;
     using GetSubFn = void (PS4_SYSV_ABI*)(void*, const void*, const char*, ...);
     auto get_sub = Game<GetSubFn>(GetSubMovieClip);
 
-    const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
     alignas(16) u8 item_mc[0x60] = {};
     alignas(16) u8 slider_mc[0x60] = {};
     alignas(16) u8 combo_mc[0x60] = {};
-    get_sub(item_mc, active_controls_page + 0xdf0, "Item_%d_0", slot);
+    get_sub(item_mc, page + 0xdf0, "Item_%d_0", slot);
     get_sub(slider_mc, item_mc, "Widgets/Slider");
     get_sub(combo_mc, item_mc, "Widgets/ComboBox");
 
-    const int slider_val = GetItemSliderValue(item_idx);
     if (slider_val >= 0) {
         SetMovieClipVisible(row + 0x10, 0);
         SetMovieClipVisible(combo_mc, 0);
@@ -923,6 +928,11 @@ void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
     DestroyMovieClip(combo_mc);
     DestroyMovieClip(slider_mc);
     DestroyMovieClip(item_mc);
+}
+
+void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
+    const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
+    SyncPageSlotSliderWidget(active_controls_page, row, slot, GetItemSliderValue(item_idx), is_focused);
 }
 
 void UpdateSlotRowDisplay(u8* row, int slot) {
@@ -991,6 +1001,594 @@ void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
     PlayMenuClickSound();
     RefreshSlotTexts(slot);
     UpdateSlotRowDisplay(row, slot);
+}
+
+// ---- Scrollable 9-item System -> Display Window ----
+constexpr int GameAaEffectIdx = 4; // "effect_game_aa" in BbSettings::Effects
+constexpr int FpsPresets[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360};
+constexpr int FpsPresetCount = int(sizeof(FpsPresets) / sizeof(FpsPresets[0]));
+constexpr int AnisoValues[] = {1, 4, 8, 16};
+constexpr int AnisoValueCount = 4;
+
+enum NativeAaMode : int {
+    AaOff = 0,
+    AaFxaa = 1,
+    AaTaa = 2,
+    AaDlaa = 3,
+};
+
+enum DisplayUpscalerChoice : int {
+    DispUpOff = 0,
+    DispUpDlss4 = 1,
+    DispUpDlss3 = 2,
+    DispUpFsr31 = 3,
+    DispUpFsr4 = 4,
+    DispUpFsr411 = 5,
+};
+
+int disp_aspect = BbSettings::AspectAuto;
+int disp_output_idx = 0;
+int disp_upscaler = BbSettings::UpscalerFsr3;
+int disp_dlss_preset = 11;
+int disp_preset = BbSettings::Quality;
+bool disp_game_aa = true;
+int last_upscale_preset = BbSettings::Quality;
+int last_native_aa_mode = AaTaa;
+std::atomic<bool> display_heavy_dirty{false};
+std::atomic<long long> display_heavy_dirty_ms{0};
+
+void MarkDisplayHeavyDirty() {
+    display_heavy_dirty_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+    display_heavy_dirty.store(true, std::memory_order_release);
+}
+
+DisplayUpscalerChoice CurrentDisplayUpscalerChoice() {
+    if (disp_upscaler == BbSettings::UpscalerOff || disp_upscaler == BbSettings::UpscalerTaa ||
+        disp_preset == BbSettings::NativeAA) {
+        return DispUpOff;
+    }
+    if (disp_upscaler == BbSettings::UpscalerDlss) {
+        return disp_dlss_preset == 0 ? DispUpDlss3 : DispUpDlss4;
+    }
+    if (disp_upscaler == BbSettings::UpscalerFsr4) return DispUpFsr4;
+    if (disp_upscaler == BbSettings::UpscalerFsr411) return DispUpFsr411;
+    return DispUpFsr31;
+}
+
+NativeAaMode CurrentNativeAaMode() {
+    if (disp_upscaler == BbSettings::UpscalerDlss && disp_preset == BbSettings::NativeAA) {
+        return AaDlaa;
+    }
+    if (disp_upscaler == BbSettings::UpscalerTaa ||
+        (disp_upscaler != BbSettings::UpscalerOff && disp_preset == BbSettings::NativeAA)) {
+        return AaTaa;
+    }
+    return disp_game_aa ? AaFxaa : AaOff;
+}
+
+void ApplyNativeAaMode(int mode) {
+    const bool dlss_ok = BbSettings::Get().dlss_supported.load();
+    if (mode == AaDlaa && !dlss_ok) mode = AaTaa;
+    last_native_aa_mode = mode;
+    disp_preset = BbSettings::NativeAA;
+    if (mode == AaOff) {
+        disp_upscaler = BbSettings::UpscalerOff;
+        disp_game_aa = false;
+    } else if (mode == AaFxaa) {
+        disp_upscaler = BbSettings::UpscalerOff;
+        disp_game_aa = true;
+    } else if (mode == AaTaa) {
+        disp_upscaler = BbSettings::UpscalerTaa;
+    } else if (mode == AaDlaa) {
+        disp_upscaler = BbSettings::UpscalerDlss;
+        disp_dlss_preset = 11;
+    }
+}
+
+void ApplyDisplayUpscalerChoice(DisplayUpscalerChoice choice) {
+    if (choice == DispUpOff) {
+        ApplyNativeAaMode(last_native_aa_mode);
+        return;
+    }
+    if (last_upscale_preset < BbSettings::Quality || last_upscale_preset > BbSettings::UltraPerformance) {
+        last_upscale_preset = BbSettings::Quality;
+    }
+    disp_preset = last_upscale_preset;
+    switch (choice) {
+    case DispUpDlss4:
+        disp_upscaler = BbSettings::UpscalerDlss;
+        disp_dlss_preset = 11;
+        break;
+    case DispUpDlss3:
+        disp_upscaler = BbSettings::UpscalerDlss;
+        disp_dlss_preset = 0;
+        break;
+    case DispUpFsr4:
+        disp_upscaler = BbSettings::UpscalerFsr4;
+        break;
+    case DispUpFsr411:
+        disp_upscaler = BbSettings::UpscalerFsr411;
+        break;
+    case DispUpFsr31:
+    default:
+        disp_upscaler = BbSettings::UpscalerFsr3;
+        break;
+    }
+}
+
+void SyncDisplayStateFromSettings() {
+    if (display_heavy_dirty.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto& s = BbSettings::Get();
+    disp_aspect = std::clamp(s.aspect.load(), 0, BbSettings::AspectCount - 1);
+    menu_outputs = BbSettings::Outputs(disp_aspect);
+    disp_output_idx = MenuOutputIndex(
+        disp_aspect, BbSettings::NearestOutput(disp_aspect, BbSettings::UnpackSize(s.output_res.load())));
+    disp_upscaler = std::clamp(s.upscaler.load(), 0, BbSettings::UpscalerCount - 1);
+    disp_dlss_preset = s.dlss_preset.load() == 0 ? 0 : 11;
+    disp_preset = std::clamp(s.preset.load(), 0, BbSettings::PresetCount - 1);
+    disp_game_aa = s.effects[GameAaEffectIdx].load();
+    if (disp_preset >= BbSettings::Quality && disp_preset <= BbSettings::UltraPerformance) {
+        last_upscale_preset = disp_preset;
+    }
+    if (CurrentDisplayUpscalerChoice() == DispUpOff) {
+        last_native_aa_mode = CurrentNativeAaMode();
+    }
+}
+
+int CurrentSharpnessStep() {
+    const auto& s = BbSettings::Get();
+    return s.sharpen
+               ? std::clamp(int(std::lround(s.sharpness / SharpnessStep)), 1, SharpnessSteps - 1)
+               : 0;
+}
+
+void SetSharpnessStep(int step) {
+    auto& s = BbSettings::Get();
+    step = std::clamp(step, 0, SharpnessSteps - 1);
+    s.sharpen = step != 0;
+    if (step != 0) {
+        s.sharpness = step * SharpnessStep;
+    }
+    values[Sharpness] = step;
+    applied[Sharpness] = step;
+    bytes[Sharpness] = u8(step);
+    BbSettings::Save();
+}
+
+int GetDisplayItemSliderValue(int item_idx) {
+    if (item_idx == 6) {
+        return CurrentSharpnessStep();
+    }
+    return -1;
+}
+
+void SyncDisplaySlotSliderWidget(u8* row, int slot, bool is_focused) {
+    const int item_idx = std::clamp(display_scroll + slot, 0, TotalDisplayItems - 1);
+    SyncPageSlotSliderWidget(active_display_page, row, slot, GetDisplayItemSliderValue(item_idx), is_focused);
+}
+
+void RefreshDisplaySlotTexts(int slot) {
+    const int item_idx = std::clamp(display_scroll + slot, 0, TotalDisplayItems - 1);
+    const u32 name_id = DisplaySlotName + u32(slot);
+    const u32 help_id = DisplaySlotHelp + u32(slot);
+    const u32 val_id = DisplaySlotVal + u32(slot);
+    const auto& s = BbSettings::Get();
+
+    if (item_idx == 0) {
+        SetDynamic(name_id, "Aspect Ratio", "Соотношение сторон");
+        SetDynamic(help_id,
+                   "Of the final frame: wider sees more to the sides, the UI keeps to the screen edges (Left/Right)",
+                   "Готового кадра: шире — больше видно по бокам, интерфейс у краёв экрана (Влево/Вправо)");
+        if (disp_aspect == BbSettings::AspectAuto) {
+            const std::string group = BbSettings::AspectKey(BbSettings::ResolvedAspect(BbSettings::AspectAuto));
+            SetDynamic(val_id, ("Auto (" + group + ")").c_str(), ("Авто (" + group + ")").c_str());
+        } else {
+            const char* k = BbSettings::AspectKey(disp_aspect);
+            SetDynamic(val_id, k, k);
+        }
+        return;
+    }
+
+    if (item_idx == 1) {
+        SetDynamic(name_id, "Resolution", "Разрешение");
+        SetDynamic(help_id, "Size of the final frame and UI (Left/Right, applies live)",
+                   "Размер готового кадра и интерфейса (Влево/Вправо, без перезапуска)");
+        const auto o = MenuOutput(disp_aspect, disp_output_idx);
+        const std::string txt = fmt::format("{} x {}", o.width, o.height);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
+        return;
+    }
+
+    if (item_idx == 2) {
+        SetDynamic(name_id, "FPS Limit", "Лимит FPS");
+        SetDynamic(help_id,
+                   "Maximum frame rate target: Uncapped or fixed FPS (Left/Right; custom value in Insert overlay)",
+                   "Максимальная частота кадров: без лимита или точный FPS (Влево/Вправо; свой в меню Insert)");
+        const int fps = BbFrameRate::Limit();
+        if (fps <= 0) {
+            SetDynamic(val_id, "Uncapped", "Без лимита");
+        } else {
+            bool is_preset = false;
+            for (int p : FpsPresets) {
+                if (p == fps) is_preset = true;
+            }
+            const std::string en = is_preset ? fmt::format("{} FPS", fps) : fmt::format("{} FPS (Custom)", fps);
+            const std::string ru = is_preset ? fmt::format("{} FPS", fps) : fmt::format("{} FPS (Свой)", fps);
+            SetDynamic(val_id, en.c_str(), ru.c_str());
+        }
+        return;
+    }
+
+    if (item_idx == 3) {
+        SetDynamic(name_id, "Anti-Aliasing", "Сглаживание");
+        SetDynamic(help_id,
+                   "Native 100% Anti-Aliasing (Off / FXAA / TAA / DLAA Transformer), or built into active Upscaler",
+                   "Сглаживание в 100% разрешении (Выкл / FXAA / TAA / DLAA Трансформер) или внутри апскейлера");
+        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
+        if (up != DispUpOff) {
+            if (up == DispUpDlss4) {
+                SetDynamic(val_id, "By DLSS 4 (Transformer)", "Встроено в DLSS 4");
+            } else if (up == DispUpDlss3) {
+                SetDynamic(val_id, "By DLSS 3 (CNN)", "Встроено в DLSS 3");
+            } else {
+                SetDynamic(val_id, "By FSR (Temporal)", "Встроено в FSR");
+            }
+            return;
+        }
+        const NativeAaMode aa = CurrentNativeAaMode();
+        if (aa == AaOff) {
+            SetDynamic(val_id, "Off", "Выкл");
+        } else if (aa == AaFxaa) {
+            SetDynamic(val_id, "FXAA (Game Default)", "FXAA (Родное игры)");
+        } else if (aa == AaTaa) {
+            SetDynamic(val_id, "TAA (Temporal 100%)", "TAA (Временнóе 100%)");
+        } else {
+            SetDynamic(val_id, "DLAA (DLSS 4 Transformer)", "DLAA (DLSS 4 Трансформер)");
+        }
+        return;
+    }
+
+    if (item_idx == 4) {
+        SetDynamic(name_id, "Upscaler", "Апскейлер");
+        SetDynamic(help_id,
+                   "Neural / temporal super-resolution upscaler (Left/Right, switches live without restart)",
+                   "Нейросетевой / временнóй апскейлер (Влево/Вправо, переключается сразу без перезапуска)");
+        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
+        switch (up) {
+        case DispUpOff:
+            SetDynamic(val_id, "Off (Native 100%)", "Выкл (Нативные 100%)");
+            break;
+        case DispUpDlss4:
+            SetDynamic(val_id, "DLSS 4 (Transformer)", "DLSS 4 (Трансформер)");
+            break;
+        case DispUpDlss3:
+            SetDynamic(val_id, "DLSS 3 (CNN)", "DLSS 3 (CNN)");
+            break;
+        case DispUpFsr4:
+            SetDynamic(val_id, "FSR 4", "FSR 4");
+            break;
+        case DispUpFsr411:
+            SetDynamic(val_id, "FSR 4.1.1", "FSR 4.1.1");
+            break;
+        case DispUpFsr31:
+        default:
+            SetDynamic(val_id, "FSR 3.1", "FSR 3.1");
+            break;
+        }
+        return;
+    }
+
+    if (item_idx == 5) {
+        SetDynamic(name_id, "Upscaler Mode", "Режим апскейлера");
+        SetDynamic(help_id,
+                   "Internal 3D render resolution reconstructed to Output Resolution (Left/Right, applies live)",
+                   "Внутреннее разрешение 3D-рендера перед апскейлом (Влево/Вправо, применяется на лету)");
+        const auto out = MenuOutput(disp_aspect, disp_output_idx);
+        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
+        if (up == DispUpOff) {
+            const std::string en = fmt::format("Native 100% ({}x{})", out.width, out.height);
+            const std::string ru = fmt::format("Нативные 100% ({}x{})", out.width, out.height);
+            SetDynamic(val_id, en.c_str(), ru.c_str());
+            return;
+        }
+        const int p = std::clamp(disp_preset, int(BbSettings::Quality), int(BbSettings::UltraPerformance));
+        const float scale = BbSettings::PresetScale(p);
+        const int rw = int(std::lround(out.width / scale / 2.0f) * 2);
+        const int rh = int(std::lround(out.height / scale / 2.0f) * 2);
+        const char* p_en = p == BbSettings::Quality          ? "Quality"
+                           : p == BbSettings::Balanced       ? "Balanced"
+                           : p == BbSettings::Performance    ? "Performance"
+                                                             : "Ultra Perf.";
+        const char* p_ru = p == BbSettings::Quality          ? "Качество"
+                           : p == BbSettings::Balanced       ? "Баланс"
+                           : p == BbSettings::Performance    ? "Производит."
+                                                             : "Ультра-произв.";
+        const std::string en = fmt::format("{} ({}x{})", p_en, rw, rh);
+        const std::string ru = fmt::format("{} ({}x{})", p_ru, rw, rh);
+        SetDynamic(val_id, en.c_str(), ru.c_str());
+        return;
+    }
+
+    if (item_idx == 6) {
+        SetDynamic(name_id, "Sharpness (RCAS)", "Резкость (RCAS)");
+        SetDynamic(help_id, "Contrast-adaptive sharpening (RCAS): 0 off, 10 strongest (Left/Right)",
+                   "Адаптивная резкость (RCAS): 0 выкл, 10 сильнее всего (Влево/Вправо)");
+        const int step = CurrentSharpnessStep();
+        const std::string txt = fmt::format("{}", step);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
+        return;
+    }
+
+    if (item_idx == 7) {
+        SetDynamic(name_id, "Anisotropic Filtering", "Фильтрация текстур");
+        SetDynamic(help_id,
+                   "Sharpens ground, cobblestones and wall textures at oblique angles (Left/Right, instant)",
+                   "Чёткость текстур брусчатки, земли и стен под острым углом (Влево/Вправо, мгновенно)");
+        const int aniso = s.anisotropic.load();
+        if (aniso >= 16) {
+            SetDynamic(val_id, "16x (Ultra)", "16x (Ультра)");
+        } else if (aniso >= 8) {
+            SetDynamic(val_id, "8x (High)", "8x (Высокая)");
+        } else if (aniso >= 4) {
+            SetDynamic(val_id, "4x (Medium)", "4x (Средняя)");
+        } else {
+            SetDynamic(val_id, "Off (PS4 Default)", "Выкл (Как на PS4)");
+        }
+        return;
+    }
+
+    if (item_idx == 8) {
+        SetDynamic(name_id, "Model Detail (LOD)", "Детализация моделей");
+        SetDynamic(help_id, "Level of detail distance for 3D models and geometry (after a restart)",
+                   "Дальность максимальной детализации 3D-моделей (после перезапуска)");
+        const int lod = s.model_lod.load();
+        if (lod <= -2) {
+            SetDynamic(val_id, "Highest", "Максимальная");
+        } else if (lod == 0) {
+            SetDynamic(val_id, "Game Default", "Как в игре");
+        } else if (lod == 1) {
+            SetDynamic(val_id, "Lower", "Ниже");
+        } else {
+            SetDynamic(val_id, "Lowest", "Минимальная");
+        }
+    }
+}
+
+void UpdateDisplaySlotRowDisplay(u8* row, int slot) {
+    if (!row) return;
+    u8* items = row + RowValues;
+    items += (0 - reinterpret_cast<std::uintptr_t>(items)) & 7;
+    const u64 count = *reinterpret_cast<u64*>(row + RowCount);
+    for (u64 i = 0; i < count && i < 2; ++i) {
+        *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(DisplaySlotVal + u32(slot));
+    }
+    Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
+    const int sel = GetSelectedDisplayRow();
+    SyncDisplaySlotSliderWidget(row, slot, slot == sel);
+}
+
+void RefreshDisplayPage() {
+    display_scroll = std::clamp(display_scroll, 0, MaxDisplayScroll);
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        RefreshDisplaySlotTexts(slot);
+    }
+    if (active_display_page) {
+        u8* const rows_begin = *reinterpret_cast<u8**>(active_display_page + 0xe58);
+        u8* const rows_end = *reinterpret_cast<u8**>(active_display_page + 0xe60);
+        if (rows_begin && rows_end && rows_end - rows_begin >= DisplaySlotCount * 0x90) {
+            for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+                u8* const entry = rows_begin + slot * 0x90;
+                *reinterpret_cast<const char16_t**>(entry + 0x00) = TextOf(DisplaySlotName + u32(slot));
+                *reinterpret_cast<const char16_t**>(entry + 0x40) = TextOf(DisplaySlotHelp + u32(slot));
+                u8* const widget = *reinterpret_cast<u8**>(entry + 0x80);
+                if (widget) {
+                    display_slot_rows[slot] = widget;
+                }
+            }
+        }
+        Game<void (PS4_SYSV_ABI*)(void*)>(ListDraw)(active_display_page + 0xa70);
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageHelpBar)(active_display_page);
+    }
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        UpdateDisplaySlotRowDisplay(display_slot_rows[slot], slot);
+    }
+}
+
+void InitDisplayPage(void* page) {
+    active_display_page = static_cast<u8*>(page);
+    display_scroll = 0;
+    display_wrapped_from_top = false;
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        display_slot_rows[slot] = nullptr;
+    }
+    LoadValues();
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        RefreshDisplaySlotTexts(slot);
+    }
+    AddRows(page, pages[0].rows);
+    u8* const rows_begin = *reinterpret_cast<u8**>(active_display_page + 0xe58);
+    u8* const rows_end = *reinterpret_cast<u8**>(active_display_page + 0xe60);
+    if (rows_begin && rows_end && rows_end - rows_begin >= DisplaySlotCount * 0x90) {
+        for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+            display_slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + slot * 0x90 + 0x80);
+            SyncDisplaySlotSliderWidget(display_slot_rows[slot], slot, slot == 0);
+        }
+    }
+}
+
+void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
+    auto& s = BbSettings::Get();
+    const int item_idx = std::clamp(display_scroll + slot, 0, TotalDisplayItems - 1);
+
+    if (item_idx == 0) {
+        // Aspect Ratio
+        const BbSettings::OutputSize shown = MenuOutput(disp_aspect, disp_output_idx);
+        const int n = BbSettings::AspectCount;
+        disp_aspect = (disp_aspect + delta + n) % n;
+        menu_outputs = BbSettings::Outputs(disp_aspect);
+        disp_output_idx = MenuOutputIndex(disp_aspect, BbSettings::NearestOutput(disp_aspect, shown));
+        MarkDisplayHeavyDirty();
+        PlayMenuClickSound();
+        RefreshDisplayPage();
+        return;
+    }
+
+    if (item_idx == 1) {
+        // Resolution
+        const int n = std::max(1, menu_outputs.count);
+        disp_output_idx = (disp_output_idx + delta + n) % n;
+        MarkDisplayHeavyDirty();
+        PlayMenuClickSound();
+        RefreshDisplayPage();
+        return;
+    }
+
+    if (item_idx == 2) {
+        // FPS Limit
+        const int cur = BbFrameRate::Limit();
+        int next_idx = 0;
+        if (delta > 0) {
+            next_idx = 0; // wraps to Uncapped if above 360
+            for (int i = 0; i < FpsPresetCount; ++i) {
+                if (FpsPresets[i] > cur) {
+                    next_idx = i;
+                    break;
+                }
+            }
+        } else {
+            next_idx = FpsPresetCount - 1;
+            for (int i = FpsPresetCount - 1; i >= 0; --i) {
+                if (FpsPresets[i] < cur) {
+                    next_idx = i;
+                    break;
+                }
+            }
+        }
+        const int new_fps = FpsPresets[next_idx];
+        s.fps_limit = new_fps;
+        BbFrameRate::SetLimit(new_fps);
+        BbSettings::Save();
+        PlayMenuClickSound();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
+        return;
+    }
+
+    if (item_idx == 3) {
+        // Anti-Aliasing (Off / FXAA / TAA / DLAA)
+        std::vector<int> modes = {AaOff, AaFxaa, AaTaa};
+        if (s.dlss_supported.load()) {
+            modes.push_back(AaDlaa);
+        }
+        const int n = int(modes.size());
+        int cur_idx = 0;
+        const int cur_mode = (CurrentDisplayUpscalerChoice() == DispUpOff)
+                                 ? int(CurrentNativeAaMode())
+                                 : last_native_aa_mode;
+        for (int i = 0; i < n; ++i) {
+            if (modes[i] == cur_mode) cur_idx = i;
+        }
+        if (CurrentDisplayUpscalerChoice() == DispUpOff) {
+            cur_idx = (cur_idx + delta + n) % n;
+        }
+        ApplyNativeAaMode(modes[cur_idx]);
+        MarkDisplayHeavyDirty();
+        PlayMenuClickSound();
+        RefreshDisplayPage();
+        return;
+    }
+
+    if (item_idx == 4) {
+        // Upscaler (Off / DLSS 4 / DLSS 3 / FSR 3.1 / FSR 4 / FSR 4.1.1)
+        std::vector<DisplayUpscalerChoice> choices = {DispUpOff};
+        if (s.dlss_supported.load()) {
+            choices.push_back(DispUpDlss4);
+            choices.push_back(DispUpDlss3);
+        }
+        choices.push_back(DispUpFsr31);
+        if (s.fsr4_supported.load()) choices.push_back(DispUpFsr4);
+        if (s.fsr411_supported.load()) choices.push_back(DispUpFsr411);
+
+        const DisplayUpscalerChoice cur = CurrentDisplayUpscalerChoice();
+        const int n = int(choices.size());
+        int cur_idx = 0;
+        for (int i = 0; i < n; ++i) {
+            if (choices[i] == cur) cur_idx = i;
+        }
+        cur_idx = (cur_idx + delta + n) % n;
+        ApplyDisplayUpscalerChoice(choices[cur_idx]);
+        MarkDisplayHeavyDirty();
+        PlayMenuClickSound();
+        RefreshDisplayPage();
+        return;
+    }
+
+    if (item_idx == 5) {
+        // Upscaler Mode (Quality / Balanced / Performance / Ultra Performance)
+        if (CurrentDisplayUpscalerChoice() == DispUpOff) {
+            ApplyDisplayUpscalerChoice(s.dlss_supported.load() ? DispUpDlss4 : DispUpFsr31);
+        } else {
+            static constexpr int upscale_presets[] = {
+                BbSettings::Quality, BbSettings::Balanced, BbSettings::Performance, BbSettings::UltraPerformance};
+            int cur_idx = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (upscale_presets[i] == disp_preset) cur_idx = i;
+            }
+            cur_idx = (cur_idx + delta + 4) % 4;
+            disp_preset = upscale_presets[cur_idx];
+            last_upscale_preset = disp_preset;
+        }
+        MarkDisplayHeavyDirty();
+        PlayMenuClickSound();
+        RefreshDisplayPage();
+        return;
+    }
+
+    if (item_idx == 6) {
+        // Sharpness (RCAS) Slider 0..10
+        int step = CurrentSharpnessStep() + delta;
+        step = wrap ? (step + SharpnessSteps) % SharpnessSteps : std::clamp(step, 0, SharpnessSteps - 1);
+        SetSharpnessStep(step);
+        PlayMenuClickSound();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
+        return;
+    }
+
+    if (item_idx == 7) {
+        // Anisotropic Filtering (Off / 4x / 8x / 16x)
+        const int cur = s.anisotropic.load();
+        int idx = 3;
+        if (cur <= 1) idx = 0;
+        else if (cur <= 4) idx = 1;
+        else if (cur <= 8) idx = 2;
+        idx = (idx + delta + AnisoValueCount) % AnisoValueCount;
+        s.anisotropic = AnisoValues[idx];
+        BbSettings::Save();
+        PlayMenuClickSound();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
+        return;
+    }
+
+    if (item_idx == 8) {
+        // Model Detail (LOD)
+        const int cur = s.model_lod.load();
+        int idx = 1;
+        for (int i = 0; i < 4; ++i) {
+            if (LodValues[i] == cur) idx = i;
+        }
+        idx = (idx + delta + 4) % 4;
+        s.model_lod = LodValues[idx];
+        values[ModelLod] = idx;
+        applied[ModelLod] = idx;
+        BbSettings::Save();
+        PlayMenuClickSound();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
+    }
 }
 
 void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_text) {
@@ -1114,59 +1712,82 @@ void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
 using OptionsPageNavigateFn = void (PS4_SYSV_ABI*)(u8*, u8*, float);
 OptionsPageNavigateFn options_page_navigate_original = nullptr;
 
+void HandleScrollablePageNavigate(u8* page, u8* input, float frame_time, int slot_count, int max_scroll,
+                                  int& scroll, bool& wrapped_from_top, void (*refresh_fn)(),
+                                  void (*sync_sliders_fn)(int)) {
+    const int pre_sel = GetSelectedPageRow(page);
+    options_page_navigate_original(page, input, frame_time);
+    const int hover_sel = BbMenuPointer::PostHoverCursor(page + 0xa70, pre_sel);
+    const int new_sel = GetSelectedPageRow(page);
+    if (new_sel != hover_sel) {
+        if (hover_sel == slot_count - 1 && new_sel == slot_count && scroll < max_scroll) {
+            ++scroll;
+            wrapped_from_top = false;
+            *reinterpret_cast<int*>(page + 0xae8) = -1;
+            Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, u32(slot_count - 1));
+            Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
+            refresh_fn();
+            return;
+        }
+        if (hover_sel == 0 && new_sel == slot_count) {
+            if (scroll > 0) {
+                --scroll;
+                wrapped_from_top = false;
+                *reinterpret_cast<int*>(page + 0xae8) = -1;
+                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, 0);
+                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
+                refresh_fn();
+                return;
+            }
+            wrapped_from_top = true;
+        } else if (hover_sel == slot_count && new_sel == slot_count - 1 &&
+                   wrapped_from_top && scroll != max_scroll) {
+            scroll = max_scroll;
+            wrapped_from_top = false;
+            refresh_fn();
+            return;
+        } else if (hover_sel == slot_count && new_sel == 0 && scroll != 0) {
+            scroll = 0;
+            wrapped_from_top = false;
+            refresh_fn();
+            return;
+        } else {
+            wrapped_from_top = false;
+        }
+    } else if (new_sel != pre_sel) {
+        wrapped_from_top = false;
+    }
+    if (new_sel != pre_sel || new_sel != hover_sel) {
+        sync_sliders_fn(new_sel);
+    }
+}
+
+void SyncAllControlsSliders(int new_sel) {
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        SyncSlotSliderWidget(slot_rows[slot], slot, slot == new_sel);
+    }
+}
+
+void SyncAllDisplaySliders(int new_sel) {
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        SyncDisplaySlotSliderWidget(display_slot_rows[slot], slot, slot == new_sel);
+    }
+}
+
 void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
     if (page == active_controls_page) {
         if (capturing_action.load(std::memory_order_relaxed) >= 0 || InCaptureCooldown()) {
             return;
         }
-        const int pre_sel = GetSelectedControlsRow();
-        options_page_navigate_original(page, input, frame_time);
-        const int hover_sel = BbMenuPointer::PostHoverCursor(page + 0xa70, pre_sel);
-        const int new_sel = GetSelectedControlsRow();
-        if (new_sel != hover_sel) {
-            if (hover_sel == ControlsSlotCount - 1 && new_sel == ControlsSlotCount &&
-                controls_scroll < MaxControlsScroll) {
-                ++controls_scroll;
-                controls_wrapped_from_top = false;
-                *reinterpret_cast<int*>(page + 0xae8) = -1;
-                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, u32(ControlsSlotCount - 1));
-                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
-                RefreshControlsPage();
-                return;
-            }
-            if (hover_sel == 0 && new_sel == ControlsSlotCount) {
-                if (controls_scroll > 0) {
-                    --controls_scroll;
-                    controls_wrapped_from_top = false;
-                    *reinterpret_cast<int*>(page + 0xae8) = -1;
-                    Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, 0);
-                    Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
-                    RefreshControlsPage();
-                    return;
-                }
-                controls_wrapped_from_top = true;
-            } else if (hover_sel == ControlsSlotCount && new_sel == ControlsSlotCount - 1 &&
-                       controls_wrapped_from_top && controls_scroll != MaxControlsScroll) {
-                controls_scroll = MaxControlsScroll;
-                controls_wrapped_from_top = false;
-                RefreshControlsPage();
-                return;
-            } else if (hover_sel == ControlsSlotCount && new_sel == 0 && controls_scroll != 0) {
-                controls_scroll = 0;
-                controls_wrapped_from_top = false;
-                RefreshControlsPage();
-                return;
-            } else {
-                controls_wrapped_from_top = false;
-            }
-        } else if (new_sel != pre_sel) {
-            controls_wrapped_from_top = false;
-        }
-        if (new_sel != pre_sel || new_sel != hover_sel) {
-            for (int slot = 0; slot < ControlsSlotCount; ++slot) {
-                SyncSlotSliderWidget(slot_rows[slot], slot, slot == new_sel);
-            }
-        }
+        HandleScrollablePageNavigate(page, input, frame_time, ControlsSlotCount, MaxControlsScroll,
+                                     controls_scroll, controls_wrapped_from_top, &RefreshControlsPage,
+                                     &SyncAllControlsSliders);
+        return;
+    }
+    if (page == active_display_page) {
+        HandleScrollablePageNavigate(page, input, frame_time, DisplaySlotCount, MaxDisplayScroll,
+                                     display_scroll, display_wrapped_from_top, &RefreshDisplayPage,
+                                     &SyncAllDisplaySliders);
         return;
     }
     options_page_navigate_original(page, input, frame_time);
@@ -1180,6 +1801,46 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
     // The game asks the open page's rows: the resolution row is alive while it does.
     if (val_ptr == &values[OutputRes]) {
         RefreshOutputRow(row);
+    }
+    if (val_ptr >= &values[FirstDisplaySlot] &&
+        val_ptr < &values[int(FirstDisplaySlot) + DisplaySlotCount]) {
+        const int slot = int(val_ptr - &values[FirstDisplaySlot]);
+        display_slot_rows[slot] = row;
+        if (values[FirstDisplaySlot + slot] != 0) {
+            for (int s = 0; s < DisplaySlotCount; ++s) {
+                values[FirstDisplaySlot + s] = 0;
+                applied[FirstDisplaySlot + s] = 0;
+            }
+            auto& s = BbSettings::Get();
+            disp_aspect = BbSettings::AspectAuto;
+            menu_outputs = BbSettings::Outputs(disp_aspect);
+            disp_output_idx =
+                MenuOutputIndex(disp_aspect, BbSettings::NearestOutput(disp_aspect, BbSettings::Monitor()));
+            last_upscale_preset = BbSettings::Quality;
+            if (s.dlss_supported.load()) {
+                ApplyNativeAaMode(AaDlaa);
+            } else {
+                ApplyNativeAaMode(AaTaa);
+            }
+            MarkDisplayHeavyDirty();
+            s.fps_limit = 0;
+            BbFrameRate::SetLimit(0);
+            SetSharpnessStep(2);
+            s.anisotropic = 16;
+            s.model_lod = 0;
+            BbSettings::Save();
+            RefreshDisplayPage();
+        }
+        const u8 in = u8(a1);
+        if (in != 0) {
+            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
+            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+            const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
+            if (left || right || confirm) {
+                StepDisplaySlotSetting(row, slot, left ? -1 : 1, confirm);
+            }
+        }
+        return 0;
     }
     if (val_ptr >= &values[FirstSlot] && val_ptr < &values[int(FirstSlot) + ControlsSlotCount]) {
         const int slot = int(val_ptr - &values[FirstSlot]);
@@ -1448,6 +2109,9 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         default_values[FirstSlot + slot] = 1; // 1 triggers default reset when "Defaults" is clicked
     }
+    for (int slot = 0; slot < DisplaySlotCount; ++slot) {
+        default_values[FirstDisplaySlot + slot] = 1; // 1 triggers default reset on Display page
+    }
     for (int f = 0; f < FieldCount; ++f) {
         default_bytes[f] = u8(default_values[f]);
     }
@@ -1491,7 +2155,30 @@ void Poll() {
     if (!values_valid) {
         return;
     }
-    // A copy: the game's rows are bound to `values` (writing it would move them back).
+    auto& s = BbSettings::Get();
+    bool saved = false;
+
+    // Apply debounced Display changes (Aspect Ratio, Resolution, Anti-Aliasing, Upscaler, Upscaler Mode)
+    // once the user has rested for 300 ms, so rapidly stepping through choices in the menu is 0 ms.
+    if (display_heavy_dirty.load(std::memory_order_acquire) &&
+        NowSteadyMs() - display_heavy_dirty_ms.load(std::memory_order_relaxed) >= 300) {
+        display_heavy_dirty.store(false, std::memory_order_release);
+        const int aspect = std::clamp(disp_aspect, 0, BbSettings::AspectCount - 1);
+        s.output_res = BbSettings::PackSize(MenuOutput(aspect, disp_output_idx));
+        s.aspect = aspect;
+        const int upscaler = std::clamp(disp_upscaler, 0, BbSettings::UpscalerCount - 1);
+        s.upscaler = UpscalerAvailable(upscaler) ? upscaler : int(BbSettings::UpscalerFsr3);
+        s.dlss_preset = disp_dlss_preset;
+        s.preset = std::clamp(disp_preset, 0, BbSettings::PresetCount - 1);
+        s.effects[GameAaEffectIdx] = disp_game_aa;
+        values[FirstEffect + GameAaEffectIdx] = disp_game_aa ? 1 : 0;
+        applied[FirstEffect + GameAaEffectIdx] = disp_game_aa ? 1 : 0;
+        bytes[FirstEffect + GameAaEffectIdx] = u8(disp_game_aa ? 1 : 0);
+        BbGuestHooks::ApplyGameEffects();
+        saved = true;
+    }
+
+    // Apply Effects page toggles immediately.
     int now_values[FieldCount];
     std::memcpy(now_values, values, sizeof(now_values));
     for (int f = 0; f < FieldCount; ++f) {
@@ -1499,52 +2186,24 @@ void Poll() {
             now_values[f] = bytes[f];
         }
     }
-    // The aspect ratio, the resolution and the preset re-create the scene targets and the
-    // upscaler (a few grey frames): stepping through several did that at each one. Applied once
-    // they rest for 0.4 s; the other rows at once.
-    using Clock = std::chrono::steady_clock;
-    static int resting[3] = {-1, -1, -1};
-    static Clock::time_point rested_since{};
-    const auto now = Clock::now();
-    if (resting[0] != now_values[Aspect] || resting[1] != now_values[OutputRes] ||
-        resting[2] != now_values[Preset]) {
-        resting[0] = now_values[Aspect];
-        resting[1] = now_values[OutputRes];
-        resting[2] = now_values[Preset];
-        rested_since = now;
-    }
-    if (now - rested_since < std::chrono::milliseconds(400)) {
-        now_values[Aspect] = applied[Aspect];
-        now_values[OutputRes] = applied[OutputRes];
-        now_values[Preset] = applied[Preset];
-    }
-    if (std::memcmp(now_values, applied, sizeof(now_values)) == 0) {
-        return;
-    }
-    auto& s = BbSettings::Get();
-    if (now_values[Aspect] != applied[Aspect]) {
-        // Another aspect ratio keeps the resolution row's height (its texts show the new
-        // aspect ratio's sizes, RefreshOutputRow).
-        const int aspect = std::clamp(now_values[Aspect], 0, BbSettings::AspectCount - 1);
-        s.output_res = BbSettings::PackSize(MenuOutput(aspect, now_values[OutputRes]));
-        s.aspect = aspect;
-    } else if (now_values[OutputRes] != applied[OutputRes]) {
-        s.output_res = BbSettings::PackSize(MenuOutput(s.aspect, now_values[OutputRes]));
-    }
-    const int upscaler = std::clamp(now_values[Upscaler], 0, BbSettings::UpscalerCount - 1);
-    s.upscaler = UpscalerAvailable(upscaler) ? upscaler : int(BbSettings::UpscalerFsr3);
-    s.preset = std::clamp(now_values[Preset], 0, BbSettings::PresetCount - 1);
-    s.sharpen = now_values[Sharpness] != 0;
-    if (now_values[Sharpness] != 0) {
-        s.sharpness = std::clamp(now_values[Sharpness], 0, SharpnessSteps - 1) * SharpnessStep;
-    }
-    s.model_lod = LodValues[std::clamp(now_values[ModelLod], 0, 3)];
+    bool effects_changed = false;
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        s.effects[e] = now_values[FirstEffect + e] != 0;
+        if (now_values[FirstEffect + e] != applied[FirstEffect + e]) {
+            s.effects[e] = now_values[FirstEffect + e] != 0;
+            applied[FirstEffect + e] = now_values[FirstEffect + e];
+            if (e == GameAaEffectIdx) {
+                disp_game_aa = s.effects[e].load();
+            }
+            effects_changed = true;
+        }
     }
-    BbGuestHooks::ApplyGameEffects();
-    std::memcpy(applied, now_values, sizeof(now_values));
-    BbSettings::Save();
+    if (effects_changed) {
+        BbGuestHooks::ApplyGameEffects();
+        saved = true;
+    }
+    if (saved) {
+        BbSettings::Save();
+    }
 }
 
 } // namespace BbGameMenu

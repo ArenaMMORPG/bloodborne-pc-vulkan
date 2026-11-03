@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <chrono>
 #include "bbport_button_prompts.h"
+#include "bbport_settings.h"
 #include <unordered_set>
 #include <mutex>
 #include "render/raster_internal.h"
@@ -655,10 +656,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
 // surfaces seen at a grazing angle (stairs, floors, walls along the view) stay blurred.
 // Mipmapped linear samplers of graphics draws get BB_ANISO (16; 0 = the game's) times.
 void Rasterizer::ForceAnisotropy(Gcn::Sampler& sharp, bool is_depth) const {
-    static const int forced = [] {
-        const char* value = std::getenv("BB_ANISO");
-        return value ? std::atoi(value) : 16;
-    }();
+    const int forced = BbSettings::Get().anisotropic.load(std::memory_order_relaxed);
     static const bool verbose_sampler = [] {
         const char* e = std::getenv("BB_VERBOSE_STATS");
         return e && e[0] == '1';
@@ -702,6 +700,9 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
     const auto bc_base = Regs().ta_bc_base;
     const u32 color_bias_bits = std::bit_cast<u32>(sampler_lod_bias);
     const bool aniso_off = BbToggle::Disabled(BbToggle::ForcedAniso);
+    const u8 forced_aniso = aniso_off
+        ? u8(0)
+        : u8(std::clamp(BbSettings::Get().anisotropic.load(std::memory_order_relaxed), 0, 16));
     const u64 cur_evict_gen = texture_cache.SamplerEvictGeneration();
     u64 local_native_hits = 0;
     u64 local_native_misses = 0;
@@ -721,6 +722,7 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
                 auto& sc = native_sampler_cache[cand_uid];
                 if (sc.handles[variant] && sc.tagged_sharp == ssharp &&
                     sc.touched_ticks[variant] == cur_evict_gen &&
+                    sc.forced_aniso == forced_aniso &&
                     sc.forced_aniso_off == aniso_off &&
                     (variant == 2u || sc.bias_bits == color_bias_bits) &&
                     sc.bc_base.base_addr == bc_base.base_addr) [[likely]] {
@@ -751,12 +753,14 @@ void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* pr
         if (smp_uid != 0 && native_sampler_cache) {
             ++local_native_hits;
             auto& sc = native_sampler_cache[smp_uid];
-            if (!(sc.clean_sharp == ssharp) || sc.forced_aniso_off != aniso_off ||
+            if (!(sc.clean_sharp == ssharp) || sc.forced_aniso != forced_aniso ||
+                sc.forced_aniso_off != aniso_off ||
                 sc.bc_base.base_addr != bc_base.base_addr) {
                 sc.tagged_sharp = tagged_ssharp;
                 sc.clean_sharp = ssharp;
                 sc.bias_bits = color_bias_bits;
                 sc.bc_base = bc_base;
+                sc.forced_aniso = forced_aniso;
                 sc.forced_aniso_off = aniso_off;
                 sc.touched_ticks = {~0ULL, ~0ULL, ~0ULL};
                 sc.handles = {};

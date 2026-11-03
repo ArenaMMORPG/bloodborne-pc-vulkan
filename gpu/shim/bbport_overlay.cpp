@@ -461,6 +461,16 @@ void Menu() {
             "and NVIDIA's library next to the game; otherwise FSR 3.1 is used.",
             "NVIDIA DLSS Super Resolution (видеокарты RTX; Native AA — это DLAA). Нужны мост DLSS "
             "и библиотека NVIDIA рядом с игрой; без них используется FSR 3.1."));
+        const char* dlss_models[] = {
+            BbSettings::MenuText("DLSS 4 (Vision Transformer — Preset K)",
+                                 "DLSS 4 (Vision Transformer — Preset K)"),
+            BbSettings::MenuText("DLSS 3 (CNN — Preset Default)",
+                                 "DLSS 3 (CNN — Классический пресет)")};
+        int dlss_model_idx = s.dlss_preset.load() == 0 ? 1 : 0;
+        if (ImGui::Combo(BbSettings::MenuText("DLSS Model", "Модель DLSS"), &dlss_model_idx,
+                         dlss_models, 2)) {
+            Store(s.dlss_preset, dlss_model_idx == 0 ? 11 : 0, true);
+        }
     }
     const auto problem_text = [](const char* text) {
         ImGui::PushTextWrapPos();
@@ -748,8 +758,22 @@ void Menu() {
         "остаётся в 1080p — на Steam Deck и старых видеокартах это заметно медленнее. "
         "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Авто включает "
         "её на мощных дискретных видеокартах. Применяется после перезапуска игры."));
-    ImGui::SeparatorText(BbSettings::MenuText("Game effects",
-                                              "Эффекты игры (после перезапуска)"));
+    ImGui::SeparatorText(BbSettings::MenuText("Game effects & Texture filtering",
+                                              "Эффекты игры и фильтрация текстур"));
+    {
+        const char* aniso_labels[] = {
+            BbSettings::MenuText("Off (PS4 Default)", "Выкл (Как на PS4)"),
+            BbSettings::MenuText("4x (Medium)", "4x (Средняя)"),
+            BbSettings::MenuText("8x (High)", "8x (Высокая)"),
+            BbSettings::MenuText("16x (Ultra)", "16x (Ультра)")};
+        static constexpr int aniso_values[] = {1, 4, 8, 16};
+        const int cur_aniso = s.anisotropic.load();
+        int aniso_idx = cur_aniso >= 16 ? 3 : cur_aniso >= 8 ? 2 : cur_aniso >= 4 ? 1 : 0;
+        if (ImGui::Combo(BbSettings::MenuText("Anisotropic filtering", "Анизотропная фильтрация"),
+                         &aniso_idx, aniso_labels, 4)) {
+            Store(s.anisotropic, aniso_values[aniso_idx], true);
+        }
+    }
     const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
                           BbSettings::MenuText("Game default", "Как в игре"),
                           BbSettings::MenuText("Lower (1)", "Ниже (1)"),
@@ -806,29 +830,47 @@ void Menu() {
         }
     }
 
-    ImGui::SeparatorText(BbSettings::MenuText("Frame rate limit (now)", "Лимит кадров (сейчас)"));
+    ImGui::SeparatorText(BbSettings::MenuText("Frame rate limit", "Лимит кадров (FPS)"));
     {
-        static const int steps[] = {0, 30, 60, 90, 120, 144, 240};
-        static const char* labels[] = {"As launched", "30", "60", "90", "120", "144", "240"};
-        static const char* labels_ru[] = {"Как при запуске", "30", "60", "90", "120", "144", "240"};
-        int index = 0;
-        for (int i = 0; i < 7; ++i) {
-            if (steps[i] == BbFrameRate::Limit()) index = i;
+        static const int steps[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360};
+        static const char* labels[] = {"Uncapped", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
+        static const char* labels_ru[] = {"Без лимита", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
+        const int cur_limit = BbFrameRate::Limit();
+        int index = -1;
+        for (int i = 0; i < 10; ++i) {
+            if (steps[i] == cur_limit) index = i;
         }
-        if (ImGui::BeginCombo(BbSettings::MenuText("Limit (F3: 30 FPS on and off)", "Лимит (F3: 30 FPS вкл/выкл)"),
-                              BbSettings::MenuText(labels[index], labels_ru[index]))) {
-            for (int i = 0; i < 7; ++i) {
+        char combo_preview[48];
+        if (index >= 0) {
+            std::snprintf(combo_preview, sizeof(combo_preview), "%s",
+                          BbSettings::MenuText(labels[index], labels_ru[index]));
+        } else {
+            std::snprintf(combo_preview, sizeof(combo_preview),
+                          BbSettings::MenuText("%d FPS (Custom)", "%d FPS (Свой)"), cur_limit);
+        }
+        if (ImGui::BeginCombo(BbSettings::MenuText("Preset (F3: 30 FPS toggle)", "Пресет (F3: 30 FPS вкл/выкл)"),
+                              combo_preview)) {
+            for (int i = 0; i < 10; ++i) {
                 if (ImGui::Selectable(BbSettings::MenuText(labels[i], labels_ru[i]), i == index)) {
+                    Store(s.fps_limit, steps[i], true);
                     BbFrameRate::SetLimit(steps[i]);
                 }
             }
             ImGui::EndCombo();
         }
+        int custom_fps = cur_limit;
+        if (ImGui::SliderInt(BbSettings::MenuText("Custom FPS (Ctrl+click to type)",
+                                                  "Точный FPS (Ctrl+клик — ввести число)"),
+                             &custom_fps, 0, 500, custom_fps == 0 ? "Uncapped" : "%d FPS")) {
+            if (custom_fps > 0 && custom_fps < 30) custom_fps = 30;
+            Store(s.fps_limit, custom_fps, true);
+            BbFrameRate::SetLimit(custom_fps);
+        }
         Hint(BbSettings::MenuText(
-            "Not saved. At 30 FPS the cinematic of Laurence (optional boss) does not hang, as it can "
-            "above 30 (the community 60 FPS patch has the same problem).",
-            "Не сохраняется. На 30 FPS кинематика Лоуренса (необязательный босс) не зависает, "
-            "как может выше 30 (у общего патча на 60 FPS та же проблема)."));
+            "Saved in bbport.ini. Set 0 for uncapped frame rate, or Ctrl+click the slider to type "
+            "any exact target (e.g. 165, 170, 180). At 30 FPS the cinematic of Laurence does not hang.",
+            "Сохраняется в bbport.ini. 0 — без лимита, либо Ctrl+клик по ползунку для ввода любого "
+            "точного числа (например, 165, 170, 180). На 30 FPS кинематика Лоуренса не зависает."));
     }
     ImGui::SeparatorText(BbSettings::MenuText("Controls (Keyboard & Mouse)", "Управление (Клавиатура и мышь)"));
     if (ImGui::CollapsingHeader(
@@ -1718,8 +1760,11 @@ void FpsCounter() {
         : s.upscaler == BbSettings::UpscalerFsr4   ? "FSR 4"
         : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
         : s.upscaler == BbSettings::UpscalerTaa    ? "TAA"
-        : s.upscaler == BbSettings::UpscalerDlss   ? "DLSS"
-                                                   : "Off";
+        : s.upscaler == BbSettings::UpscalerDlss
+            ? (BbSettings::RenderPreset() == BbSettings::NativeAA
+                   ? "DLAA 4"
+                   : (s.dlss_preset.load(std::memory_order_relaxed) != 0 ? "DLSS 4" : "DLSS 3"))
+            : (s.effects[4].load(std::memory_order_relaxed) ? "FXAA" : "Off");
 
     const float now_fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : h.fps;
     const float now_ms = frame_ms_avg > 0.0f ? frame_ms_avg : h.frame_ms;

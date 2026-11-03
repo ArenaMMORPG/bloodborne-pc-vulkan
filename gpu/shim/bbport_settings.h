@@ -169,6 +169,12 @@ struct Values {
     std::atomic<bool> mouse_look{true};
     std::atomic<bool> mouse_invert_y{false};
     std::atomic<float> mouse_sensitivity{1.0f};
+    /// DLSS model preset: 11 = DLSS 4 Transformer (Preset K), 0 = DLSS 3 CNN Default.
+    std::atomic<int> dlss_preset{11};
+    /// Forced anisotropic filtering on scene textures: 16, 8, 4, or 0 (game default).
+    std::atomic<int> anisotropic{16};
+    /// Persistent FPS limit (0 = Uncapped, or 30..1000).
+    std::atomic<int> fps_limit{0};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

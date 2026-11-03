@@ -395,6 +395,7 @@ bool TemporalUpscaler::OnFrameStart() {
     const bool active = Active();
     const bool jitter_on = active && settings.jitter && !BbToggle::Disabled(1u << 25);
     const int upscaler = settings.upscaler.load();
+    const int dlss_preset = settings.dlss_preset.load();
     auto output_size = BbSettings::CurrentOutput();
     if (!Game::CameraAspect() && output_size.width * 9 != output_size.height * 16) {
         // A game whose camera keeps 16:9: its picture at that shape, as high (wide) as the output
@@ -421,7 +422,8 @@ bool TemporalUpscaler::OnFrameStart() {
         BbGuestHooks::SetDisplayAspect(aspect);
     }
     const bool changed = output_changed || applied_preset != preset || active != last_active ||
-                         jitter_on != last_jitter || applied_upscaler != upscaler;
+                         jitter_on != last_jitter || applied_upscaler != upscaler ||
+                         applied_dlss_preset != dlss_preset;
     if (applied_upscaler != upscaler || (output_changed && BbSettings::IsFsr4(upscaler))) {
         // A failed provider keeps a fatal flag internally; a user retry gets a fresh context, and
         // so does another output (one it could not do, 7680x2160, must not keep it off at 2560x1080).
@@ -429,7 +431,10 @@ bool TemporalUpscaler::OnFrameStart() {
         fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
         if (BbSettings::IsFsr4(upscaler)) BbSettings::Get().fsr4_problem = nullptr;
     }
-    if (applied_upscaler != upscaler) fsr4_failed = false; // retry after a menu change
+    if (applied_upscaler != upscaler || applied_dlss_preset != dlss_preset) {
+        fsr4_failed = false; // retry after a menu change
+        dlss_failed = false;
+    }
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
     if (!scaled_session) {
@@ -437,14 +442,21 @@ bool TemporalUpscaler::OnFrameStart() {
                                                         {target_width, target_height}));
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;
+        BbSettings::Get().active_render_width = render_width;
+        BbSettings::Get().active_render_height = render_height;
+    } else {
+        const auto active_size = active && depth_blit
+            ? SceneResolution::ForPreset(preset, {target_width, target_height})
+            : SceneResolution::Size{render_width, render_height};
+        BbSettings::Get().active_render_width = active_size.width;
+        BbSettings::Get().active_render_height = active_size.height;
     }
-    BbSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
-    BbSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
     applied_output = output;
     applied_upscaler = upscaler;
+    applied_dlss_preset = dlss_preset;
     last_active = active;
     last_jitter = jitter_on;
     dispatched_last_frame = false;
@@ -478,7 +490,8 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     // CameraMotion::OnDisplayPass has already cleared Depth(). Use the context's render
     // size, which survives the frame boundary (Performance 960 -> 1920 needs 32 phases).
-    const u32 phases = Scaled() ? Motion::JitterPhases(render_width, target_width)
+    const u32 active_w = u32(BbSettings::Get().active_render_width.load());
+    const u32 phases = Scaled() ? Motion::JitterPhases(active_w ? active_w : render_width, target_width)
         : Motion::JitterPhases(scene_targets.Size().width, 1920);
     jitter_index = jitter_index % phases + 1;
     jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
@@ -1025,6 +1038,12 @@ void TemporalUpscaler::OnBlendedSceneDraw() {
     const u32 ow = color.info.size.width, oh = color.info.size.height;
     // Scaled presets: the scene fills the top-left of its aligned targets (see RunScaled).
     const auto scene = Scaled() ? SceneSize(ow, oh) : std::array<u32, 2>{ow, oh};
+    if (scaled_session && depth_blit) {
+        const auto req = SceneResolution::ForPreset(applied_preset, {target_width, target_height});
+        if (req.width != scene[0] || req.height != scene[1]) {
+            return;
+        }
+    }
     const u32 w = reduced ? scene_targets.Size().width : scene[0];
     const u32 h = reduced ? scene_targets.Size().height : scene[1];
     if (color.info.pixel_format != vk::Format::eR16G16B16A16Sfloat ||
@@ -1802,6 +1821,64 @@ void TemporalUpscaler::RunUiOnly(VideoCore::ImageId color_id, VideoCore::ImageId
     ui_depth = depth_id;
 }
 
+void TemporalUpscaler::EnsureLiveInputResources(u32 w, u32 h, vk::Format color_fmt,
+                                                vk::Format depth_fmt) {
+    if (live_color_image && live_depth_image && live_input_w == w && live_input_h == h &&
+        live_color_fmt == color_fmt && live_depth_fmt == depth_fmt) {
+        return;
+    }
+    scheduler.Finish();
+    const auto device = instance.GetDevice();
+    const auto allocator = instance.GetAllocator();
+    live_input_w = w;
+    live_input_h = h;
+    live_color_fmt = color_fmt;
+    live_depth_fmt = depth_fmt;
+    live_color_view.reset();
+    live_depth_view.reset();
+    live_color_image = VideoCore::HostImage(device, allocator);
+    live_color_image.Create(vk::ImageCreateInfo{
+        .flags = vk::ImageCreateFlagBits::eMutableFormat | vk::ImageCreateFlagBits::eExtendedUsage,
+        .imageType = vk::ImageType::e2D,
+        .format = color_fmt,
+        .extent = {w, h, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                 vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    });
+    live_color_view = Check(device.createImageViewUnique({
+        .image = vk::Image(live_color_image),
+        .viewType = vk::ImageViewType::e2D,
+        .format = color_fmt,
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    }));
+    live_depth_image = VideoCore::HostImage(device, allocator);
+    live_depth_image.Create(vk::ImageCreateInfo{
+        .imageType = vk::ImageType::e2D,
+        .format = depth_fmt,
+        .extent = {w, h, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst |
+                 vk::ImageUsageFlagBits::eTransferSrc |
+                 vk::ImageUsageFlagBits::eDepthStencilAttachment,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    });
+    live_depth_view = Check(device.createImageViewUnique({
+        .image = vk::Image(live_depth_image),
+        .viewType = vk::ImageViewType::e2D,
+        .format = depth_fmt,
+        .subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1},
+    }));
+    std::printf("Upscaler: live preset input %ux%u (resampled from guest scene)\n", w, h);
+}
+
 void TemporalUpscaler::RunScaled() {
     if (auto* profiler = GpuProfiler::Get()) {
         const char* label = BbSettings::Get().upscaler == BbSettings::UpscalerTaa
@@ -1811,12 +1888,20 @@ void TemporalUpscaler::RunScaled() {
     }
     auto& color = texture_cache.GetImage(ldr_target);
     auto& depth = texture_cache.GetImage(camera_motion.Depth());
-    // The scene fills the top-left w x h of its targets (iw x ih, aligned by the game).
+    // The scene fills the top-left guest_w x guest_h of its targets (iw x ih, aligned by the game).
     const u32 iw = color.info.size.width, ih = color.info.size.height;
-    const auto [w, h] = SceneSize(iw, ih);
+    const auto [guest_w, guest_h] = SceneSize(iw, ih);
     const u32 ow = target_width, oh = target_height;
-    if (depth.info.size.width != iw || depth.info.size.height != ih || w > ow || h > oh) {
+    if (depth.info.size.width != iw || depth.info.size.height != ih || guest_w > ow || guest_h > oh) {
         return;
+    }
+    u32 w = guest_w, h = guest_h;
+    if (scaled_session && depth_blit) {
+        const auto req = SceneResolution::ForPreset(applied_preset, {ow, oh});
+        if (req.width > 0 && req.height > 0 && req.width <= ow && req.height <= oh) {
+            w = req.width;
+            h = req.height;
+        }
     }
     if (!EnsureResources(w, h, ow, oh, false)) {
         failed = true;
@@ -1839,6 +1924,91 @@ void TemporalUpscaler::RunScaled() {
         color_view = cp.view;
         depth_image = dp.image;
         depth_view = dp.view;
+        source_width = w;
+        source_height = h;
+    } else if (w != guest_w || h != guest_h) {
+        EnsureLiveInputResources(w, h, color.info.pixel_format, depth_format);
+        scheduler.EndRendering();
+        runtime.Transit(&depth, vk::ImageLayout::eTransferSrcOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+        runtime.Transit(&color, vk::ImageLayout::eTransferSrcOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+        runtime.FlushBarriers();
+        const vk::Image src_c = color.GetImage();
+        const vk::Image src_d = depth.GetImage();
+        const vk::Image dst_c = vk::Image(live_color_image);
+        const vk::Image dst_d = vk::Image(live_depth_image);
+        const auto d_aspect = vk::ImageAspectFlagBits::eDepth |
+            (depth_format == vk::Format::eD32SfloatS8Uint ? vk::ImageAspectFlagBits::eStencil
+                                                          : vk::ImageAspectFlags{});
+        const vk::ImageBlit blit_c{
+            .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .srcOffsets = std::array{vk::Offset3D{0, 0, 0}, vk::Offset3D{s32(guest_w), s32(guest_h), 1}},
+            .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .dstOffsets = std::array{vk::Offset3D{0, 0, 0}, vk::Offset3D{s32(w), s32(h), 1}},
+        };
+        const vk::ImageBlit blit_d{
+            .srcSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1},
+            .srcOffsets = std::array{vk::Offset3D{0, 0, 0}, vk::Offset3D{s32(guest_w), s32(guest_h), 1}},
+            .dstSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1},
+            .dstOffsets = std::array{vk::Offset3D{0, 0, 0}, vk::Offset3D{s32(w), s32(h), 1}},
+        };
+        scheduler.Record([src_c, src_d, dst_c, dst_d, d_aspect, blit_c, blit_d](vk::CommandBuffer cmd) {
+            std::array<vk::ImageMemoryBarrier2, 2> pre{{
+                {
+                    .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .oldLayout = vk::ImageLayout::eUndefined,
+                    .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .image = dst_c,
+                    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                },
+                {
+                    .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .oldLayout = vk::ImageLayout::eUndefined,
+                    .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .image = dst_d,
+                    .subresourceRange = {d_aspect, 0, 1, 0, 1},
+                },
+            }};
+            cmd.pipelineBarrier2({.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = pre.data()});
+            cmd.blitImage(src_c, vk::ImageLayout::eTransferSrcOptimal, dst_c,
+                          vk::ImageLayout::eTransferDstOptimal, blit_c, vk::Filter::eLinear);
+            cmd.blitImage(src_d, vk::ImageLayout::eTransferSrcOptimal, dst_d,
+                          vk::ImageLayout::eTransferDstOptimal, blit_d, vk::Filter::eNearest);
+            std::array<vk::ImageMemoryBarrier2, 2> post{{
+                {
+                    .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .image = dst_c,
+                    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                },
+                {
+                    .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .image = dst_d,
+                    .subresourceRange = {d_aspect, 0, 1, 0, 1},
+                },
+            }};
+            cmd.pipelineBarrier2({.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = post.data()});
+        });
+        color_image = dst_c;
+        color_view = *live_color_view;
+        depth_image = dst_d;
+        depth_view = *live_depth_view;
         source_width = w;
         source_height = h;
     } else {
@@ -2473,7 +2643,9 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
                                   const Dlss::Resource& depth, u32 w, u32 h, u32 ow, u32 oh,
                                   float frame_ms, bool hdr) {
     Dlss* dlss = Dlss::Get();
-    const Dlss::FeatureDesc desc{w, h, ow, oh, Dlss::QualityForScale(float(ow) / float(w)), hdr};
+    const int dlss_preset = std::max(0, BbSettings::Get().dlss_preset.load());
+    const Dlss::FeatureDesc desc{w, h, ow, oh, Dlss::QualityForScale(float(ow) / float(w)), hdr,
+                                 dlss_preset};
     bool ok = true;
     if (!dlss->HasFeature(desc)) {
         // The previous feature may still be in use by submitted work; `cmdbuf` stays open.

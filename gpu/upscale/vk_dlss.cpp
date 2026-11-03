@@ -292,13 +292,24 @@ bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
         return false;
     }
     impl->feature.reset();
-    const BbDlssFeature feature{desc.input_width,  desc.input_height, desc.output_width,
-                                desc.output_height, desc.quality,      0,
-                                0,                  desc.hdr ? 1 : 0};
+    BbDlssFeature feature{desc.input_width,   desc.input_height, desc.output_width,
+                          desc.output_height, desc.quality,      desc.preset,
+                          0,                  desc.hdr ? 1 : 0};
     if (!impl->api->CreateFeature(command, &feature)) {
-        return false;
+        if (desc.preset != 0) {
+            feature.preset = 0;
+            if (!impl->api->CreateFeature(command, &feature)) {
+                return false;
+            }
+        } else {
+            return false;
+        }
     }
     impl->feature = desc;
+    std::printf("Upscaler: DLSS feature %ux%u -> %ux%u (quality %d, preset %d %s)\n",
+                desc.input_width, desc.input_height, desc.output_width, desc.output_height,
+                desc.quality, feature.preset,
+                feature.preset >= 10 ? "DLSS 4 Transformer" : "DLSS 3 CNN");
     return true;
 }
 
