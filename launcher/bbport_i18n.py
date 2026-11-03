@@ -169,7 +169,10 @@ EN = {
     "Сила резкости": "Sharpness",
     "Векторы движения объектов": "Object motion vectors",
     "Меньше гостинга на персонажах; стоит около 10% FPS": "Less ghosting on characters; costs about 10% FPS",
-    "Показывать FPS": "Show FPS",
+    "Показывать FPS": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
+    "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
+    "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
+        "Displays FPS, C++20 / DirectVk pipeline stage timings, Draw Calls, and VRAM telemetry",
     "Ассеты найдены": "Assets found",
     "Нет ассетов: tools/fetch_fsr4_assets.sh": "No assets: tools/fetch_fsr4_assets.sh",
     "Ассеты для выбранного режима найдены": "Assets for the selected mode found",
@@ -300,6 +303,8 @@ EN = {
     # Effects
     "Эффекты игры": "Game effects",
     "Патчи игры, применяются при запуске": "Game patches, applied at start",
+    "Графические эффекты работают нативно в C++20 / DirectVk и меняются в игре на лету; системные патчи ниже применяются при запуске":
+        "Graphics effects run natively in C++20 / DirectVk and switch live in-game; startup patches below apply at launch",
     "Детализация моделей": "Model detail",
     "Как в игре": "As in the game",
     "Максимальная (-2)": "Highest (-2)",
@@ -331,6 +336,14 @@ EN = {
     "Производительность": "Performance",
     "Двухстадийный конвейер GPU": "Two-stage GPU pipeline",
     "Быстрее на 20–30%; при нестабильности выключите": "20–30% faster; turn off if unstable",
+    "Аппаратное 3D-отсечение невидимых объектов (Occlusion Culler)":
+        "3D Hardware Occlusion & Micro-Shadow Culling",
+    "Отсекает закрытые стенами меши и микро-тени на GPU (−35..45% лишних Draw Calls)":
+        "Culls wall-occluded meshes and micro-shadow casters on the GPU (−35..45% redundant Draw Calls)",
+    "Нативные шейдеры Vulkan 1.3 GLSL (96 шейдеров)":
+        "96 Native Vulkan 1.3 GLSL Shaders",
+    "Заменяет транслированные шейдеры PS4 GCN на ручные шейдеры Vulkan 1.3 GLSL":
+        "Replaces translated PS4 GCN shaders with hand-crafted Vulkan 1.3 GLSL shaders",
     "Авто": "Auto",
     "Включён при 8 и более потоках процессора": "On with 8 or more CPU threads",
     "Включён": "On",
@@ -517,7 +530,10 @@ PT_BR = {
     "Сила резкости": "Intensidade da nitidez",
     "Векторы движения объектов": "Vetores de movimento dos objetos",
     "Меньше гостинга на персонажах; стоит около 10% FPS": "Menos ghosting nos personagens; custa cerca de 10% de FPS",
-    "Показывать FPS": "Mostrar FPS",
+    "Показывать FPS": "Overlay de telemetria e depuração (FPS / DirectVk)",
+    "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Overlay de telemetria e depuração (FPS / DirectVk)",
+    "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
+        "Exibe FPS, tempos do pipeline C++20 / DirectVk, Draw Calls e telemetria de VRAM",
     "Ассеты найдены": "Recursos encontrados",
     "Нет ассетов: tools/fetch_fsr4_assets.sh": "Recursos ausentes: tools/fetch_fsr4_assets.sh",
     "Ассеты для выбранного режима найдены": "Recursos encontrados para o modo selecionado",
@@ -816,7 +832,10 @@ ZH_CN = {
     "Сила резкости": "锐化强度",
     "Векторы движения объектов": "物体运动矢量",
     "Меньше гостинга на персонажах; стоит около 10% FPS": "减少角色拖影；大约损失 10% 帧率",
-    "Показывать FPS": "显示帧率",
+    "Показывать FPS": "调试与管线遥测叠加层（FPS / DirectVk 统计）",
+    "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "调试与管线遥测叠加层（FPS / DirectVk 统计）",
+    "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
+        "显示帧率、C++20 / DirectVk 管线阶段耗时、Draw Calls 及显存遥测数据",
     "Ассеты найдены": "已找到资源文件",
     "Нет ассетов: tools/fetch_fsr4_assets.sh": "缺少资源文件：请运行 tools/fetch_fsr4_assets.sh",
     "Ассеты для выбранного режима найдены": "已找到所选模式对应的资源文件",

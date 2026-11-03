@@ -1006,7 +1006,9 @@ void Menu() {
     }
 
     ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
-    Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
+    Checkbox(BbSettings::MenuText("Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
+                                  "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)"),
+             s.show_fps);
     if (s.show_fps) {
         ImGui::SameLine();
         if (ImGui::SmallButton(BbSettings::MenuText("Reset Avg", "Сбросить Avg"))) {

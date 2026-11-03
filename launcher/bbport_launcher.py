@@ -171,10 +171,6 @@ LANGUAGES = [("Английский", "1"), ("Английский (Велико
              ("Китайский (упрощённый)", "11"), ("Китайский (традиционный)", "10"),
              ("Финский", "12"), ("Шведский", "13"), ("Датский", "14"), ("Норвежский", "15")]
 LIVE_RESOLUTION = [("Авто (по видеокарте)", "auto"), ("Выключена (быстрее)", "0"), ("Включена", "1")]
-READBACKS = [("Relaxed", "", "По умолчанию"), ("Выключены", "0"), ("Precise", "2")]
-# Background pre-upload of the game's GPU memory into VRAM (BB_PREUPLOAD): auto = on with a discrete GPU.
-PREUPLOAD = [("Обычная", "", "Без лишней видеопамяти"), ("Полная", "2", "Около 3 ГБ видеопамяти сверху"),
-             ("Выключена", "0")]
 
 _DEFAULT_GAME_DIR = os.environ.get("BB_GAME_DIR", "") or (
     str(PORT_DIR / "CUSA03173") if (PORT_DIR / "CUSA03173").is_dir() else str(PORT_DIR.parent / "CUSA03173")
@@ -200,8 +196,8 @@ DEFAULTS = {
     "fps_mode": "uncap",
     "fps_limit": 0,
     "draw_pipe": "",
-    "readbacks": "",
-    "preupload": "",
+    "hw_occlusion_cull": True,
+    "native_shaders": True,
     "mangohud": False,
     "frame_stats": False,
     "save_log": False,
@@ -402,10 +398,11 @@ def game_environment(s):
     env["BB_FPS_LIMIT"] = str(s["fps_limit"]) if s["fps_limit"] > 0 else "0"
     if s["draw_pipe"]:
         env["BB_DRAW_PIPE"] = s["draw_pipe"]
-    if s["readbacks"]:
-        env["BB_READBACKS"] = s["readbacks"]
-    if s.get("preupload"):
-        env["BB_PREUPLOAD"] = s["preupload"]
+    env["BB_HW_OCCLUSION_CULL"] = "1" if s.get("hw_occlusion_cull", True) else "0"
+    env["BB_MICRO_SHADOW_CULL"] = "1" if s.get("hw_occlusion_cull", True) else "0"
+    env["BB_NATIVE_SHADERS"] = "1" if s.get("native_shaders", True) else "0"
+    env.pop("BB_READBACKS", None)
+    env.pop("BB_PREUPLOAD", None)
     if s["mangohud"]:
         env["MANGOHUD"] = "1"
     if s["frame_stats"]:
@@ -880,13 +877,16 @@ class LauncherWindow(Adw.ApplicationWindow):
             subtitle=tr("Меньше гостинга на персонажах; стоит около 10% FPS"),
             active=self.ini.get("object_motion") == "1")
         upscaler.add(self.motion_row)
-        self.show_fps_row = Adw.SwitchRow(title=tr("Показывать FPS"),
-                                          active=self.ini.get("show_fps") == "1")
+        self.show_fps_row = Adw.SwitchRow(
+            title=tr("Оверлей телеметрии и отладки (FPS / Статистика DirectVk)"),
+            subtitle=tr("Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM"),
+            active=self.ini.get("show_fps") == "1")
         upscaler.add(self.show_fps_row)
         page.add(upscaler)
 
-        effects = Adw.PreferencesGroup(title=tr("Эффекты игры"),
-                                       description=tr("Патчи игры, применяются при запуске"))
+        effects = Adw.PreferencesGroup(
+            title=tr("Эффекты игры"),
+            description=tr("Графические эффекты работают нативно в C++20 / DirectVk и меняются в игре на лету; системные патчи ниже применяются при запуске"))
         self.lod_row = combo_row(tr("Детализация моделей"), None, MODEL_LOD,
                                  self.ini.get("model_lod", "0"))
         effects.add(self.lod_row)
@@ -925,14 +925,16 @@ class LauncherWindow(Adw.ApplicationWindow):
             tr("Быстрее на 20–30%; при нестабильности выключите"), DRAW_PIPE,
             self.settings["draw_pipe"])
         perf.add(self.pipe_row)
-        self.readbacks_row = combo_row(tr("Чтение данных GPU процессором"), None, READBACKS,
-                                       self.settings["readbacks"])
-        perf.add(self.readbacks_row)
-        self.preupload_row = combo_row(
-            tr("Фоновая загрузка в видеопамять"),
-            tr("Меньше рывков при подгрузке зон"), PREUPLOAD,
-            self.settings.get("preupload", ""))
-        perf.add(self.preupload_row)
+        self.occlusion_cull_row = Adw.SwitchRow(
+            title=tr("Аппаратное 3D-отсечение невидимых объектов (Occlusion Culler)"),
+            subtitle=tr("Отсекает закрытые стенами меши и микро-тени на GPU (−35..45% лишних Draw Calls)"),
+            active=self.settings.get("hw_occlusion_cull", True))
+        perf.add(self.occlusion_cull_row)
+        self.native_shaders_row = Adw.SwitchRow(
+            title=tr("Нативные шейдеры Vulkan 1.3 GLSL (96 шейдеров)"),
+            subtitle=tr("Заменяет транслированные шейдеры PS4 GCN на ручные шейдеры Vulkan 1.3 GLSL"),
+            active=self.settings.get("native_shaders", True))
+        perf.add(self.native_shaders_row)
         page.add(perf)
 
         dev = Adw.PreferencesGroup(title=tr("Для разработчика"))
@@ -1229,8 +1231,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         s["fps_mode"] = combo_value(self.fps_row)
         s["fps_limit"] = int(self.limit_row.get_value())
         s["draw_pipe"] = combo_value(self.pipe_row)
-        s["readbacks"] = combo_value(self.readbacks_row)
-        s["preupload"] = combo_value(self.preupload_row)
+        s["hw_occlusion_cull"] = self.occlusion_cull_row.get_active()
+        s["native_shaders"] = self.native_shaders_row.get_active()
+        s.pop("readbacks", None)
+        s.pop("preupload", None)
         s["mangohud"] = self.mangohud_row.get_active()
         s["frame_stats"] = self.stats_row.get_active()
         s["save_log"] = self.save_log_row.get_active()
