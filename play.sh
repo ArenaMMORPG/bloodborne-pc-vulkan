@@ -28,6 +28,6 @@ export BB_LIVE_RES="${BB_LIVE_RES:-0}"
 export BB_FULLSCREEN="${BB_FULLSCREEN:-1}"
 export BB_PRESENT_MODE="${BB_PRESENT_MODE:-Mailbox}"
 export BB_SKIP_NETWORK_CHOICE="${BB_SKIP_NETWORK_CHOICE:-1}"
-export BB_LANGUAGE="${BB_LANGUAGE:-8}"
+export BB_LANGUAGE="${BB_LANGUAGE:-1}"
 
 exec bash ./run.sh "$@"

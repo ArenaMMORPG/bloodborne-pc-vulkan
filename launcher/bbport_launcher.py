@@ -177,7 +177,7 @@ PREUPLOAD = [("Обычная", "", "Без лишней видеопамяти"
              ("Выключена", "0")]
 
 DEFAULTS = {
-    "ui_language": "",
+    "ui_language": "en",
     "game_dir": "" if PACKAGED else str(PORT_DIR.parent / "CUSA03173"),
     "user_dir": "",
     "mods_dir": "",

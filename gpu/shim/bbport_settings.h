@@ -122,7 +122,7 @@ OutputSize CurrentOutput();
 std::string SizeText(OutputSize size);
 
 struct Values {
-    std::atomic<MenuLanguage> menu_language{MenuLanguage::Russian};
+    std::atomic<MenuLanguage> menu_language{MenuLanguage::English};
     /// Chosen in the menu (or already in bbport.ini): only then is it saved, so the language
     /// the menu merely started with keeps following the launcher's (#134).
     std::atomic<bool> menu_language_chosen{false};

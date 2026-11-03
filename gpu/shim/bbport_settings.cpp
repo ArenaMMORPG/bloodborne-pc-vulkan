@@ -394,21 +394,14 @@ void Load() {
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = Effects[e].default_on;
     }
-    // bbport: the menu's language until one is chosen in it (menu_language in bbport.ini): the
-    // launcher's (BB_MENU_LANGUAGE), else the system's, as the launcher picks its own.
+    // Default menu language follows BB_MENU_LANGUAGE or BB_LANGUAGE (8 = Russian; English by default).
     {
-        const char* lang = std::getenv("BB_MENU_LANGUAGE");
-        if (!lang || !*lang) {
-            for (const char* key : {"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"}) {
-                if (const char* value = std::getenv(key); value && *value) {
-                    lang = value;
-                    break;
-                }
-            }
-        }
-        v.menu_language = lang && (lang[0] == 'r' || lang[0] == 'R') && (lang[1] == 'u' || lang[1] == 'U')
-                              ? MenuLanguage::Russian
-                              : MenuLanguage::English;
+        const char* menu_lang = std::getenv("BB_MENU_LANGUAGE");
+        const char* game_lang = std::getenv("BB_LANGUAGE");
+        const bool is_ru = (menu_lang && (menu_lang[0] == 'r' || menu_lang[0] == 'R') &&
+                            (menu_lang[1] == 'u' || menu_lang[1] == 'U')) ||
+                           ((!menu_lang || !*menu_lang) && game_lang && std::atoi(game_lang) == 8);
+        v.menu_language = is_ru ? MenuLanguage::Russian : MenuLanguage::English;
     }
     if (FILE* file = std::fopen(Path(), "r")) {
         char line[256];

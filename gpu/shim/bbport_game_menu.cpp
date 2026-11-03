@@ -137,8 +137,93 @@ std::u16string Utf16(const char* utf8) {
     }
     return out;
 }
+int ActiveOrbisLanguage() {
+    static const int lang = [] {
+        const char* env = std::getenv("BB_LANGUAGE");
+        return (env && *env) ? std::atoi(env) : 1; // 1 = English by default
+    }();
+    return lang;
+}
+
+const char* TranslateForCurrentGameLang(const char* en) {
+    const int lang = ActiveOrbisLanguage();
+    if (lang == 1 || lang == 18 || lang == 8 || !en) {
+        return en;
+    }
+    struct Entry {
+        const char* en;
+        const char* fr; // 2
+        const char* es; // 3, 20
+        const char* de; // 4
+        const char* it; // 5
+        const char* pt; // 7, 17
+        const char* pl; // 16
+        const char* ja; // 0
+        const char* ko; // 9
+        const char* zh; // 10, 11
+    };
+    static constexpr Entry Table[] = {
+        {"Display", "Affichage", "Pantalla", "Anzeige", "Schermo", "Tela", "Ekran", "ディスプレイ", "디스플레이", "显示"},
+        {"Effects", "Effets", "Efectos", "Effekte", "Effetti", "Efeitos", "Efekty", "エフェクト", "효과", "特效"},
+        {"Aspect Ratio", "Format d'image", "Relación de aspecto", "Seitenverhältnis", "Rapporto d'aspetto", "Proporção de tela", "Proporcje ekranu", "アスペクト比", "화면 비율", "宽高比"},
+        {"Resolution", "Résolution", "Resolución", "Auflösung", "Risoluzione", "Resolução", "Rozdzielczość", "解像度", "해상도", "分辨率"},
+        {"FPS Limit", "Limite de FPS", "Límite de FPS", "FPS-Limit", "Limite FPS", "Limite de FPS", "Limit FPS", "最大フレームレート", "FPS 제한", "帧率上限"},
+        {"Anti-Aliasing", "Anticrénelage", "Antialiasing", "Kantenglättung", "Anti-Aliasing", "Anti-Aliasing", "Wygładzanie krawędzi", "アンチエイリアス", "안티앨리어싱", "抗锯齿"},
+        {"Upscaler", "Mise à l'échelle", "Escalador", "Upscaler", "Upscaler", "Upscaler", "Skalowanie", "アップスケーラー", "업스케일러", "超分辨率"},
+        {"Upscaler Mode", "Mode d'échelle", "Modo de escalado", "Upscaler-Modus", "Modalità Upscaler", "Modo do Upscaler", "Tryb skalowania", "アップスケールモード", "업스케일 모드", "缩放模式"},
+        {"Sharpness (RCAS)", "Netteté (RCAS)", "Nitidez (RCAS)", "Schärfe (RCAS)", "Nitidezza (RCAS)", "Nitidez (RCAS)", "Ostrość (RCAS)", "シャープネス (RCAS)", "선명도 (RCAS)", "锐化 (RCAS)"},
+        {"Anisotropic Filtering", "Filtrage anisotrope", "Filtro anisotrópico", "Anisotrope Filterung", "Filtro anisotropico", "Filtro anisotrópico", "Filtrowanie anizotropowe", "異方性フィルタリング", "이방성 필터링", "各向异性过滤"},
+        {"Model Detail (LOD)", "Détail des modèles (LOD)", "Detalle de modelos (LOD)", "Modelldetails (LOD)", "Dettaglio modelli (LOD)", "Detalhe dos modelos (LOD)", "Szczegółowość modeli (LOD)", "モデル詳細度 (LOD)", "모델 디테일 (LOD)", "模型细节 (LOD)"},
+        {"Uncapped", "Illimité", "Sin límite", "Unbegrenzt", "Illimitato", "Ilimitado", "Bez limitu", "無制限", "제한 없음", "无限制"},
+        {"Off", "Désactivé", "Desactivado", "Aus", "Disattivato", "Desativado", "Wył.", "オフ", "꺼짐", "关闭"},
+        {"On", "Activé", "Activado", "Ein", "Attivato", "Ativado", "Wł.", "オン", "켜짐", "开启"},
+        {"Normal", "Normal", "Normal", "Normal", "Normale", "Normal", "Normalna", "標準", "보통", "正常"},
+        {"Inverted", "Inversé", "Invertido", "Invertiert", "Invertito", "Invertido", "Odwrócona", "反転", "반전", "反转"},
+        {"Mouse Speed", "Vitesse souris", "Velocidad del ratón", "Mausgeschwindigkeit", "Velocità mouse", "Velocidade do mouse", "Czułość myszy", "マウス感度", "마우스 감도", "鼠标速度"},
+        {"Controller Vibration", "Vibrations manette", "Vibración del mando", "Controller-Vibration", "Vibrazione controller", "Vibração do controle", "Wibracje kontrolera", "振動機能", "패드 진동", "手柄震动"},
+        {"Camera Sensitivity", "Sensibilité caméra", "Sensibilidad de cámara", "Kameraempfindlichkeit", "Sensibilità telecamera", "Sensibilidade da câmera", "Czułość kamery", "カメラ速度", "카메라 감도", "视角灵敏度"},
+        {"Camera X-Axis", "Caméra axe X", "Eje X de cámara", "Kamera X-Achse", "Asse X telecamera", "Eixo X da câmera", "Oś X kamery", "カメラ左右操作", "카메라 좌우 조작", "视角 X 轴"},
+        {"Camera Y-Axis", "Caméra axe Y", "Eje Y de cámara", "Kamera Y-Achse", "Asse Y telecamera", "Eixo Y da câmera", "Oś Y kamery", "カメラ上下操作", "카메라 상하 조작", "视角 Y 轴"},
+        {"Auto Target Switch", "Changement de cible auto", "Cambio auto. de objetivo", "Auto-Zielwechsel", "Cambio bersaglio auto.", "Troca auto. de alvo", "Auto-zmiana celu", "ターゲット自動変更", "타겟 자동 변경", "自动切换锁定"},
+        {"Camera Auto-Adjust", "Ajustement caméra auto", "Ajuste auto. de cámara", "Kamera-Auto-Korrektur", "Regolazione auto. telecamera", "Ajuste auto. da câmera", "Auto-korekta kamery", "カメラ自動補正", "카메라 자동 보정", "视角自动回避"},
+        {"Move Forward", "Avancer", "Avanzar", "Vorwärts bewegen", "Muovi avanti", "Mover para frente", "Ruch w przód", "前進", "앞으로 이동", "向前移动"},
+        {"Move Back", "Reculer", "Retroceder", "Rückwärts bewegen", "Muovi indietro", "Mover para trás", "Ruch w tył", "後退", "뒤로 이동", "向后移动"},
+        {"Move Left", "Aller à gauche", "Mover a la izquierda", "Nach links bewegen", "Muovi a sinistra", "Mover para a esquerda", "Ruch w lewo", "左移動", "왼쪽으로 이동", "向左移动"},
+        {"Move Right", "Aller à droite", "Mover a la derecha", "Nach rechts bewegen", "Muovi a destra", "Mover para a direita", "Ruch w prawo", "右移動", "오른쪽으로 이동", "向右移动"},
+        {"Dodge / Sprint / Backstep", "Esquive / Sprint / Pas arrière", "Esquivar / Correr / Paso atrás", "Ausweichen / Sprinten / Rückschritt", "Schivata / Scatto / Passo indietro", "Esquiva / Corrida / Passo atrás", "Unik / Sprint / Odskok", "回避 / ダッシュ / バックステップ", "회피 / 질주 / 백스텝", "闪避 / 冲刺 / 后撤步"},
+        {"Interact / Confirm", "Interagir / Confirmer", "Interactuar / Confirmar", "Interagieren / Bestätigen", "Interagisci / Conferma", "Interagir / Confirmar", "Interakcja / Potwierdź", "調べる / 決定", "상호작용 / 확인", "互动 / 确认"},
+        {"Use Quick Item", "Utiliser objet rapide", "Usar objeto rápido", "Schnellgegenstand benutzen", "Usa oggetto rapido", "Usar item rápido", "Użyj przedmiotu", "アイテム使用", "퀵 아이템 사용", "使用快捷道具"},
+        {"Blood Vial (Heal)", "Fiole de sang (Soin)", "Vial de sangre (Curar)", "Blutphiole (Heilen)", "Fiala di sangue (Cura)", "Frasco de sangue (Curar)", "Fiolka krwi (Leczenie)", "輸血液を使用", "수혈액 사용 (회복)", "使用采血瓶（治疗）"},
+        {"Light Attack", "Attaque légère", "Ataque ligero", "Leichter Angriff", "Attacco leggero", "Ataque leve", "Szybki atak", "通常攻撃 (R1)", "약공격 (R1)", "轻攻击 (R1)"},
+        {"Heavy Attack", "Attaque puissante", "Ataque fuerte", "Schwerer Angriff", "Attacco pesante", "Ataque forte", "Silny atak", "強攻撃 (R2)", "강공격 (R2)", "重攻击 (R2)"},
+        {"Firearm Shot / Parry", "Tir d'arme à feu / Parade", "Disparo / Parry", "Schusswaffe / Parieren", "Colpo arma da fuoco / Parry", "Disparo / Parry", "Strzał z broni palnej", "銃撃 / パリィ (L2)", "총격 / 패리 (L2)", "枪击 / 枪反 (L2)"},
+        {"Transform Weapon", "Transformer l'arme", "Transformar arma", "Waffe transformieren", "Trasforma arma", "Transformar arma", "Przekształć broń", "武器変形 (L1)", "무기 변형 (L1)", "武器变形 (L1)"},
+        {"Lock-On / Reset Camera", "Verrouiller / Réinit. caméra", "Fijar objetivo / Cámara", "Anvisieren / Kamera", "Aggancia / Resetta visuale", "Travar mira / Câmera", "Namierzanie / Kamera", "ターゲット固定 / カメラリセット", "타겟 고정 / 카메라 리셋", "锁定目标 / 重置视角"},
+    };
+    for (const auto& e : Table) {
+        if (std::strcmp(en, e.en) == 0) {
+            switch (lang) {
+                case 2: return e.fr;
+                case 3:
+                case 20: return e.es;
+                case 4: return e.de;
+                case 5: return e.it;
+                case 7:
+                case 17: return e.pt;
+                case 16: return e.pl;
+                case 0: return e.ja;
+                case 9: return e.ko;
+                case 10:
+                case 11: return e.zh;
+                default: return en;
+            }
+        }
+    }
+    return en;
+}
+
 u32 AddText(const char* english, const char* russian) {
-    texts.push_back({Utf16(english), Utf16(russian)});
+    texts.push_back({Utf16(TranslateForCurrentGameLang(english)), Utf16(russian)});
     return IdBase + u32(texts.size() - 1);
 }
 /// The game's own language decides (its "Screen/Sound" text in Cyrillic: Russian, else English);
@@ -188,7 +273,7 @@ void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
 }
 void SetDynamic(u32 id, const char* english, const char* russian) {
     DynamicText& t = dynamic_texts[id - DynamicBase];
-    Store16(t.english, english);
+    Store16(t.english, TranslateForCurrentGameLang(english));
     Store16(t.russian, russian);
 }
 

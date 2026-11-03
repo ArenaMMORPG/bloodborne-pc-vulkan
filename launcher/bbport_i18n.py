@@ -370,6 +370,35 @@ EN = {
     "Слои валидации Vulkan": "Vulkan validation layers",
     "Сильно замедляет": "Much slower",
     "Доп. переменные (ИМЯ=значение через пробел)": "Extra variables (NAME=value, space-separated)",
+    # Added Display, Upscaler & Control labels
+    "Выключен (Native 100%)": "Off (Native 100%)",
+    "Модель DLSS (Пресет)": "DLSS Model (Preset)",
+    "Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0":
+        "Preset M/L: 2nd-gen Transformer (DLSS 4.5); Preset K: DLSS 4.0",
+    "Режим масштабирования": "Upscaler Mode",
+    "Анизотропная фильтрация": "Anisotropic Filtering",
+    "Чёткость текстур пола и стен под острым углом (меняется в игре на лету)":
+        "Sharpness of floor and wall textures at oblique angles (changes live in-game)",
+    "Выкл. (1x)": "Off (1x)",
+    "0 — без ограничения; хранится в bbport.ini и меняется в игре":
+        "0: uncapped; stored in bbport.ini and adjustable live in-game",
+    "Крест (взаимодействие)": "Cross (Interact / Confirm)",
+    "Круг (уклонение, бег; на клавиатуре — Space и Shift ниже)":
+        "Circle (Dodge / Sprint; on keyboard use Space and Shift below)",
+    "Кувырок (короткое нажатие Круга; Shift+Space — прыжок)":
+        "Dodge / Roll (Quick Circle press; Shift+Space jumps)",
+    "Бег (удержание Круга)": "Sprint (Hold Circle)",
+    "Квадрат (быстрый предмет)": "Square (Use Quick Item)",
+    "Треугольник (флакон крови)": "Triangle (Blood Vial / Heal)",
+    "L1 (трансформация оружия)": "L1 (Transform Weapon)",
+    "R1 (атака)": "R1 (Light Attack)",
+    "L2 (выстрел)": "L2 (Firearm Shot / Parry)",
+    "R2 (сильная атака)": "R2 (Heavy Attack)",
+    "R3 (захват цели)": "R3 (Lock-On / Reset Camera)",
+    "Крестовина влево (оружие левой руки)": "D-Pad Left (Switch Left-Hand Weapon)",
+    "Крестовина вправо (оружие правой руки)": "D-Pad Right (Switch Right-Hand Weapon)",
+    "Options (меню; в меню игры Escape — «назад», Круг)":
+        "Options (Main Menu; inside menus Escape acts as Back / Circle)",
 }
 
 PT_BR = {
@@ -605,6 +634,34 @@ PT_BR = {
     "Слои валидации Vulkan": "Camadas de validação do Vulkan",
     "Сильно замедляет": "Muito mais lento",
     "Доп. переменные (ИМЯ=значение через пробел)": "Variáveis extras (NOME=valor, separadas por espaço)",
+    "Выключен (Native 100%)": "Desativado (Nativo 100%)",
+    "Модель DLSS (Пресет)": "Modelo DLSS (Preset)",
+    "Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0":
+        "Preset M/L: Transformer de 2ª geração (DLSS 4.5); Preset K: DLSS 4.0",
+    "Режим масштабирования": "Modo de Upscaling",
+    "Анизотропная фильтрация": "Filtragem Anisotrópica",
+    "Чёткость текстур пола и стен под острым углом (меняется в игре на лету)":
+        "Nitidez das texturas de pisos e paredes em ângulos oblíquos (muda em tempo real no jogo)",
+    "Выкл. (1x)": "Desativada (1x)",
+    "0 — без ограничения; хранится в bbport.ini и меняется в игре":
+        "0: sem limite; salvo em bbport.ini e ajustável no jogo",
+    "Крест (взаимодействие)": "Cruz (Interagir / Confirmar)",
+    "Круг (уклонение, бег; на клавиатуре — Space и Shift ниже)":
+        "Círculo (Esquivar / Correr; no teclado use Space e Shift abaixo)",
+    "Кувырок (короткое нажатие Круга; Shift+Space — прыжок)":
+        "Esquiva / Rolamento (Toque rápido no Círculo; Shift+Space pula)",
+    "Бег (удержание Круга)": "Correr (Segurar Círculo)",
+    "Квадрат (быстрый предмет)": "Quadrado (Usar Item Rápido)",
+    "Треугольник (флакон крови)": "Triângulo (Frasco de Sangue)",
+    "L1 (трансформация оружия)": "L1 (Transformar Arma)",
+    "R1 (атака)": "R1 (Ataque Leve)",
+    "L2 (выстрел)": "L2 (Disparo / Parry)",
+    "R2 (сильная атака)": "R2 (Ataque Forte)",
+    "R3 (захват цели)": "R3 (Travar Mira / Câmera)",
+    "Крестовина влево (оружие левой руки)": "Direcional Esquerdo (Arma da Mão Esquerda)",
+    "Крестовина вправо (оружие правой руки)": "Direcional Direito (Arma da Mão Direita)",
+    "Options (меню; в меню игры Escape — «назад», Круг)":
+        "Options (Menu Principal; nos menus Escape volta / Círculo)",
 }
 
 
@@ -908,6 +965,34 @@ ZH_CN = {
     "Слои валидации Vulkan": "Vulkan 验证层",
     "Сильно замедляет": "会大幅降低速度",
     "Доп. переменные (ИМЯ=значение через пробел)": "附加环境变量（用空格分隔的 名称=值）",
+    "Выключен (Native 100%)": "关闭（原生 100%）",
+    "Модель DLSS (Пресет)": "DLSS 模型（预设）",
+    "Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0":
+        "Preset M/L：第二代 Transformer（DLSS 4.5）；Preset K：DLSS 4.0",
+    "Режим масштабирования": "超分辨率模式",
+    "Анизотропная фильтрация": "各向异性过滤",
+    "Чёткость текстур пола и стен под острым углом (меняется в игре на лету)":
+        "提升斜视角下地面与墙壁纹理的清晰度（可在游戏内实时切换）",
+    "Выкл. (1x)": "关闭（1x）",
+    "0 — без ограничения; хранится в bbport.ini и меняется в игре":
+        "0 表示不限制；保存在 bbport.ini 中，可在游戏内实时修改",
+    "Крест (взаимодействие)": "叉键（互动 / 确认）",
+    "Круг (уклонение, бег; на клавиатуре — Space и Shift ниже)":
+        "圆圈键（闪避 / 冲刺；键盘请使用下方的 Space 与 Shift）",
+    "Кувырок (короткое нажатие Круга; Shift+Space — прыжок)":
+        "闪避 / 翻滚（短按圆圈键；Shift+Space 跳跃）",
+    "Бег (удержание Круга)": "冲刺（按住圆圈键）",
+    "Квадрат (быстрый предмет)": "方块键（使用快捷道具）",
+    "Треугольник (флакон крови)": "三角键（采血瓶 / 治疗）",
+    "L1 (трансформация оружия)": "L1（武器变形）",
+    "R1 (атака)": "R1（轻攻击）",
+    "L2 (выстрел)": "L2（枪击 / 枪反）",
+    "R2 (сильная атака)": "R2（重攻击）",
+    "R3 (захват цели)": "R3（锁定目标 / 重置视角）",
+    "Крестовина влево (оружие левой руки)": "方向键左（切换左手武器）",
+    "Крестовина вправо (оружие правой руки)": "方向键右（切换右手武器）",
+    "Options (меню; в меню игры Escape — «назад», Круг)":
+        "Options（主菜单；在菜单内按 Escape 为返回 / 圆圈键）",
 }
 
 
@@ -926,7 +1011,7 @@ def system_language():
     return "en"
 
 
-_language = "ru"
+_language = "en"
 
 
 def set_language(choice):
