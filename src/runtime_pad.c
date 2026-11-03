@@ -387,7 +387,8 @@ static void load_bindings(void) {
     bind_defaults();
     mouse_look=1; mouse_invert_y=0; mouse_sensitivity=1.0f;
     const char *path=getenv("BB_CONFIG");
-    FILE *f=path ? fopen(path,"r") : NULL;
+    if (!path || !*path) path="bbport.ini";
+    FILE *f=fopen(path,"r");
     if (!f) return;
     char line[512];
     while (fgets(line,sizeof line,f)) {
@@ -716,6 +717,9 @@ unsigned runtime_pad_prompt_generation(void) {
 int runtime_pad_mouse_look(void) {
     return __atomic_load_n(&mouse_look,__ATOMIC_RELAXED);
 }
+void runtime_pad_reload_bindings(void) {
+    __atomic_store_n(&bindings_ready,0,__ATOMIC_RELAXED);
+}
 /* A key's name for a prompt icon: short (an icon is a key cap), arrows as arrows. */
 static void key_label(int code, char *out, int size) {
     static const struct { const char *sdl, *label; } names[]={
@@ -745,7 +749,10 @@ int runtime_pad_prompt(const char *name, int prefer_mouse, char *label, int size
     for (int i=0;i<IN_COUNT;++i) if (!strcmp(name,input_names[i])) input=i;
     if (input<0) return 0;
     pthread_mutex_lock(&lock);
-    if (!bindings_ready) { load_bindings(); bindings_ready=1; }
+    if (!__atomic_load_n(&bindings_ready,__ATOMIC_RELAXED)) {
+        load_bindings();
+        __atomic_store_n(&bindings_ready,1,__ATOMIC_RELAXED);
+    }
     const int device=prompt_device;
     const Binding b=bindings[input];
     /* Circle has no key of its own: the way back in a game menu is Escape (Options' key). */
@@ -1033,7 +1040,12 @@ static void sample_host(PadData *d) {
     motion.last_us=d->timestamp;
     motion.shaking=0;
     SDL_Gamepad *g=current_gamepad();
-    if (!bindings_ready) { load_bindings(); bindings_ready=1; bbgpu_mouse_look_enable(mouse_look); }
+    if (!__atomic_load_n(&bindings_ready,__ATOMIC_RELAXED)) {
+        load_bindings();
+        __atomic_store_n(&bindings_ready,1,__ATOMIC_RELAXED);
+        bbgpu_mouse_look_enable(mouse_look);
+        __atomic_add_fetch(&prompt_generation,1,__ATOMIC_RELAXED);
+    }
     /* The mouse's motion and wheel since the last sample (always taken: none of it piles up while
      * the menu is open); it counts while the window holds the mouse. */
     double mouse_dx=0, mouse_dy=0;

@@ -47,6 +47,47 @@ inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
 inline constexpr bool IsHotEffect(int effect) {
     return effect >= 0 && effect < 8 && effect != 6;
 }
+
+/// Configurable keyboard & mouse bindings (stored in bbport.ini as key.<name>=..., reloaded live
+/// in src/runtime_pad.c without restarting).
+enum KeyAction : int {
+    KeyAttackR1 = 0,
+    KeyStrongR2,
+    KeyFirearmL2,
+    KeyTransformL1,
+    KeyDodge,
+    KeySprint,
+    KeyHealTriangle,
+    KeyItemSquare,
+    KeyInteractCross,
+    KeyLockOnR3,
+    KeyGestures,
+    KeyActionCount
+};
+
+struct KeyOption {
+    const char* ini_value;
+    const char* label_en;
+    const char* label_ru;
+};
+
+struct KeyActionDef {
+    const char* ini_key;
+    const char* name_en;
+    const char* name_ru;
+    const char* help_en;
+    const char* help_ru;
+    const char* default_val;
+    const KeyOption* options;
+    int option_count;
+};
+
+const KeyActionDef& GetKeyActionDef(int action);
+std::string GetKeyBinding(int action);
+void SetKeyBinding(int action, const std::string& value);
+int GetKeyOptionIndex(int action);
+void SetKeyOptionIndex(int action, int option_index);
+void ResetKeyBindingsToDefault();
 /// Output aspect ratios, and the output resolutions of each: the upscaler's output and the UI's
 /// targets, changed live. The game keeps its 1920x1080 frame; for another aspect ratio its camera,
 /// HUD markers and UI placement follow the output at run time (bbport_guest_hooks, the UI
@@ -131,6 +172,10 @@ struct Values {
     /// DLSS (gpu/dlss_bridge, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
+    /// Mouse camera controls (live-reloaded in src/runtime_pad.c).
+    std::atomic<bool> mouse_look{true};
+    std::atomic<bool> mouse_invert_y{false};
+    std::atomic<float> mouse_sensitivity{1.0f};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

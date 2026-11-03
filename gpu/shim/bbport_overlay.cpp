@@ -63,6 +63,7 @@ std::atomic<bool> menu_open{false};
 std::atomic<bool> reset_hud_avg{false};
 bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
+int rebinding_action = -1; // >= 0 while waiting for a key/mouse press to rebind KeyAction
 float base_scale = 1.0f;
 // The game's text dialog (ImeDialog, the character name), typed on the keyboard: drawn while it
 // is open. In fullscreen the window title that showed it is not visible (issues #17, #19).
@@ -97,6 +98,9 @@ void SetOpen(bool value) {
             const float density = PixelDensity(SDL_GetWindowID(window));
             ImGui::GetIO().AddMousePosEvent(x * density, y * density);
         }
+    }
+    if (!value) {
+        rebinding_action = -1;
     }
     if (!value && dirty) {
         dirty = false;
@@ -824,6 +828,58 @@ void Menu() {
             "Не сохраняется. На 30 FPS кинематика Лоуренса (необязательный босс) не зависает, "
             "как может выше 30 (у общего патча на 60 FPS та же проблема)."));
     }
+    ImGui::SeparatorText(BbSettings::MenuText("Controls (Keyboard & Mouse)", "Управление (Клавиатура и мышь)"));
+    if (ImGui::CollapsingHeader(
+            BbSettings::MenuText("Keybindings & Mouse Camera (Live)", "Горячие клавиши и мышь (на лету)"),
+            ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("%s", BbSettings::MenuText(
+            "Movement: WASD  |  Walk: Left Ctrl + WASD  |  Jump: hold Sprint + press Dodge\n"
+            "Switch weapons: 1 (Left hand), 2 (Right hand)  |  Switch items/magic: Mouse Wheel or 3 / 4\n"
+            "Personal effects (Right Touchpad): Backspace  |  Release mouse cursor: F1",
+            "Движение: WASD  |  Шаг: Left Ctrl + WASD  |  Прыжок: удерживать Бег + нажать Уклонение\n"
+            "Смена оружия: 1 (левая рука), 2 (правая рука)  |  Смена предметов: Колесо мыши или 3 / 4\n"
+            "Личные вещи (правый тачпад): Backspace  |  Освободить курсор мыши: F1"));
+        ImGui::Spacing();
+        Checkbox(BbSettings::MenuText("Mouse camera look", "Обзор камерой мыши"), s.mouse_look);
+        ImGui::SameLine();
+        Checkbox(BbSettings::MenuText("Invert Y axis", "Инверсия оси Y"), s.mouse_invert_y);
+        ImGui::BeginDisabled(!s.mouse_look);
+        Slider(BbSettings::MenuText("Mouse sensitivity", "Чувствительность мыши"), s.mouse_sensitivity, 0.10f, 4.00f);
+        ImGui::EndDisabled();
+        ImGui::Spacing();
+
+        for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
+            ImGui::PushID(k);
+            const auto& def = BbSettings::GetKeyActionDef(k);
+            const std::string cur = BbSettings::GetKeyBinding(k);
+            const bool waiting = (rebinding_action == k);
+            const char* btn_label = waiting
+                ? BbSettings::MenuText("> Press any key or mouse button (Esc: cancel) <",
+                                       "> Нажмите любую клавишу или кнопку мыши (Esc: отмена) <")
+                : cur.c_str();
+            if (waiting) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.45f, 0.10f, 1.0f));
+            }
+            if (ImGui::Button(btn_label, ImVec2(230.0f * base_scale, 0.0f))) {
+                rebinding_action = waiting ? -1 : k;
+            }
+            if (waiting) {
+                ImGui::PopStyleColor();
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(BbSettings::MenuText(def.name_en, def.name_ru));
+            Hint(BbSettings::MenuText(def.help_en, def.help_ru));
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+        if (ImGui::Button(BbSettings::MenuText("Reset controls to defaults", "Сбросить клавиши по умолчанию"))) {
+            rebinding_action = -1;
+            BbSettings::ResetKeyBindingsToDefault();
+            dirty = true;
+            BbSettings::Save();
+        }
+    }
+
     ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
     if (s.show_fps) {
@@ -1890,6 +1946,43 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (is_open && rebinding_action >= 0) {
+            const SDL_Scancode sc = event.key.scancode;
+            const bool is_mod = (sc == SDL_SCANCODE_LSHIFT || sc == SDL_SCANCODE_RSHIFT ||
+                                 sc == SDL_SCANCODE_LALT || sc == SDL_SCANCODE_RALT ||
+                                 sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL);
+            if (down && !event.key.repeat) {
+                if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_INSERT) {
+                    rebinding_action = -1;
+                    return true;
+                }
+                if (!is_mod) {
+                    const char* key_name = SDL_GetScancodeName(sc);
+                    if (key_name && *key_name) {
+                        std::string bound;
+                        if (event.key.mod & SDL_KMOD_SHIFT) bound = "Left Shift+";
+                        else if (event.key.mod & SDL_KMOD_ALT) bound = "Left Alt+";
+                        else if (event.key.mod & SDL_KMOD_CTRL) bound = "Left Ctrl+";
+                        bound += key_name;
+                        BbSettings::SetKeyBinding(rebinding_action, bound);
+                        dirty = true;
+                        BbSettings::Save();
+                        rebinding_action = -1;
+                    }
+                    return true;
+                }
+            } else if (!down && is_mod) {
+                const char* key_name = SDL_GetScancodeName(sc);
+                if (key_name && *key_name) {
+                    BbSettings::SetKeyBinding(rebinding_action, key_name);
+                    dirty = true;
+                    BbSettings::Save();
+                    rebinding_action = -1;
+                }
+                return true;
+            }
+            return true;
+        }
         if (down && !event.key.repeat &&
             (event.key.key == SDLK_INSERT || (is_open && event.key.key == SDLK_ESCAPE))) {
             SetOpen(event.key.key == SDLK_INSERT ? !is_open : false);
@@ -1948,6 +2041,27 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_MOUSE_BUTTON_UP: {
         if (!is_open) {
             return false;
+        }
+        if (rebinding_action >= 0 && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            const char* mname = event.button.button == SDL_BUTTON_LEFT   ? "Mouse Left"
+                              : event.button.button == SDL_BUTTON_RIGHT  ? "Mouse Right"
+                              : event.button.button == SDL_BUTTON_MIDDLE ? "Mouse Middle"
+                              : event.button.button == SDL_BUTTON_X1     ? "Mouse X1"
+                              : event.button.button == SDL_BUTTON_X2     ? "Mouse X2"
+                                                                         : nullptr;
+            if (mname) {
+                std::string bound;
+                const SDL_Keymod mods = SDL_GetModState();
+                if (mods & SDL_KMOD_SHIFT) bound = "Left Shift+";
+                else if (mods & SDL_KMOD_ALT) bound = "Left Alt+";
+                else if (mods & SDL_KMOD_CTRL) bound = "Left Ctrl+";
+                bound += mname;
+                BbSettings::SetKeyBinding(rebinding_action, bound);
+                dirty = true;
+                BbSettings::Save();
+                rebinding_action = -1;
+                return true;
+            }
         }
         const int button = event.button.button == SDL_BUTTON_LEFT    ? 0
                            : event.button.button == SDL_BUTTON_RIGHT  ? 1

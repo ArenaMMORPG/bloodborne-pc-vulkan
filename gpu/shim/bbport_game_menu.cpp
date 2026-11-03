@@ -141,9 +141,11 @@ struct DynamicText {
     char16_t english[DynamicLength]{}, russian[DynamicLength]{};
 };
 constexpr u32 OutputSlots = 12; ///< BbSettings::OutputList
-std::array<DynamicText, 1 + OutputSlots> dynamic_texts{};
-constexpr u32 AutoText = DynamicBase;         ///< "Auto (21:9)"
-constexpr u32 OutputTexts = DynamicBase + 1;  ///< the resolutions (OutputSlots)
+constexpr u32 KeySlots = u32(BbSettings::KeyActionCount);
+std::array<DynamicText, 1 + OutputSlots + KeySlots> dynamic_texts{};
+constexpr u32 AutoText = DynamicBase;                        ///< "Auto (21:9)"
+constexpr u32 OutputTexts = DynamicBase + 1;                 ///< the resolutions (OutputSlots)
+constexpr u32 CustomKeyTexts = OutputTexts + OutputSlots;    ///< custom key bindings (KeySlots)
 
 void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
     const std::u16string text = Utf16(utf8);
@@ -175,7 +177,11 @@ const char16_t* TextOf(u32 id) {
 
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
-    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod, FirstEffect, FieldCount = FirstEffect + BbSettings::EffectCount
+    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod,
+    FirstEffect,
+    MouseSens = FirstEffect + BbSettings::EffectCount,
+    FirstKey,
+    FieldCount = int(FirstKey) + int(BbSettings::KeyActionCount)
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -186,6 +192,8 @@ int applied[FieldCount]; // what Poll applied last
 std::atomic<bool> values_valid{false};
 constexpr float SharpnessStep = 0.2f; // the game's slider: 0..10 -> 0.0 .. 2.0
 constexpr int SharpnessSteps = 11;
+constexpr float MouseSensStep = 0.2f; // the game's slider: 0 off, 1..10 -> 0.2 .. 2.0
+constexpr int MouseSensSteps = 11;
 constexpr int LodValues[] = {-2, 0, 1, 2};
 /// The resolution row's values: the outputs of the aspect ratio it shows (value i: entry i). Set
 /// when the page is built and when another aspect ratio is chosen on it (RefreshOutputRow, the
@@ -233,6 +241,25 @@ void Fill(const BbSettings::Values& s, int* values) {
     }
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
+    }
+    values[MouseSens] =
+        s.mouse_look ? std::clamp(int(std::lround(s.mouse_sensitivity / MouseSensStep)), 1, MouseSensSteps - 1) : 0;
+    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
+        const auto& def = BbSettings::GetKeyActionDef(k);
+        const std::string cur = BbSettings::GetKeyBinding(k);
+        int idx = def.option_count; // custom slot if not in preset list
+        for (int i = 0; i < def.option_count; ++i) {
+            if (cur == def.options[i].ini_value) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx == def.option_count) {
+            SetDynamic(CustomKeyTexts + u32(k), ("Custom: " + cur).c_str(), ("Своя: " + cur).c_str());
+        } else {
+            SetDynamic(CustomKeyTexts + u32(k), def.options[0].label_en, def.options[0].label_ru);
+        }
+        values[FirstKey + k] = idx;
     }
 }
 
@@ -373,6 +400,38 @@ void DefineTexts() {
         row(Field(FirstEffect + e), name ? name->en : effect.label, name ? name->ru : effect.label_ru,
             help_en.c_str(), help_ru.c_str(), toggle);
     }
+
+    const auto add_key_row = [&](int k) {
+        const auto& def = BbSettings::GetKeyActionDef(k);
+        std::vector<u32> choices;
+        choices.reserve(std::size_t(def.option_count + 1));
+        for (int i = 0; i < def.option_count; ++i) {
+            choices.push_back(AddText(def.options[i].label_en, def.options[i].label_ru));
+        }
+        choices.push_back(CustomKeyTexts + u32(k));
+        row(Field(FirstKey + k), def.name_en, def.name_ru, def.help_en, def.help_ru,
+            std::move(choices), Kind::Select);
+    };
+
+    page("Controls: Combat", "Клавиши: Бой",
+         "Attack, parry, weapon transform, dodge, sprint and jump (applied live)",
+         "Удары, выстрел/парирование, трансформация, уворот, бег и прыжок (на лету)",
+         ControlsLayout);
+    for (int k = BbSettings::KeyAttackR1; k <= BbSettings::KeySprint; ++k) {
+        add_key_row(k);
+    }
+
+    page("Controls: Actions", "Клавиши: Действия",
+         "Heal, items, interact, lock-on, gestures and mouse camera speed (applied live)",
+         "Лечение, предметы, действие, захват цели, жесты и скорость мыши (на лету)",
+         ControlsLayout);
+    for (int k = BbSettings::KeyHealTriangle; k <= BbSettings::KeyGestures; ++k) {
+        add_key_row(k);
+    }
+    row(MouseSens, "Mouse speed", "Чувствит. мыши",
+        "Mouse camera sensitivity: 0 mouse look off, 5 default (1.0x), 10 fast (2.0x)",
+        "Чувствительность камеры мыши: 0 выкл, 5 обычная (1.0x), 10 быстрая (2.0x)",
+        {}, Kind::Slider);
 }
 
 // ---- The game's structures, as its own code builds them. ----
@@ -509,6 +568,13 @@ void AddRows(void* page, const std::vector<Row>& rows) {
         for (std::size_t i = 0; i < count; ++i) {
             if (row.field == Upscaler && !UpscalerAvailable(int(i))) {
                 continue; // the list's values are the upscaler numbers, not positions
+            }
+            if (int(row.field) >= int(FirstKey) && int(row.field) < int(FirstKey) + int(BbSettings::KeyActionCount)) {
+                const int k = row.field - FirstKey;
+                const auto& def = BbSettings::GetKeyActionDef(k);
+                if (int(i) == def.option_count && values[row.field] != def.option_count) {
+                    continue; // only show the custom slot when a custom key is bound
+                }
             }
             alignas(16) u8 value[ValueSize] = {};
             *reinterpret_cast<u32*>(value) = u32(i);
@@ -767,6 +833,10 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         default_values[FirstEffect + e] = BbSettings::Effects[e].default_on;
     }
+    default_values[MouseSens] = 5;
+    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
+        default_values[FirstKey + k] = 0;
+    }
     for (int f = 0; f < FieldCount; ++f) {
         default_bytes[f] = u8(default_values[f]);
     }
@@ -839,6 +909,20 @@ void Poll() {
     s.model_lod = LodValues[std::clamp(now_values[ModelLod], 0, 3)];
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         s.effects[e] = now_values[FirstEffect + e] != 0;
+    }
+    s.mouse_look = now_values[MouseSens] != 0;
+    if (now_values[MouseSens] != 0) {
+        s.mouse_sensitivity =
+            std::clamp(now_values[MouseSens], 1, MouseSensSteps - 1) * MouseSensStep;
+    }
+    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
+        const int field = FirstKey + k;
+        if (now_values[field] != applied[field]) {
+            const auto& def = BbSettings::GetKeyActionDef(k);
+            if (now_values[field] >= 0 && now_values[field] < def.option_count) {
+                BbSettings::SetKeyOptionIndex(k, now_values[field]);
+            }
+        }
     }
     BbGuestHooks::ApplyGameEffects();
     std::memcpy(applied, now_values, sizeof(now_values));
