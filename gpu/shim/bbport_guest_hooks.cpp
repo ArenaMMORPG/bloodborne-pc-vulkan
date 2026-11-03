@@ -376,6 +376,32 @@ void ApplyHotEffects(bool force, u64 fresh = 0) {
                 __atomic_store_n(const_cast<u8*>(byte), u8(want), __ATOMIC_RELAXED);
             }
         }
+        // Live Screen-Space Reflections (SSR, effect 6):
+        // The SSR target (+0x24f8) and full-size depth/normal target (+0x1078) are allocated
+        // at construction time by the startup patches in InstallHotEffects(). Per-frame SSR
+        // execution is gated on +0x296f and +0x2974 (vs non-SSR fallback +0x2977) on main
+        // scene contexts where (+0x48 & 0x10000) != 0 and *(u64*)(object + 0x24f8) != 0.
+        if (runtime_memory_is_mapped(object + 0x48, 8) &&
+            runtime_memory_is_mapped(object + 0x24f8, 8)) {
+            const u32 ctx_flags = *reinterpret_cast<const u32*>(object + 0x48);
+            const u64 ssr_target = *reinterpret_cast<const u64*>(object + 0x24f8);
+            if ((ctx_flags & 0x10000u) != 0 && ssr_target != 0) {
+                const u8 want_ssr = settings.effects[6].load(std::memory_order_relaxed) ? 1 : 0;
+                const u8 want_fallback = u8(want_ssr ^ 1);
+                auto* b_296f = reinterpret_cast<volatile u8*>(object + 0x296f);
+                auto* b_2974 = reinterpret_cast<volatile u8*>(object + 0x2974);
+                auto* b_2977 = reinterpret_cast<volatile u8*>(object + 0x2977);
+                if (force || *b_296f != want_ssr) {
+                    __atomic_store_n(const_cast<u8*>(b_296f), want_ssr, __ATOMIC_RELAXED);
+                }
+                if (force || *b_2974 != want_ssr) {
+                    __atomic_store_n(const_cast<u8*>(b_2974), want_ssr, __ATOMIC_RELAXED);
+                }
+                if (force || *b_2977 != want_fallback) {
+                    __atomic_store_n(const_cast<u8*>(b_2977), want_fallback, __ATOMIC_RELAXED);
+                }
+            }
+        }
     }
     static const bool verbose_hooks = [] {
         const char* e = std::getenv("BB_VERBOSE_STATS");
@@ -455,6 +481,24 @@ bool InstallHotEffects() {
         return false;
     }
     WriteJumpOverTrap(address, 0xe9, rel);
+    // Pre-allocate full-size SSR targets (+0x24f8, +0x1078) and raymarcher constants at
+    // renderer construction time so SSR (effect 6) can be toggled live via +0x296f/+0x2974/+0x2977.
+    {
+        static constexpr std::array<u8, 2> ssr_alloc_nop = {0x90, 0x90};
+        static constexpr std::array<u8, 4> ssr_fullres_nop = {0x0f, 0x1f, 0x40, 0x00};
+        static constexpr std::array<u8, 4> ssr_const_min = {0x00, 0x00, 0xc8, 0xc2}; // -100.0f
+        static constexpr std::array<u8, 4> ssr_const_step = {0x00, 0x00, 0x80, 0x3f}; // 1.0f
+        static constexpr std::array<u8, 1> ssr_movaps_xmm0 = {0xd8};
+        static constexpr std::array<u8, 4> ssr_step_scale_val = {0x00, 0x00, 0x00, 0x40}; // 2.0f
+        static constexpr std::array<u8, 4> ssr_step_scale_rel = {0x13, 0x99, 0x1b, 0xff};
+        WriteHotCode(ImageBase + 0x22c3d2f, ssr_alloc_nop.data(), ssr_alloc_nop.size(), false);
+        WriteHotCode(ImageBase + 0x22c428d, ssr_fullres_nop.data(), ssr_fullres_nop.size(), false);
+        WriteHotCode(ImageBase + 0x4929c8c, ssr_const_min.data(), ssr_const_min.size(), true);
+        WriteHotCode(ImageBase + 0x4929c90, ssr_const_step.data(), ssr_const_step.size(), true);
+        WriteHotCode(ImageBase + 0x22b8d83, ssr_movaps_xmm0.data(), ssr_movaps_xmm0.size(), false);
+        WriteHotCode(ImageBase + 0x00632f8, ssr_step_scale_val.data(), ssr_step_scale_val.size(), true);
+        WriteHotCode(ImageBase + 0x0ea99e1, ssr_step_scale_rel.data(), ssr_step_scale_rel.size(), false);
+    }
     for (auto& code : hot_code) {
         if (code.ready) {
             effects_applied[code.effect].store(-1);

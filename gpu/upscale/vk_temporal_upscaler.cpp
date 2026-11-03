@@ -407,13 +407,14 @@ bool TemporalUpscaler::OnFrameStart() {
         }
     }
     const u32 output = BbSettings::PackSize(output_size);
-    const bool output_changed = !scaled_session && applied_output != output;
+    const bool output_changed = applied_output != output;
     if (output_changed) {
         target_width = u32(output_size.width);
         target_height = u32(output_size.height);
         std::printf("Output resolution: %ux%u (live)\n", target_width, target_height);
         failed = false;
         fsr4_failed = false;
+        dlss_failed = false;
     }
     // The game's camera and HUD markers follow the output's aspect ratio (bbport_guest_hooks).
     if (const float aspect = enabled ? float(target_width) / float(target_height) : 16.0f / 9.0f;
@@ -1892,7 +1893,7 @@ void TemporalUpscaler::RunScaled() {
     const u32 iw = color.info.size.width, ih = color.info.size.height;
     const auto [guest_w, guest_h] = SceneSize(iw, ih);
     const u32 ow = target_width, oh = target_height;
-    if (depth.info.size.width != iw || depth.info.size.height != ih || guest_w > ow || guest_h > oh) {
+    if (depth.info.size.width != iw || depth.info.size.height != ih) {
         return;
     }
     u32 w = guest_w, h = guest_h;
@@ -1902,6 +1903,9 @@ void TemporalUpscaler::RunScaled() {
             w = req.width;
             h = req.height;
         }
+    }
+    if (w > ow || h > oh) {
+        return;
     }
     if (!EnsureResources(w, h, ow, oh, false)) {
         failed = true;

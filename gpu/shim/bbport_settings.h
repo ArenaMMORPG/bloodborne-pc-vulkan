@@ -43,9 +43,9 @@ inline constexpr Effect Effects[] = {
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
-/// SSR changes resource dimensions: the complete patch must precede construction.
+/// All 8 graphics effects (0..7, including SSR) are switched live in-game without a restart.
 inline constexpr bool IsHotEffect(int effect) {
-    return effect >= 0 && effect < 8 && effect != 6;
+    return effect >= 0 && effect < 8;
 }
 
 /// Configurable keyboard & mouse bindings (stored in bbport.ini as key.<name>=..., reloaded live

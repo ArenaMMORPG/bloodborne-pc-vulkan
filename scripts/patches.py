@@ -153,10 +153,9 @@ def validate_patch_requirements(names, game):
 # they get no startup patch, the engine writes the same bytes from the settings (and again on
 # every change in the menu). BB_HOT_EFFECTS=0: the patches at start, as before.
 HOT_EFFECTS={'effect_chromatic_aberration','effect_dof','effect_motion_blur','effect_ssao',
-             'effect_game_aa','effect_dynamic_shadows','effect_bloom'}
-# SSR also changes the size of a resource allocated by the renderer constructor
-# (0x22c428d). Applying only its shader/pass switches corrupts the scene; apply
-# the complete community patch before construction, and require a restart.
+             'effect_game_aa','effect_dynamic_shadows','effect_ssr','effect_bloom'}
+# SSR target allocation (+0x24f8, +0x1078) and raymarcher constants are pre-applied by
+# InstallHotEffects() before renderer construction, and +0x296f/+0x2974/+0x2977 toggle SSR live.
 
 
 def effect_patches(settings, env=os.environ):
