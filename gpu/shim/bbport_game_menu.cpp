@@ -1754,22 +1754,30 @@ void ApplyDisplaySlotChoiceIndex(u8* row, int slot, int choice_idx) {
         const auto choices = GetAvailableUpscalerChoices();
         const auto new_up = choices[std::clamp(choice_idx, 0, int(choices.size()) - 1)];
         if (new_up != disp_upscaler_choice) {
+            const bool was_off = (disp_upscaler_choice == DispUpOff);
             disp_upscaler_choice = new_up;
+            if (new_up == DispUpOff) {
+                disp_upscale_preset = BbSettings::NativeAA;
+            } else if (was_off && disp_upscale_preset == BbSettings::NativeAA) {
+                disp_upscale_preset = BbSettings::Quality;
+            }
             MarkDisplayHeavyDirty();
         }
-        RefreshDisplaySlotTexts(slot);
-        UpdateDisplaySlotRowDisplay(row, slot);
+        RefreshDisplayPage();
         return;
     }
 
     if (item_idx == 5) {
         const int new_preset = std::clamp(choice_idx, int(BbSettings::NativeAA), int(BbSettings::UltraPerformance));
-        if (new_preset != disp_upscale_preset) {
+        if (new_preset != disp_upscale_preset ||
+            (new_preset != BbSettings::NativeAA && disp_upscaler_choice == DispUpOff)) {
             disp_upscale_preset = new_preset;
+            if (new_preset != BbSettings::NativeAA && disp_upscaler_choice == DispUpOff) {
+                disp_upscaler_choice = s.dlss_supported.load() ? DispUpDlss45M : DispUpFsr31;
+            }
             MarkDisplayHeavyDirty();
         }
-        RefreshDisplaySlotTexts(slot);
-        UpdateDisplaySlotRowDisplay(row, slot);
+        RefreshDisplayPage();
         return;
     }
 
