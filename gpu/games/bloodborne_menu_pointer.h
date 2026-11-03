@@ -11,4 +11,11 @@ namespace BbMenuPointer {
 /// happens when the game's bytes differ (another build).
 void Install();
 
+/// Returns the cursor index of `list` immediately after mouse-hover processing in OnListUpdate
+/// (or `fallback` if `list` was not the last updated list).
+int PostHoverCursor(const void* list, int fallback);
+
+/// Current pointer X position in 1920x1080 stage coordinates.
+float PointerX();
+
 } // namespace BbMenuPointer

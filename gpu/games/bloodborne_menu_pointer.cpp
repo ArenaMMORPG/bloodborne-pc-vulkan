@@ -192,6 +192,35 @@ bool Shown(Addr object) {
     return true;
 }
 
+/// Stage-space bounding box (in 1920x1080 pixels) of `object`.
+bool StageBounds(Addr object, Rect& stage) {
+    const Addr get_bounds = VirtualFunction(object, 0x1f0);
+    if (!get_bounds) {
+        return false;
+    }
+    alignas(16) const float identity[8] = {1, 0, 0, 0, 0, 1, 0, 0};
+    alignas(16) float local[4] = {};
+    using BoundsFn = void(PS4_SYSV_ABI*)(float*, void*, const float*);
+    reinterpret_cast<BoundsFn>(get_bounds)(local, reinterpret_cast<void*>(object), identity);
+    if (!(local[2] > local[0]) || !(local[3] > local[1])) {
+        return false;
+    }
+    alignas(16) float m[8] = {1, 0, 0, 0, 0, 1, 0, 0};
+    using MatrixFn = void(PS4_SYSV_ABI*)(void*, float*);
+    reinterpret_cast<MatrixFn>(At(WorldMatrixFn))(reinterpret_cast<void*>(object), m);
+    constexpr float Twips = 20.0f;
+    stage = {1e9f, 1e9f, -1e9f, -1e9f};
+    for (const float lx : {local[0], local[2]}) {
+        for (const float ly : {local[1], local[3]}) {
+            const float sx = (m[0] * lx + m[1] * ly + m[3]) / Twips;
+            const float sy = (m[4] * lx + m[5] * ly + m[7]) / Twips;
+            stage = {std::min(stage.x1, sx), std::min(stage.y1, sy),
+                     std::max(stage.x2, sx), std::max(stage.y2, sy)};
+        }
+    }
+    return stage.x2 > stage.x1 && stage.y2 > stage.y1;
+}
+
 /// Whether stage point (x, y) is in the display object (its bounds grown by `grow` pixels);
 /// `stage` gets its bounds on the stage.
 bool Contains(Addr object, float x, float y, Rect* stage, float grow = 0.0f) {
@@ -292,9 +321,10 @@ public:
                     continue;
                 }
                 const float dx = bounds.CenterX() - x, dy = (bounds.y1 + bounds.y2) * 0.5f - y;
-                if (best < 0 || dx * dx + dy * dy < best_distance) {
+                const float dist = per_line == 1 ? (dy * dy) : (dx * dx + dy * dy);
+                if (best < 0 || dist < best_distance) {
                     best = index;
-                    best_distance = dx * dx + dy * dy;
+                    best_distance = dist;
                     slot = at;
                 }
             }
@@ -375,23 +405,39 @@ private:
         using Fn = void(PS4_SYSV_ABI*)(void*, void*, const std::uint64_t*);
         reinterpret_cast<Fn>(make_item)(out.Raw(), reinterpret_cast<void*>(provider), &slot);
     }
-    /// The item's own cursor area if it has one, else the item; its combo box and slider too.
+    /// The item's own cursor area if it has one, else the item; its combo box, slider and
+    /// dropdown current item too, unified into a single full-width row box centered on Text_0.
     bool ItemContains(Value& item, Addr object, float x, float y, Rect& bounds) {
         Value cursor;
         item.Child(reinterpret_cast<const char*>(At(CursorName)), cursor);
         const Addr area = cursor.DisplayObject();
-        if (Contains(area ? area : object, x, y, &bounds)) {
-            return true;
+        if (!StageBounds(area ? area : object, bounds)) {
+            return false;
         }
-        for (const char* path : {"Widgets/ComboBox", "Widgets/Slider"}) {
+        // In Scaleform option/system menus, "Cursor" is a 108px-tall soft glow that overhangs
+        // 35..42px into adjacent rows (57px row spacing). Trim vertical bounds around "Text_0"
+        // when present so each row's vertical hitbox is centered on its visible text label.
+        Value text;
+        item.Child("Text_0", text);
+        const Addr text_obj = text.DisplayObject();
+        Rect tbounds{};
+        if (text_obj && Shown(text_obj) && StageBounds(text_obj, tbounds) &&
+            tbounds.y2 - tbounds.y1 >= 10.0f) {
+            bounds.y1 = std::max(bounds.y1, tbounds.y1 - 13.0f);
+            bounds.y2 = std::min(bounds.y2, tbounds.y2 + 13.0f);
+        }
+        for (const char* path :
+             {"Widgets/ComboBox", "Widgets/Slider", "Widgets/DropdownList/CurrentItem"}) {
             Value widget;
             item.Child(path, widget);
             const Addr part = widget.DisplayObject();
-            if (part && Shown(part) && Contains(part, x, y, &bounds)) {
-                return true;
+            Rect wbounds{};
+            if (part && Shown(part) && StageBounds(part, wbounds)) {
+                bounds.x1 = std::min(bounds.x1, wbounds.x1);
+                bounds.x2 = std::max(bounds.x2, wbounds.x2);
             }
         }
-        return false;
+        return x >= bounds.x1 && x <= bounds.x2 && y >= bounds.y1 && y <= bounds.y2;
     }
     void CursorMoved(int index) {
         const Addr listener = Field<Addr>(c, Listener);
@@ -492,6 +538,9 @@ bool PointerMoved(const std::uint8_t* list, float x, float y) {
     return false;
 }
 
+std::atomic<const void*> last_updated_list{nullptr};
+std::atomic<int> last_post_hover_cursor{-1};
+
 /// The game's list update (0x1acff30) is about to run for `component`.
 void PS4_SYSV_ABI OnListUpdate(std::uint64_t, const Core::GuestRegisterSnapshot* registers) {
     auto* component = reinterpret_cast<std::uint8_t*>(registers->rdi);
@@ -499,6 +548,9 @@ void PS4_SYSV_ABI OnListUpdate(std::uint64_t, const Core::GuestRegisterSnapshot*
     if (!component || !input || !*input || InputBlocked()) {
         return;
     }
+    List list{component};
+    last_updated_list.store(component, std::memory_order_relaxed);
+    last_post_hover_cursor.store(list.CursorIndex(), std::memory_order_relaxed);
     list_focus_ms.store(NowMs(), std::memory_order_relaxed);
     if (BbOverlay::CapturesInput() || BbGameMenu::CapturesInput() || !pointer_in.load(std::memory_order_relaxed)) {
         return;
@@ -507,7 +559,6 @@ void PS4_SYSV_ABI OnListUpdate(std::uint64_t, const Core::GuestRegisterSnapshot*
     const float y = pointer_y.load(std::memory_order_relaxed);
     const bool moved = PointerMoved(component, x, y);
     const bool clicked = TakeClick();
-    List list{component};
 
     if (list.IsSpinner()) {
         // One value shown: a click on its left half goes left, on the right half right.
@@ -535,7 +586,9 @@ void PS4_SYSV_ABI OnListUpdate(std::uint64_t, const Core::GuestRegisterSnapshot*
         std::printf("Menu pointer: list %p item %d (cursor %d)%s\n", static_cast<void*>(component),
                     index, list.CursorIndex(), clicked ? " click" : "");
     }
-    if (list.MoveTo(index, slot) && clicked) {
+    const bool ok = list.MoveTo(index, slot);
+    last_post_hover_cursor.store(list.CursorIndex(), std::memory_order_relaxed);
+    if (ok && clicked) {
         const std::uint32_t button = list.ClickButton(slot, x, y, ConfirmButton());
         presses.fetch_or(button, std::memory_order_relaxed);
         // A held click on a slider's arrow keeps moving it.
@@ -733,6 +786,20 @@ void Install() {
     bbgpu_add_pointer_query(PointerWanted);
     bbgpu_add_pad_filter(OnPad);
     std::printf("Menu pointer: on (the mouse points and clicks in the game's menus)\n");
+}
+
+int PostHoverCursor(const void* list, int fallback) {
+    if (list && last_updated_list.load(std::memory_order_relaxed) == list) {
+        const int idx = last_post_hover_cursor.load(std::memory_order_relaxed);
+        if (idx >= 0) {
+            return idx;
+        }
+    }
+    return fallback;
+}
+
+float PointerX() {
+    return pointer_x.load(std::memory_order_relaxed);
 }
 
 } // namespace BbMenuPointer

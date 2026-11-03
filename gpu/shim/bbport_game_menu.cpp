@@ -20,6 +20,7 @@
 
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
+#include "games/bloodborne_menu_pointer.h"
 #include <SDL3/SDL.h>
 #include <fmt/format.h>
 
@@ -612,6 +613,7 @@ void* const factories[MaxPages] = {
 enum class CapturePhase { WaitInitialRelease, WaitPressAndRelease, WaitEscapeRelease };
 std::atomic<int> capturing_action{-1};
 int capturing_slot = -1;
+bool capturing_alt = false; ///< false: Primary Key 1, true: Alt Key 2
 CapturePhase capture_phase = CapturePhase::WaitInitialRelease;
 std::vector<std::string> captured_tokens;
 std::string last_capture_preview;
@@ -622,6 +624,7 @@ u8* active_controls_page = nullptr;
 u8* active_game_settings = nullptr;
 u8* slot_rows[ControlsSlotCount] = {};
 int controls_scroll = 0;
+bool controls_wrapped_from_top = false;
 
 int GetSelectedControlsRow() {
     if (!active_controls_page) return 0;
@@ -639,6 +642,35 @@ long long NowSteadyMs() {
 bool IsModifierToken(const std::string& tok) {
     return tok == "Left Shift" || tok == "Right Shift" || tok == "Left Ctrl" ||
            tok == "Right Ctrl" || tok == "Left Alt" || tok == "Right Alt";
+}
+
+void SplitBinding(const std::string& raw, std::string& primary, std::string& alt) {
+    const std::size_t comma = raw.find(',');
+    if (comma == std::string::npos) {
+        primary = raw;
+        alt.clear();
+    } else {
+        primary = raw.substr(0, comma);
+        alt = raw.substr(comma + 1);
+    }
+}
+
+std::string JoinBinding(const std::string& primary, const std::string& alt) {
+    if (primary.empty()) return alt;
+    if (alt.empty() || alt == primary) return primary;
+    return primary + "," + alt;
+}
+
+/// True when the menu Confirm signal was caused by pressing the bare keyboard `F` key
+/// (as opposed to Enter, Mouse Left Click, or Gamepad Cross).
+bool IsBareKeyboardF() {
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) return false;
+    int num_keys = 0;
+    const bool* keys = SDL_GetKeyboardState(&num_keys);
+    if (!keys || num_keys <= SDL_SCANCODE_F || !keys[SDL_SCANCODE_F]) return false;
+    if (num_keys > SDL_SCANCODE_RETURN && keys[SDL_SCANCODE_RETURN]) return false;
+    if (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) return false;
+    return true;
 }
 
 std::vector<std::string> CollectDownTokens(bool* escape_down) {
@@ -708,7 +740,9 @@ void RefreshSlotTexts(int slot) {
     if (k >= 0) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
-        SetDynamic(help_id, def.help_en, def.help_ru);
+        const std::string help_en = std::string(def.help_en) + "  [< / Enter: Key 1 | >: Alt Key 2]";
+        const std::string help_ru = std::string(def.help_ru) + "  [< / Enter: Осн. | >: Альт. кл.]";
+        SetDynamic(help_id, help_en.c_str(), help_ru.c_str());
         const std::string raw = BbSettings::GetKeyBinding(k);
         const std::string en = BbSettings::FormatKeyBinding(raw, false);
         const std::string ru = BbSettings::FormatKeyBinding(raw, true);
@@ -732,7 +766,7 @@ void RefreshSlotTexts(int slot) {
         SetDynamic(help_id,
                    "Controller vibration strength (Left/Right): 0 off, 10 strongest",
                    "Сила вибрации геймпада (Влево/Вправо): 0 выкл, 10 макс.");
-        const int vib = active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
+        const int vib = active_game_settings ? std::clamp(int(active_game_settings[0x1]), 0, 10) : 10;
         const std::string txt = fmt::format("{}", vib);
         SetDynamic(val_id, txt.c_str(), txt.c_str());
         return;
@@ -742,7 +776,7 @@ void RefreshSlotTexts(int slot) {
         SetDynamic(name_id, "Camera Sensitivity", "Скорость камеры");
         SetDynamic(help_id, "Gamepad & lock-on camera rotation speed (Left/Right: 0 .. 10)",
                    "Скорость вращения камеры (Влево/Вправо: 0 .. 10)");
-        const int sens = active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
+        const int sens = active_game_settings ? std::clamp(int(active_game_settings[0x0]), 0, 10) : 5;
         const std::string txt = fmt::format("{}", sens);
         SetDynamic(val_id, txt.c_str(), txt.c_str());
         return;
@@ -752,25 +786,25 @@ void RefreshSlotTexts(int slot) {
         SetDynamic(name_id, "Camera X-Axis", "Камера по оси X");
         SetDynamic(help_id, "Horizontal camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по горизонтали (Влево/Вправо)");
-        const bool inv = active_game_settings && active_game_settings[0x9] != 0;
+        const bool inv = active_game_settings && active_game_settings[0xa] == 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
     } else if (item_idx == 17) {
         SetDynamic(name_id, "Camera Y-Axis", "Камера по оси Y");
         SetDynamic(help_id, "Vertical camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по вертикали (Влево/Вправо)");
-        const bool inv = active_game_settings && active_game_settings[0xa] != 0;
+        const bool inv = active_game_settings && active_game_settings[0x9] == 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
     } else if (item_idx == 18) {
         SetDynamic(name_id, "Auto Target Switch", "Автосмена цели");
         SetDynamic(help_id, "Automatically switch lock-on target when current target is defeated",
                    "Автоматическое переключение захвата цели после гибели текущей цели");
-        const bool on = active_game_settings && active_game_settings[0x6] != 0;
+        const bool on = !active_game_settings || active_game_settings[0xb] != 0;
         SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
     } else if (item_idx == 19) {
         SetDynamic(name_id, "Camera Auto-Adjust", "Автокоррекция камеры");
         SetDynamic(help_id, "Automatically adjust camera when colliding with walls",
                    "Автоматический обход стен при движении камеры");
-        const bool on = !active_game_settings || active_game_settings[0x7] != 0;
+        const bool on = !active_game_settings || active_game_settings[0xc] != 0;
         SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
     }
 }
@@ -780,10 +814,10 @@ int GetItemSliderValue(int item_idx) {
         return CurrentMouseSpeedStep();
     }
     if (item_idx == 14) {
-        return active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
+        return active_game_settings ? std::clamp(int(active_game_settings[0x1]), 0, 10) : 10;
     }
     if (item_idx == 15) {
-        return active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
+        return active_game_settings ? std::clamp(int(active_game_settings[0x0]), 0, 10) : 5;
     }
     return -1;
 }
@@ -819,12 +853,15 @@ void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
     const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
     alignas(16) u8 item_mc[0x60] = {};
     alignas(16) u8 slider_mc[0x60] = {};
+    alignas(16) u8 combo_mc[0x60] = {};
     get_sub(item_mc, active_controls_page + 0xdf0, "Item_%d_0", slot);
     get_sub(slider_mc, item_mc, "Widgets/Slider");
+    get_sub(combo_mc, item_mc, "Widgets/ComboBox");
 
     const int slider_val = GetItemSliderValue(item_idx);
     if (slider_val >= 0) {
         SetMovieClipVisible(row + 0x10, 0);
+        SetMovieClipVisible(combo_mc, 0);
         SetMovieClipVisible(slider_mc, 1);
 
         alignas(16) u8 cursor_mc[0x60] = {};
@@ -881,12 +918,20 @@ void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
         SetMovieClipVisible(slider_mc, 0);
         SetMovieClipVisible(row + 0x10, 1);
 
-        alignas(16) u8 cursor_mc[0x60] = {};
-        get_sub(cursor_mc, row + 0x10, "Cursor");
-        SetMovieClipVisible(cursor_mc, is_focused ? 1 : 0);
-        DestroyMovieClip(cursor_mc);
+        // Show ComboBox's Cursor (right-side golden glow + <| |> arrows) when focused,
+        // while keeping ComboBox/Item_0_0 hidden so DropdownList/CurrentItem/Text_0 renders the text.
+        alignas(16) u8 combo_item_mc[0x60] = {};
+        alignas(16) u8 combo_cursor_mc[0x60] = {};
+        get_sub(combo_item_mc, combo_mc, "Item_0_0");
+        get_sub(combo_cursor_mc, combo_mc, "Cursor");
+        SetMovieClipVisible(combo_item_mc, 0);
+        SetMovieClipVisible(combo_cursor_mc, is_focused ? 1 : 0);
+        SetMovieClipVisible(combo_mc, is_focused ? 1 : 0);
+        DestroyMovieClip(combo_cursor_mc);
+        DestroyMovieClip(combo_item_mc);
     }
 
+    DestroyMovieClip(combo_mc);
     DestroyMovieClip(slider_mc);
     DestroyMovieClip(item_mc);
 }
@@ -938,24 +983,50 @@ void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
         step = wrap ? (step + MouseSensSteps) % MouseSensSteps : std::clamp(step, 0, MouseSensSteps - 1);
         SetMouseSpeedStep(step);
     } else if (item_idx == 14 && active_game_settings) {
-        int vib = int(active_game_settings[0x8]) + delta;
+        int vib = int(active_game_settings[0x1]) + delta;
         vib = wrap ? (vib + 11) % 11 : std::clamp(vib, 0, 10);
-        active_game_settings[0x8] = u8(vib);
+        active_game_settings[0x1] = u8(vib);
     } else if (item_idx == 15 && active_game_settings) {
-        int sens = int(active_game_settings[0xb]) + delta;
+        int sens = int(active_game_settings[0x0]) + delta;
         sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
-        active_game_settings[0xb] = u8(sens);
+        active_game_settings[0x0] = u8(sens);
     } else if (item_idx == 16 && active_game_settings) {
-        active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
-    } else if (item_idx == 17 && active_game_settings) {
         active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
+    } else if (item_idx == 17 && active_game_settings) {
+        active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
     } else if (item_idx == 18 && active_game_settings) {
-        active_game_settings[0x6] = active_game_settings[0x6] ? 0 : 1;
+        active_game_settings[0xb] = active_game_settings[0xb] ? 0 : 1;
     } else if (item_idx == 19 && active_game_settings) {
-        active_game_settings[0x7] = active_game_settings[0x7] ? 0 : 1;
+        active_game_settings[0xc] = active_game_settings[0xc] ? 0 : 1;
     }
     PlayMenuClickSound();
     RefreshSlotTexts(slot);
+    UpdateSlotRowDisplay(row, slot);
+}
+
+void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_text) {
+    std::string primary, alt;
+    SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
+    std::string en, ru;
+    if (!capturing_alt) {
+        const std::string p_en = captured_text.empty() ? "[ Key 1: Press... ]" : ("[ " + captured_text + " ... ]");
+        const std::string p_ru = captured_text.empty() ? "[ Кл. 1: Нажмите... ]" : ("[ " + captured_text + " ... ]");
+        if (!alt.empty()) {
+            en = p_en + " / " + BbSettings::FormatKeyBinding(alt, false);
+            ru = p_ru + " / " + BbSettings::FormatKeyBinding(alt, true);
+        } else {
+            en = p_en;
+            ru = p_ru;
+        }
+    } else {
+        const std::string a_en =
+            captured_text.empty() ? "[ Key 2 (Bksp=Clear) ]" : ("[ " + captured_text + " ... ]");
+        const std::string a_ru =
+            captured_text.empty() ? "[ Кл. 2 (Bksp=Сброс) ]" : ("[ " + captured_text + " ... ]");
+        en = BbSettings::FormatKeyBinding(primary, false) + " / " + a_en;
+        ru = BbSettings::FormatKeyBinding(primary, true) + " / " + a_ru;
+    }
+    SetDynamic(ControlsSlotVal + u32(slot), en.c_str(), ru.c_str());
     UpdateSlotRowDisplay(row, slot);
 }
 
@@ -990,16 +1061,14 @@ void StepKeyCapture(u8* row, int slot, int k) {
         }
     }
     if (!down.empty() && !captured_tokens.empty()) {
-        std::string preview = "[ ";
+        std::string preview;
         for (std::size_t i = 0; i < captured_tokens.size(); ++i) {
             if (i > 0) preview += " + ";
             preview += captured_tokens[i];
         }
-        preview += " ... ]";
         if (preview != last_capture_preview) {
             last_capture_preview = preview;
-            SetDynamic(ControlsSlotVal + u32(slot), preview.c_str(), preview.c_str());
-            UpdateSlotRowDisplay(row, slot);
+            ShowCapturePrompt(row, slot, k, preview);
         }
         return;
     }
@@ -1011,7 +1080,23 @@ void StepKeyCapture(u8* row, int slot, int k) {
             if (i > 0) new_binding += "+";
             new_binding += captured_tokens[i];
         }
-        BbSettings::SetKeyBinding(k, new_binding);
+        std::string primary, alt;
+        SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
+        if (capturing_alt) {
+            if (new_binding == "Backspace" || new_binding == "Delete") {
+                alt.clear();
+            } else {
+                alt = new_binding;
+            }
+        } else {
+            if ((new_binding == "Delete") && !alt.empty()) {
+                primary = alt;
+                alt.clear();
+            } else {
+                primary = new_binding;
+            }
+        }
+        BbSettings::SetKeyBinding(k, JoinBinding(primary, alt));
         BbSettings::Save();
         RefreshSlotTexts(slot);
         UpdateSlotRowDisplay(row, slot);
@@ -1029,6 +1114,8 @@ void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
     active_controls_page = static_cast<u8*>(page);
     active_game_settings = game_settings;
     controls_scroll = 0;
+    controls_wrapped_from_top = false;
+    capture_cooldown_ms.store(NowSteadyMs() + 250, std::memory_order_relaxed);
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         slot_rows[slot] = nullptr;
     }
@@ -1055,38 +1142,50 @@ void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time)
         if (capturing_action.load(std::memory_order_relaxed) >= 0) {
             return;
         }
-        const int old_sel = GetSelectedControlsRow();
+        const int pre_sel = GetSelectedControlsRow();
         options_page_navigate_original(page, input, frame_time);
-        int new_sel = GetSelectedControlsRow();
-        if (new_sel != old_sel) {
-            if (old_sel == ControlsSlotCount - 1 && new_sel == ControlsSlotCount &&
+        const int hover_sel = BbMenuPointer::PostHoverCursor(page + 0xa70, pre_sel);
+        const int new_sel = GetSelectedControlsRow();
+        if (new_sel != hover_sel) {
+            if (hover_sel == ControlsSlotCount - 1 && new_sel == ControlsSlotCount &&
                 controls_scroll < MaxControlsScroll) {
                 ++controls_scroll;
+                controls_wrapped_from_top = false;
                 *reinterpret_cast<int*>(page + 0xae8) = -1;
                 Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, u32(ControlsSlotCount - 1));
                 Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
                 RefreshControlsPage();
                 return;
             }
-            if (old_sel == 0 && new_sel == ControlsSlotCount && controls_scroll > 0) {
-                --controls_scroll;
-                *reinterpret_cast<int*>(page + 0xae8) = -1;
-                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, 0);
-                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
-                RefreshControlsPage();
-                return;
-            }
-            if (old_sel == ControlsSlotCount && new_sel == ControlsSlotCount - 1 &&
-                controls_scroll != MaxControlsScroll) {
+            if (hover_sel == 0 && new_sel == ControlsSlotCount) {
+                if (controls_scroll > 0) {
+                    --controls_scroll;
+                    controls_wrapped_from_top = false;
+                    *reinterpret_cast<int*>(page + 0xae8) = -1;
+                    Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, 0);
+                    Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
+                    RefreshControlsPage();
+                    return;
+                }
+                controls_wrapped_from_top = true;
+            } else if (hover_sel == ControlsSlotCount && new_sel == ControlsSlotCount - 1 &&
+                       controls_wrapped_from_top && controls_scroll != MaxControlsScroll) {
                 controls_scroll = MaxControlsScroll;
+                controls_wrapped_from_top = false;
                 RefreshControlsPage();
                 return;
-            }
-            if (old_sel == ControlsSlotCount && new_sel == 0 && controls_scroll != 0) {
+            } else if (hover_sel == ControlsSlotCount && new_sel == 0 && controls_scroll != 0) {
                 controls_scroll = 0;
+                controls_wrapped_from_top = false;
                 RefreshControlsPage();
                 return;
+            } else {
+                controls_wrapped_from_top = false;
             }
+        } else if (new_sel != pre_sel) {
+            controls_wrapped_from_top = false;
+        }
+        if (new_sel != pre_sel || new_sel != hover_sel) {
             for (int slot = 0; slot < ControlsSlotCount; ++slot) {
                 SyncSlotSliderWidget(slot_rows[slot], slot, slot == new_sel);
             }
@@ -1119,12 +1218,12 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             SetMouseSpeedStep(5);
             if (active_game_settings) {
-                active_game_settings[0x6] = 0;
-                active_game_settings[0x7] = 1;
-                active_game_settings[0x8] = 10;
-                active_game_settings[0x9] = 0;
-                active_game_settings[0xa] = 0;
-                active_game_settings[0xb] = 5;
+                active_game_settings[0x0] = 5;  // Camera Sensitivity
+                active_game_settings[0x1] = 10; // Controller Vibration
+                active_game_settings[0x9] = 1;  // Camera Y-Axis (1 = Normal)
+                active_game_settings[0xa] = 1;  // Camera X-Axis (1 = Normal)
+                active_game_settings[0xb] = 1;  // Auto Target Switch (1 = On)
+                active_game_settings[0xc] = 1;  // Camera Auto-Adjust (1 = On)
             }
             RefreshControlsPage();
         }
@@ -1138,16 +1237,23 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             if (active_k < 0 && NowSteadyMs() >= capture_cooldown_ms.load(std::memory_order_relaxed)) {
                 const u8 in = u8(a1);
-                if (in != 0 && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in)) {
-                    PlayMenuClickSound();
-                    captured_tokens.clear();
-                    last_capture_preview.clear();
-                    capture_phase = CapturePhase::WaitInitialRelease;
-                    last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
-                    capturing_slot = slot;
-                    capturing_action.store(k, std::memory_order_relaxed);
-                    SetDynamic(ControlsSlotVal + u32(slot), "[ Press key(s)... ]", "[ Нажмите клавишу... ]");
-                    UpdateSlotRowDisplay(row, slot);
+                if (in != 0) {
+                    const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
+                    const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+                    const bool confirm =
+                        !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in) &&
+                        !IsBareKeyboardF();
+                    if (left || right || confirm) {
+                        PlayMenuClickSound();
+                        captured_tokens.clear();
+                        last_capture_preview.clear();
+                        capture_phase = CapturePhase::WaitInitialRelease;
+                        last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                        capturing_slot = slot;
+                        capturing_alt = right || (confirm && BbMenuPointer::PointerX() >= 1130.0f);
+                        capturing_action.store(k, std::memory_order_relaxed);
+                        ShowCapturePrompt(row, slot, k, {});
+                    }
                 }
             }
             return 0;
