@@ -61,6 +61,8 @@ enum KeyAction : int {
     KeyItemSquare,
     KeyInteractCross,
     KeyLockOnR3,
+    KeySwitchRight,
+    KeySwitchLeft,
     KeyGestures,
     KeyActionCount
 };

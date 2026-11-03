@@ -54,6 +54,14 @@ constexpr std::size_t RowValue = 0x3c8, RowValues = 0x3d8, RowCount = 0xce0, Row
 constexpr u64 RowInput = 0x1b26b00;
 /// (row + RowList): the row's list widget draws its values' texts (looked up again).
 constexpr u64 ListDraw = 0x1ad06e0;
+/// (page): updates the bottom StatusBar help text for the page's currently selected row.
+constexpr u64 UpdatePageHelpBar = 0x1b1ab20;
+/// (page, game_settings): Bloodborne's native System -> Controls page content builder.
+constexpr u64 ControlsContent = 0x1b211a0;
+/// Menu input button check helpers (const u8* input -> bool).
+constexpr u64 IsConfirmPressed = 0x1adfec0;
+constexpr u64 IsLeftPressed = 0x1ae0890;
+constexpr u64 IsRightPressed = 0x1ae0970;
 /// (row): the row shows its value's text (looked up again).
 constexpr u64 RowShowValue = 0x1b2b7c0;
 /// (row + RowList, count): the list widget's number of values.
@@ -135,19 +143,23 @@ bool RussianTexts() {
                : game == GameLanguage::Russian;
 }
 
-// Texts that change while the game runs (the chosen aspect ratio's resolutions, "Auto (21:9)"):
+// Texts that change while the game runs (the chosen aspect ratio's resolutions, "Auto (21:9)",
+// and the 5 dynamic rows inside the unified Controls page):
 // fixed buffers rewritten in place, so a text the game holds stays valid.
 constexpr u32 DynamicBase = IdBase + 0x8000;
-constexpr std::size_t DynamicLength = 40;
+constexpr std::size_t DynamicLength = 128;
 struct DynamicText {
     char16_t english[DynamicLength]{}, russian[DynamicLength]{};
 };
-constexpr u32 OutputSlots = 12; ///< BbSettings::OutputList
-constexpr u32 KeySlots = u32(BbSettings::KeyActionCount);
-std::array<DynamicText, 1 + OutputSlots + KeySlots> dynamic_texts{};
-constexpr u32 AutoText = DynamicBase;                        ///< "Auto (21:9)"
-constexpr u32 OutputTexts = DynamicBase + 1;                 ///< the resolutions (OutputSlots)
-constexpr u32 CustomKeyTexts = OutputTexts + OutputSlots;    ///< custom key bindings (KeySlots)
+constexpr u32 OutputSlots = 12;   ///< BbSettings::OutputList
+constexpr int ControlsSlotCount = 5; ///< 5 dynamic rows below Row 0 ("Section") in Controls
+constexpr int ControlsSectionCount = 4;
+std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount> dynamic_texts{};
+constexpr u32 AutoText = DynamicBase;                                       ///< "Auto (21:9)"
+constexpr u32 OutputTexts = DynamicBase + 1;                                ///< the resolutions (OutputSlots)
+constexpr u32 ControlsSlotName = OutputTexts + OutputSlots;                 ///< 5 dynamic row labels in Controls
+constexpr u32 ControlsSlotHelp = ControlsSlotName + ControlsSlotCount;      ///< 5 dynamic row helps in Controls
+constexpr u32 ControlsSlotVal = ControlsSlotHelp + ControlsSlotCount;       ///< 5 dynamic row values in Controls
 
 void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
     const std::u16string text = Utf16(utf8);
@@ -181,9 +193,9 @@ const char16_t* TextOf(u32 id) {
 enum Field : int {
     Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod,
     FirstEffect,
-    MouseSens = FirstEffect + BbSettings::EffectCount,
-    FirstKey,
-    FieldCount = int(FirstKey) + int(BbSettings::KeyActionCount)
+    ControlsSection = FirstEffect + BbSettings::EffectCount,
+    FirstSlot,
+    FieldCount = int(FirstSlot) + ControlsSlotCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -194,7 +206,7 @@ int applied[FieldCount]; // what Poll applied last
 std::atomic<bool> values_valid{false};
 constexpr float SharpnessStep = 0.2f; // the game's slider: 0..10 -> 0.0 .. 2.0
 constexpr int SharpnessSteps = 11;
-constexpr float MouseSensStep = 0.2f; // the game's slider: 0 off, 1..10 -> 0.2 .. 2.0
+constexpr float MouseSensStep = 0.2f; // 0 off, 1..10 -> 0.2 .. 2.0
 constexpr int MouseSensSteps = 11;
 constexpr int LodValues[] = {-2, 0, 1, 2};
 /// The resolution row's values: the outputs of the aspect ratio it shows (value i: entry i). Set
@@ -227,13 +239,6 @@ void RefreshOutputs(int aspect) {
     }
 }
 
-void RefreshKeyText(int k) {
-    const std::string raw = BbSettings::GetKeyBinding(k);
-    const std::string en = BbSettings::FormatKeyBinding(raw, false);
-    const std::string ru = BbSettings::FormatKeyBinding(raw, true);
-    SetDynamic(CustomKeyTexts + u32(k), en.c_str(), ru.c_str());
-}
-
 /// The rows' values of settings `s`.
 void Fill(const BbSettings::Values& s, int* values) {
     values[Aspect] = s.aspect;
@@ -251,11 +256,9 @@ void Fill(const BbSettings::Values& s, int* values) {
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
     }
-    values[MouseSens] =
-        s.mouse_look ? std::clamp(int(std::lround(s.mouse_sensitivity / MouseSensStep)), 1, MouseSensSteps - 1) : 0;
-    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
-        RefreshKeyText(k);
-        values[FirstKey + k] = 0;
+    values[ControlsSection] = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        values[FirstSlot + slot] = 0;
     }
 }
 
@@ -289,6 +292,8 @@ struct Page {
     std::vector<Row> rows; ///< at most the layout's
 };
 std::vector<Page> pages;
+
+std::vector<Row> controls_rows;
 
 void DefineTexts() {
     const u32 off = AddText("Off", "Выкл"), on = AddText("On", "Вкл");
@@ -397,33 +402,26 @@ void DefineTexts() {
             help_en.c_str(), help_ru.c_str(), toggle);
     }
 
-    const auto add_key_row = [&](int k) {
-        const auto& def = BbSettings::GetKeyActionDef(k);
-        // Two slots (0: normal, 1: "Default" button trigger) both pointing to the dynamic buffer.
-        std::vector<u32> choices = {CustomKeyTexts + u32(k), CustomKeyTexts + u32(k)};
-        row(Field(FirstKey + k), def.name_en, def.name_ru, def.help_en, def.help_ru,
-            std::move(choices), Kind::Select);
-    };
-
-    page("Keybinds: Combat", "Клавиши: Бой",
-         "Select any action and press 1 or 2+ keys/mouse buttons, then release all to apply",
-         "Выберите действие и нажмите 1 или 2+ клавиши/кнопки мыши, затем отпустите все",
-         ControlsLayout);
-    for (int k = BbSettings::KeyAttackR1; k <= BbSettings::KeySprint; ++k) {
-        add_key_row(k);
+    // Unified System -> Controls window: Row 0 switches sections in-place, Rows 1..5 are the
+    // 5 dynamic slots for the selected section.
+    controls_rows.push_back(
+        {ControlsSection,
+         AddText("Section", "Раздел"),
+         AddText("Use Left/Right or Confirm to switch between Combat, Actions, Weapons & Mouse, and Camera",
+                 "Влево/Вправо или ОК: переключение между клавишами Боя, Действий, Оружия и Камерой"),
+         {AddText("Keybinds: Combat (1/4)", "Клавиши: Бой (1/4)"),
+          AddText("Keybinds: Actions (2/4)", "Клавиши: Действия (2/4)"),
+          AddText("Keybinds: Weapons & Mouse (3/4)", "Клавиши: Оружие и мышь (3/4)"),
+          AddText("Camera & Target (4/4)", "Камера и прицел (4/4)")},
+         Kind::Select});
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        controls_rows.push_back(
+            {Field(FirstSlot + slot),
+             ControlsSlotName + u32(slot),
+             ControlsSlotHelp + u32(slot),
+             {ControlsSlotVal + u32(slot), ControlsSlotVal + u32(slot)},
+             Kind::Select});
     }
-
-    page("Keybinds: Actions", "Клавиши: Действия",
-         "Select any action and press 1 or 2+ keys/mouse buttons, then release all to apply",
-         "Выберите действие и нажмите 1 или 2+ клавиши/кнопки мыши, затем отпустите все",
-         ControlsLayout);
-    for (int k = BbSettings::KeyHealTriangle; k <= BbSettings::KeyGestures; ++k) {
-        add_key_row(k);
-    }
-    row(MouseSens, "Mouse speed", "Чувствит. мыши",
-        "Mouse camera sensitivity: 0 mouse look off, 5 default (1.0x), 10 fast (2.0x)",
-        "Чувствительность камеры мыши: 0 выкл, 5 обычная (1.0x), 10 быстрая (2.0x)",
-        {}, Kind::Slider);
 }
 
 // ---- The game's structures, as its own code builds them. ----
@@ -613,14 +611,20 @@ void* const factories[MaxPages] = {
     reinterpret_cast<void*>(&PageFactory<2>), reinterpret_cast<void*>(&PageFactory<3>),
     reinterpret_cast<void*>(&PageFactory<4>), reinterpret_cast<void*>(&PageFactory<5>)};
 
-// ---- Direct Keybind Capture in the Native Bloodborne Menu ----
+// ---- Unified System -> Controls Window (Keybinds + Mouse + Camera/Controller) ----
 enum class CapturePhase { WaitInitialRelease, WaitPressAndRelease, WaitEscapeRelease };
 std::atomic<int> capturing_action{-1};
+int capturing_slot = -1;
 CapturePhase capture_phase = CapturePhase::WaitInitialRelease;
 std::vector<std::string> captured_tokens;
 std::string last_capture_preview;
 std::atomic<long long> capture_cooldown_ms{0};
 std::atomic<long long> last_capture_step_ms{0};
+
+u8* active_controls_page = nullptr;
+u8* active_game_settings = nullptr;
+u8* slot_rows[ControlsSlotCount] = {};
+int shown_controls_section = 0;
 
 long long NowSteadyMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -661,16 +665,6 @@ std::vector<std::string> CollectDownTokens(bool* escape_down) {
     return out;
 }
 
-void UpdateKeyRowDisplay(u8* row, int k) {
-    u8* items = row + RowValues;
-    items += (0 - reinterpret_cast<std::uintptr_t>(items)) & 7;
-    const u64 count = *reinterpret_cast<u64*>(row + RowCount);
-    for (u64 i = 0; i < count && i < 2; ++i) {
-        *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(CustomKeyTexts + u32(k));
-    }
-    Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
-}
-
 void PlayMenuClickSound() {
     if (*reinterpret_cast<int*>(image_base + 0x557fc64) <= 0) {
         *reinterpret_cast<u64*>(image_base + 0x557fc60) = 0x3e8;
@@ -678,7 +672,181 @@ void PlayMenuClickSound() {
     }
 }
 
-void StepKeyCapture(u8* row, int k) {
+/// Returns keybind action index (0..11) for (section, slot), or -1 if it's a numeric/toggle setting.
+int SlotKeyAction(int section, int slot) {
+    if (section == 0) return slot;      // 0..4: R1, R2, L2, L1, Dodge
+    if (section == 1) return 5 + slot;  // 5..9: Sprint, Heal, UseItem, Interact, LockOn
+    if (section == 2 && slot < 3) return 10 + slot; // 10..11: SwitchRight, SwitchLeft, 12(->11): Gestures
+    return -1;
+}
+
+int CurrentMouseSpeedStep() {
+    const auto& s = BbSettings::Get();
+    return s.mouse_look
+               ? std::clamp(int(std::lround(s.mouse_sensitivity / MouseSensStep)), 1, MouseSensSteps - 1)
+               : 0;
+}
+
+void SetMouseSpeedStep(int step) {
+    auto& s = BbSettings::Get();
+    step = std::clamp(step, 0, MouseSensSteps - 1);
+    s.mouse_look = step != 0;
+    if (step != 0) {
+        s.mouse_sensitivity = step * MouseSensStep;
+    }
+    BbSettings::Save();
+}
+
+void RefreshSlotTexts(int section, int slot) {
+    const u32 name_id = ControlsSlotName + u32(slot);
+    const u32 help_id = ControlsSlotHelp + u32(slot);
+    const u32 val_id = ControlsSlotVal + u32(slot);
+
+    const int k = SlotKeyAction(section, slot);
+    if (k >= 0 && k < BbSettings::KeyActionCount) {
+        const auto& def = BbSettings::GetKeyActionDef(k);
+        SetDynamic(name_id, def.name_en, def.name_ru);
+        SetDynamic(help_id, def.help_en, def.help_ru);
+        const std::string raw = BbSettings::GetKeyBinding(k);
+        const std::string en = BbSettings::FormatKeyBinding(raw, false);
+        const std::string ru = BbSettings::FormatKeyBinding(raw, true);
+        SetDynamic(val_id, en.c_str(), ru.c_str());
+        return;
+    }
+
+    if (section == 2 && slot == 3) {
+        SetDynamic(name_id, "Mouse Speed", "Чувствит. мыши");
+        SetDynamic(help_id,
+                   "Mouse camera sensitivity (Left/Right): 0 mouse look off, 5 default (1.0x), 10 fast (2.0x)",
+                   "Чувствительность камеры мыши (Влево/Вправо): 0 выкл, 5 обычная (1.0x), 10 быстрая (2.0x)");
+        const int step = CurrentMouseSpeedStep();
+        if (step == 0) {
+            SetDynamic(val_id, "Off", "Выкл");
+        } else {
+            const std::string txt = fmt::format("{} / 10 ({:.1f}x)", step, step * MouseSensStep);
+            SetDynamic(val_id, txt.c_str(), txt.c_str());
+        }
+        return;
+    }
+
+    if (section == 2 && slot == 4) {
+        SetDynamic(name_id, "Controller Vibration", "Вибрация геймпада");
+        SetDynamic(help_id,
+                   "Controller vibration strength (Left/Right): 0 off, 10 strongest",
+                   "Сила вибрации геймпада (Влево/Вправо): 0 выкл, 10 макс.");
+        const int vib = active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
+        if (vib == 0) {
+            SetDynamic(val_id, "Off (0 / 10)", "Выкл (0 / 10)");
+        } else {
+            const std::string txt = fmt::format("{} / 10", vib);
+            SetDynamic(val_id, txt.c_str(), txt.c_str());
+        }
+        return;
+    }
+
+    // Section 3: Camera & Target (Bloodborne's native Controls settings at active_game_settings)
+    if (slot == 0) {
+        SetDynamic(name_id, "Camera X-Axis", "Камера по оси X");
+        SetDynamic(help_id, "Horizontal camera rotation direction (Left/Right to toggle)",
+                   "Направление вращения камеры по горизонтали (Влево/Вправо)");
+        const bool inv = active_game_settings && active_game_settings[0x9] != 0;
+        SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
+    } else if (slot == 1) {
+        SetDynamic(name_id, "Camera Y-Axis", "Камера по оси Y");
+        SetDynamic(help_id, "Vertical camera rotation direction (Left/Right to toggle)",
+                   "Направление вращения камеры по вертикали (Влево/Вправо)");
+        const bool inv = active_game_settings && active_game_settings[0xa] != 0;
+        SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
+    } else if (slot == 2) {
+        SetDynamic(name_id, "Camera Sensitivity", "Скорость камеры");
+        SetDynamic(help_id, "Gamepad & lock-on camera rotation speed (Left/Right: 0 .. 10)",
+                   "Скорость вращения камеры (Влево/Вправо: 0 .. 10)");
+        const int sens = active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
+        const std::string txt = fmt::format("{} / 10", sens);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
+    } else if (slot == 3) {
+        SetDynamic(name_id, "Auto Target Switch", "Автосмена цели");
+        SetDynamic(help_id, "Automatically switch lock-on target when current target is defeated",
+                   "Автоматическое переключение захвата цели после гибели текущей цели");
+        const bool on = active_game_settings && active_game_settings[0x6] != 0;
+        SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
+    } else if (slot == 4) {
+        SetDynamic(name_id, "Camera Auto-Adjust", "Автокоррекция камеры");
+        SetDynamic(help_id, "Automatically adjust camera when colliding with walls",
+                   "Автоматический обход стен при движении камеры");
+        const bool on = !active_game_settings || active_game_settings[0x7] != 0;
+        SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
+    }
+}
+
+void UpdateSlotRowDisplay(u8* row, int slot) {
+    if (!row) return;
+    u8* items = row + RowValues;
+    items += (0 - reinterpret_cast<std::uintptr_t>(items)) & 7;
+    const u64 count = *reinterpret_cast<u64*>(row + RowCount);
+    for (u64 i = 0; i < count && i < 2; ++i) {
+        *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(ControlsSlotVal + u32(slot));
+    }
+    Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
+}
+
+void RefreshControlsPage() {
+    shown_controls_section = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        RefreshSlotTexts(shown_controls_section, slot);
+    }
+    if (active_controls_page) {
+        u8* const rows_begin = *reinterpret_cast<u8**>(active_controls_page + 0xe58);
+        u8* const rows_end = *reinterpret_cast<u8**>(active_controls_page + 0xe60);
+        if (rows_begin && rows_end && rows_end - rows_begin >= (1 + ControlsSlotCount) * 0x90) {
+            for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+                u8* const entry = rows_begin + (1 + slot) * 0x90;
+                *reinterpret_cast<const char16_t**>(entry + 0x00) = TextOf(ControlsSlotName + u32(slot));
+                *reinterpret_cast<const char16_t**>(entry + 0x40) = TextOf(ControlsSlotHelp + u32(slot));
+                u8* const widget = *reinterpret_cast<u8**>(entry + 0x80);
+                if (widget) {
+                    slot_rows[slot] = widget;
+                }
+            }
+        }
+        Game<void (PS4_SYSV_ABI*)(void*)>(ListDraw)(active_controls_page + 0xa70);
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageHelpBar)(active_controls_page);
+    }
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        UpdateSlotRowDisplay(slot_rows[slot], slot);
+    }
+}
+
+void StepSlotSetting(u8* row, int section, int slot, int delta, bool wrap) {
+    if (section == 2 && slot == 3) {
+        int step = CurrentMouseSpeedStep() + delta;
+        step = wrap ? (step + MouseSensSteps) % MouseSensSteps : std::clamp(step, 0, MouseSensSteps - 1);
+        SetMouseSpeedStep(step);
+    } else if (section == 2 && slot == 4 && active_game_settings) {
+        int vib = int(active_game_settings[0x8]) + delta;
+        vib = wrap ? (vib + 11) % 11 : std::clamp(vib, 0, 10);
+        active_game_settings[0x8] = u8(vib);
+    } else if (section == 3 && active_game_settings) {
+        if (slot == 0) {
+            active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
+        } else if (slot == 1) {
+            active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
+        } else if (slot == 2) {
+            int sens = int(active_game_settings[0xb]) + delta;
+            sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
+            active_game_settings[0xb] = u8(sens);
+        } else if (slot == 3) {
+            active_game_settings[0x6] = active_game_settings[0x6] ? 0 : 1;
+        } else if (slot == 4) {
+            active_game_settings[0x7] = active_game_settings[0x7] ? 0 : 1;
+        }
+    }
+    PlayMenuClickSound();
+    RefreshSlotTexts(section, slot);
+    UpdateSlotRowDisplay(row, slot);
+}
+
+void StepKeyCapture(u8* row, int slot, int k) {
     last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
     bool escape_down = false;
     const std::vector<std::string> down = CollectDownTokens(&escape_down);
@@ -691,8 +859,8 @@ void StepKeyCapture(u8* row, int k) {
     }
     if (capture_phase == CapturePhase::WaitEscapeRelease) {
         if (!escape_down && down.empty()) {
-            RefreshKeyText(k);
-            UpdateKeyRowDisplay(row, k);
+            RefreshSlotTexts(shown_controls_section, slot);
+            UpdateSlotRowDisplay(row, slot);
             capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
             capturing_action.store(-1, std::memory_order_relaxed);
         }
@@ -717,8 +885,8 @@ void StepKeyCapture(u8* row, int k) {
         preview += " ... ]";
         if (preview != last_capture_preview) {
             last_capture_preview = preview;
-            SetDynamic(CustomKeyTexts + u32(k), preview.c_str(), preview.c_str());
-            UpdateKeyRowDisplay(row, k);
+            SetDynamic(ControlsSlotVal + u32(slot), preview.c_str(), preview.c_str());
+            UpdateSlotRowDisplay(row, slot);
         }
         return;
     }
@@ -732,8 +900,8 @@ void StepKeyCapture(u8* row, int k) {
         }
         BbSettings::SetKeyBinding(k, new_binding);
         BbSettings::Save();
-        RefreshKeyText(k);
-        UpdateKeyRowDisplay(row, k);
+        RefreshSlotTexts(shown_controls_section, slot);
+        UpdateSlotRowDisplay(row, slot);
         PlayMenuClickSound();
         capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
         capturing_action.store(-1, std::memory_order_relaxed);
@@ -741,9 +909,32 @@ void StepKeyCapture(u8* row, int k) {
 }
 
 // ---- Hooks ----
+using ControlsContentFn = void (PS4_SYSV_ABI*)(void*, u8*);
+ControlsContentFn controls_content_original = nullptr;
+
+void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
+    active_controls_page = static_cast<u8*>(page);
+    active_game_settings = game_settings;
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        slot_rows[slot] = nullptr;
+    }
+    LoadValues();
+    shown_controls_section = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        RefreshSlotTexts(shown_controls_section, slot);
+    }
+    AddRows(page, controls_rows);
+    u8* const rows_begin = *reinterpret_cast<u8**>(active_controls_page + 0xe58);
+    u8* const rows_end = *reinterpret_cast<u8**>(active_controls_page + 0xe60);
+    if (rows_begin && rows_end && rows_end - rows_begin >= (1 + ControlsSlotCount) * 0x90) {
+        for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+            slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + (1 + slot) * 0x90 + 0x80);
+        }
+    }
+}
+
 using RowInputFn = u64 (PS4_SYSV_ABI*)(u8*, u64, u64, u64, u64, u64, double);
 RowInputFn row_input_original = nullptr;
-constexpr u64 IsConfirmPressed = 0x1adfec0;
 
 u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, double frame_time) {
     int* const val_ptr = *reinterpret_cast<int**>(row + RowValue);
@@ -751,33 +942,85 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
     if (val_ptr == &values[OutputRes]) {
         RefreshOutputRow(row);
     }
-    if (val_ptr >= &values[FirstKey] && val_ptr < &values[int(FirstKey) + int(BbSettings::KeyActionCount)]) {
-        const int k = int(val_ptr - &values[FirstKey]);
-        // If the page's "Defaults" button was pressed, it sets values[FirstKey + k] = 1.
-        if (values[FirstKey + k] != 0) {
-            values[FirstKey + k] = 0;
-            applied[FirstKey + k] = 0;
-            BbSettings::SetKeyBinding(k, BbSettings::GetKeyActionDef(k).default_val);
-            RefreshKeyText(k);
-            UpdateKeyRowDisplay(row, k);
-            BbSettings::Save();
+    if (val_ptr == &values[ControlsSection]) {
+        const u8 in = u8(a1);
+        if (row[0x3c0] == 0 && in != 0) {
+            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
+            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+            if (left || right) {
+                const int dir = left ? -1 : 1;
+                values[ControlsSection] =
+                    (values[ControlsSection] + ControlsSectionCount + dir) % ControlsSectionCount;
+                applied[ControlsSection] = values[ControlsSection];
+                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(row + RowList, u32(values[ControlsSection]));
+                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(row + RowList);
+                Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
+                PlayMenuClickSound();
+                RefreshControlsPage();
+                return 0;
+            }
         }
-        const int active_k = capturing_action.load(std::memory_order_relaxed);
-        if (active_k == k) {
-            StepKeyCapture(row, k);
+        const u64 res = row_input_original(row, a1, a2, a3, a4, a5, frame_time);
+        if (values[ControlsSection] != shown_controls_section) {
+            applied[ControlsSection] = values[ControlsSection];
+            RefreshControlsPage();
+        }
+        return res;
+    }
+    if (val_ptr >= &values[FirstSlot] && val_ptr < &values[int(FirstSlot) + ControlsSlotCount]) {
+        const int slot = int(val_ptr - &values[FirstSlot]);
+        slot_rows[slot] = row;
+        // If the page's "Defaults" button was pressed, it sets values[FirstSlot + slot] = 1.
+        if (values[FirstSlot + slot] != 0) {
+            for (int s = 0; s < ControlsSlotCount; ++s) {
+                values[FirstSlot + s] = 0;
+                applied[FirstSlot + s] = 0;
+            }
+            for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
+                BbSettings::SetKeyBinding(k, BbSettings::GetKeyActionDef(k).default_val);
+            }
+            SetMouseSpeedStep(5);
+            if (active_game_settings) {
+                active_game_settings[0x6] = 0;
+                active_game_settings[0x7] = 1;
+                active_game_settings[0x8] = 10;
+                active_game_settings[0x9] = 0;
+                active_game_settings[0xa] = 0;
+                active_game_settings[0xb] = 5;
+            }
+            RefreshControlsPage();
+        }
+        const int k = SlotKeyAction(shown_controls_section, slot);
+        if (k >= 0) {
+            const int active_k = capturing_action.load(std::memory_order_relaxed);
+            if (active_k == k && capturing_slot == slot) {
+                StepKeyCapture(row, slot, k);
+                return 0;
+            }
+            if (active_k < 0 && NowSteadyMs() >= capture_cooldown_ms.load(std::memory_order_relaxed)) {
+                const u8 in = u8(a1);
+                if (in != 0 && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in)) {
+                    PlayMenuClickSound();
+                    captured_tokens.clear();
+                    last_capture_preview.clear();
+                    capture_phase = CapturePhase::WaitInitialRelease;
+                    last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
+                    capturing_slot = slot;
+                    capturing_action.store(k, std::memory_order_relaxed);
+                    SetDynamic(ControlsSlotVal + u32(slot), "[ Press key(s)... ]", "[ Нажмите клавишу... ]");
+                    UpdateSlotRowDisplay(row, slot);
+                }
+            }
             return 0;
         }
-        if (active_k < 0 && NowSteadyMs() >= capture_cooldown_ms.load(std::memory_order_relaxed)) {
-            const u8 in = u8(a1);
-            if (in != 0 && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in)) {
-                PlayMenuClickSound();
-                captured_tokens.clear();
-                last_capture_preview.clear();
-                capture_phase = CapturePhase::WaitInitialRelease;
-                last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
-                capturing_action.store(k, std::memory_order_relaxed);
-                SetDynamic(CustomKeyTexts + u32(k), "[ Press key(s)... ]", "[ Нажмите клавишу... ]");
-                UpdateKeyRowDisplay(row, k);
+        // Setting row (Mouse Speed, Controller Vibration, or Camera & Target setting)
+        const u8 in = u8(a1);
+        if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0) {
+            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
+            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+            const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
+            if (left || right || confirm) {
+                StepSlotSetting(row, shown_controls_section, slot, left ? -1 : 1, confirm);
             }
         }
         return 0;
@@ -789,7 +1032,6 @@ using LookupFn = const char16_t* (PS4_SYSV_ABI*)(void*, u32, u32, u32);
 using AddFn = void* (PS4_SYSV_ABI*)(void*, void*, void*, void*);
 LookupFn lookup_original = nullptr;
 AddFn add_original = nullptr;
-std::atomic<const void*> controls_item_text{nullptr};
 std::atomic<const void*> screen_sound_text{nullptr};
 
 const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 category, u32 id) {
@@ -866,9 +1108,8 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
         std::printf("Game menu: text %#x/%u%s from %#llx\n", category, id, building_page >= 0 ? " (our page)" : "",
                     (unsigned long long)(reinterpret_cast<u64>(__builtin_return_address(0)) - image_base));
     }
-    if (category == TextName && (id == ControlsItem || id == ScreenSoundItem) && text) {
-        if (id == ControlsItem) controls_item_text = text;
-        if (id == ScreenSoundItem) screen_sound_text = text;
+    if (category == TextName && id == ScreenSoundItem && text) {
+        screen_sound_text = text;
         bool cyrillic = false;
         for (const char16_t* c = text; *c; ++c) {
             cyrillic = cyrillic || (*c >= 0x400 && *c < 0x500);
@@ -897,23 +1138,12 @@ void AddItem(void* menu, u32 name, u32 help, void* factory) {
 void* PS4_SYSV_ABI AddHook(void* menu, void* pair, void* function, void* out) {
     void* result = add_original(menu, pair, function, out);
     const void* item_text = *reinterpret_cast<const void* const*>(pair);
-    const void* controls_text = controls_item_text.load();
     const void* screen_sound = screen_sound_text.load();
-    // Place Keybinds: Combat and Keybinds: Actions right under Controls (110000).
-    if (controls_text && item_text == controls_text) {
-        for (std::size_t i = 2; i < pages.size() && i < MaxPages; ++i) {
-            AddItem(menu, pages[i].name, pages[i].help, factories[i]);
-        }
-    }
     // Place Display and Effects right under Environment / Screen & Sound (110001).
+    // Controls (110000) itself now houses all Keybinds + Mouse + Camera settings in one window.
     if (screen_sound && item_text == screen_sound) {
-        for (std::size_t i = 0; i < 2 && i < pages.size(); ++i) {
+        for (std::size_t i = 0; i < pages.size() && i < MaxPages; ++i) {
             AddItem(menu, pages[i].name, pages[i].help, factories[i]);
-        }
-        if (!controls_text) {
-            for (std::size_t i = 2; i < pages.size() && i < MaxPages; ++i) {
-                AddItem(menu, pages[i].name, pages[i].help, factories[i]);
-            }
         }
     }
     return result;
@@ -994,9 +1224,9 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         default_values[FirstEffect + e] = BbSettings::Effects[e].default_on;
     }
-    default_values[MouseSens] = 5;
-    for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
-        default_values[FirstKey + k] = 1; // 1 triggers default reset when "Defaults" is clicked
+    default_values[ControlsSection] = 0;
+    for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+        default_values[FirstSlot + slot] = 1; // 1 triggers default reset when "Defaults" is clicked
     }
     for (int f = 0; f < FieldCount; ++f) {
         default_bytes[f] = u8(default_values[f]);
@@ -1008,11 +1238,14 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
                reinterpret_cast<void*>(&LookupHook), reinterpret_cast<void**>(&lookup_original), cursor) &&
         Detour(image, AddPageItem, AddPageItemPrologue, sizeof(AddPageItemPrologue),
                reinterpret_cast<void*>(&AddHook), reinterpret_cast<void**>(&add_original), cursor) &&
+        Detour(image, ControlsContent, AddPageItemPrologue, sizeof(AddPageItemPrologue),
+               reinterpret_cast<void*>(&ControlsContentHook),
+               reinterpret_cast<void**>(&controls_content_original), cursor) &&
         Detour(image, RowInput, RowInputPrologue, sizeof(RowInputPrologue),
                reinterpret_cast<void*>(&RowInputHook), reinterpret_cast<void**>(&row_input_original), cursor);
     mprotect(stubs, page, PROT_READ | PROT_EXEC);
-    std::printf("Game menu: %s (%zu pages in System)\n", ok ? "the port's pages are in" : "hooks failed, off",
-                pages.size());
+    std::printf("Game menu: %s (unified Controls + %zu pages in System)\n",
+                ok ? "the port's pages are in" : "hooks failed, off", pages.size());
 }
 
 bool CapturesInput() {
@@ -1081,11 +1314,6 @@ void Poll() {
     s.model_lod = LodValues[std::clamp(now_values[ModelLod], 0, 3)];
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         s.effects[e] = now_values[FirstEffect + e] != 0;
-    }
-    s.mouse_look = now_values[MouseSens] != 0;
-    if (now_values[MouseSens] != 0) {
-        s.mouse_sensitivity =
-            std::clamp(now_values[MouseSens], 1, MouseSensSteps - 1) * MouseSensStep;
     }
     BbGuestHooks::ApplyGameEffects();
     std::memcpy(applied, now_values, sizeof(now_values));

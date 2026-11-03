@@ -454,6 +454,24 @@ static void load_bindings(void) {
         }
     }
     fclose(f);
+    /* Ensure arrow keys and Enter remain available for menu navigation alongside custom keys. */
+    static const struct { int input, sc; } nav_keys[] = {
+        {IN_UP, SDL_SCANCODE_UP}, {IN_DOWN, SDL_SCANCODE_DOWN},
+        {IN_LEFT, SDL_SCANCODE_LEFT}, {IN_RIGHT, SDL_SCANCODE_RIGHT},
+        {IN_CROSS, SDL_SCANCODE_RETURN},
+    };
+    for (size_t i = 0; i < sizeof(nav_keys) / sizeof(*nav_keys); ++i) {
+        Binding *b = &bindings[nav_keys[i].input];
+        int present = 0;
+        for (int k = 0; k < b->key_count; ++k) {
+            if (b->keys[k] == nav_keys[i].sc && b->mods[k] < 0 && b->mods2[k] < 0) present = 1;
+        }
+        if (!present && b->key_count < MAX_BIND) {
+            b->mods[b->key_count] = -1;
+            b->mods2[b->key_count] = -1;
+            b->keys[b->key_count++] = nav_keys[i].sc;
+        }
+    }
 }
 /* The mouse while the window holds it: buttons, and the wheel as short presses (one per notch,
  * each held and released for a few frames so the game sees it). */
