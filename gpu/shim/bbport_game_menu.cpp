@@ -740,8 +740,8 @@ void RefreshSlotTexts(int slot) {
     if (k >= 0) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
-        const std::string help_en = std::string(def.help_en) + "  [< / Enter: Key 1 | >: Alt Key 2]";
-        const std::string help_ru = std::string(def.help_ru) + "  [< / Enter: Осн. | >: Альт. кл.]";
+        const std::string help_en = std::string(def.help_en) + "  [Click / Enter: Rebind | Right Arrow: +Alt Key]";
+        const std::string help_ru = std::string(def.help_ru) + "  [Клик / Enter: Назначить | Вправо: +Альт. кл.]";
         SetDynamic(help_id, help_en.c_str(), help_ru.c_str());
         const std::string raw = BbSettings::GetKeyBinding(k);
         const std::string en = BbSettings::FormatKeyBinding(raw, false);
@@ -916,19 +916,8 @@ void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
         DestroyMovieClip(bar_mc);
     } else {
         SetMovieClipVisible(slider_mc, 0);
+        SetMovieClipVisible(combo_mc, 0);
         SetMovieClipVisible(row + 0x10, 1);
-
-        // Show ComboBox's Cursor (right-side golden glow + <| |> arrows) when focused,
-        // while keeping ComboBox/Item_0_0 hidden so DropdownList/CurrentItem/Text_0 renders the text.
-        alignas(16) u8 combo_item_mc[0x60] = {};
-        alignas(16) u8 combo_cursor_mc[0x60] = {};
-        get_sub(combo_item_mc, combo_mc, "Item_0_0");
-        get_sub(combo_cursor_mc, combo_mc, "Cursor");
-        SetMovieClipVisible(combo_item_mc, 0);
-        SetMovieClipVisible(combo_cursor_mc, is_focused ? 1 : 0);
-        SetMovieClipVisible(combo_mc, is_focused ? 1 : 0);
-        DestroyMovieClip(combo_cursor_mc);
-        DestroyMovieClip(combo_item_mc);
     }
 
     DestroyMovieClip(combo_mc);
@@ -1009,20 +998,13 @@ void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_tex
     SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
     std::string en, ru;
     if (!capturing_alt) {
-        const std::string p_en = captured_text.empty() ? "[ Key 1: Press... ]" : ("[ " + captured_text + " ... ]");
-        const std::string p_ru = captured_text.empty() ? "[ Кл. 1: Нажмите... ]" : ("[ " + captured_text + " ... ]");
-        if (!alt.empty()) {
-            en = p_en + " / " + BbSettings::FormatKeyBinding(alt, false);
-            ru = p_ru + " / " + BbSettings::FormatKeyBinding(alt, true);
-        } else {
-            en = p_en;
-            ru = p_ru;
-        }
+        en = captured_text.empty() ? "[ Press key(s)... ]" : ("[ " + captured_text + " ... ]");
+        ru = captured_text.empty() ? "[ Нажмите клавишу... ]" : ("[ " + captured_text + " ... ]");
     } else {
         const std::string a_en =
-            captured_text.empty() ? "[ Key 2 (Bksp=Clear) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +Alt Key (Bksp=Clear) ]" : ("[ " + captured_text + " ... ]");
         const std::string a_ru =
-            captured_text.empty() ? "[ Кл. 2 (Bksp=Сброс) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +Альт. кл. (Bksp=Сброс) ]" : ("[ " + captured_text + " ... ]");
         en = BbSettings::FormatKeyBinding(primary, false) + " / " + a_en;
         ru = BbSettings::FormatKeyBinding(primary, true) + " / " + a_ru;
     }
@@ -1045,7 +1027,7 @@ void StepKeyCapture(u8* row, int slot, int k) {
         if (!escape_down && down.empty()) {
             RefreshSlotTexts(slot);
             UpdateSlotRowDisplay(row, slot);
-            capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
+            capture_cooldown_ms.store(NowSteadyMs() + 300, std::memory_order_relaxed);
             capturing_action.store(-1, std::memory_order_relaxed);
         }
         return;
@@ -1088,20 +1070,15 @@ void StepKeyCapture(u8* row, int slot, int k) {
             } else {
                 alt = new_binding;
             }
+            BbSettings::SetKeyBinding(k, JoinBinding(primary, alt));
         } else {
-            if ((new_binding == "Delete") && !alt.empty()) {
-                primary = alt;
-                alt.clear();
-            } else {
-                primary = new_binding;
-            }
+            BbSettings::SetKeyBinding(k, new_binding);
         }
-        BbSettings::SetKeyBinding(k, JoinBinding(primary, alt));
         BbSettings::Save();
         RefreshSlotTexts(slot);
         UpdateSlotRowDisplay(row, slot);
         PlayMenuClickSound();
-        capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
+        capture_cooldown_ms.store(NowSteadyMs() + 300, std::memory_order_relaxed);
         capturing_action.store(-1, std::memory_order_relaxed);
     }
 }
@@ -1139,7 +1116,7 @@ OptionsPageNavigateFn options_page_navigate_original = nullptr;
 
 void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
     if (page == active_controls_page) {
-        if (capturing_action.load(std::memory_order_relaxed) >= 0) {
+        if (capturing_action.load(std::memory_order_relaxed) >= 0 || InCaptureCooldown()) {
             return;
         }
         const int pre_sel = GetSelectedControlsRow();
@@ -1235,22 +1212,21 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
                 StepKeyCapture(row, slot, k);
                 return 0;
             }
-            if (active_k < 0 && NowSteadyMs() >= capture_cooldown_ms.load(std::memory_order_relaxed)) {
+            if (active_k < 0 && !InCaptureCooldown()) {
                 const u8 in = u8(a1);
                 if (in != 0) {
-                    const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-                    const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+                    const bool right = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
                     const bool confirm =
-                        !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in) &&
+                        !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in) &&
                         !IsBareKeyboardF();
-                    if (left || right || confirm) {
+                    if (right || confirm) {
                         PlayMenuClickSound();
                         captured_tokens.clear();
                         last_capture_preview.clear();
                         capture_phase = CapturePhase::WaitInitialRelease;
                         last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
                         capturing_slot = slot;
-                        capturing_alt = right || (confirm && BbMenuPointer::PointerX() >= 1130.0f);
+                        capturing_alt = right;
                         capturing_action.store(k, std::memory_order_relaxed);
                         ShowCapturePrompt(row, slot, k, {});
                     }
@@ -1260,7 +1236,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         }
         // Setting row (Mouse Speed, Controller Vibration, or Camera & Target setting)
         const u8 in = u8(a1);
-        if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0) {
+        if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0 && !InCaptureCooldown()) {
             const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
             const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
             const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
@@ -1504,7 +1480,11 @@ bool CapturesInput() {
         }
         return true;
     }
-    return now < capture_cooldown_ms.load(std::memory_order_relaxed);
+    return false;
+}
+
+bool InCaptureCooldown() {
+    return NowSteadyMs() < capture_cooldown_ms.load(std::memory_order_relaxed);
 }
 
 void Poll() {

@@ -17,4 +17,7 @@ void Poll();
 
 /// True while a keybind row in the native System menu is waiting for key/mouse input.
 bool CapturesInput();
+
+/// True during the brief post-capture cooldown window so stale latched keys are zeroed in OnPad.
+bool InCaptureCooldown();
 } // namespace BbGameMenu
