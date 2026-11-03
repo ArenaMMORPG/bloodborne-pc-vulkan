@@ -119,13 +119,12 @@ parent_folder/
 *(Alternatively, set `export BB_GAME_DIR=/path/to/your/CUSA03173` before running).*
 
 ### Step 2A: Run with Prebuilt Binaries (Fastest — No Compilation Required)
-1. Download `bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz` from the **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** page and extract it into the repository root:
+1. Clone the repository (all prebuilt Linux `x86_64` binaries — `out/bb-probe`, `out/gpu/libbbgpu.so`, `out/libbbport_dlss.so`, `out/libnvidia-ngx-dlss.so.310.9.1`, and `fsr4_shaders/` — are **already bundled directly inside the repository**, and also archived on the **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** page):
    ```bash
    git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
    cd bloodborne-pc-vulkan
-   tar -xzvf bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz
    ```
-2. Launch the game (at first launch, `scripts/prepare.py` automatically links your `CUSA03173/eboot.bin` into `out/boot-linked.bin`):
+2. Launch the game directly (at first launch, `scripts/prepare.py` automatically links your `CUSA03173/eboot.bin` into `out/boot-linked.bin`):
    ```bash
    # Launch at 60 FPS cap with HUD telemetry:
    BB_FRAME_STATS=1 BB_FPS_LIMIT=60 ./play.sh
@@ -203,11 +202,10 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 
 1. **Подготовьте распакованный дамп игры (`CUSA03173` или `CUSA00900` с патчем `v1.09`):**
    Положите папку `CUSA03173` (внутри которой лежат `eboot.bin`, `sce_module/`, `sce_sys/`, `dvdroot_ps4/`) рядом с папкой репозитория `bloodborne-pc-vulkan` (либо укажите путь через `export BB_GAME_DIR=/путь/к/CUSA03173`).
-2. **Скачайте готовые бинарники из раздела [Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** (`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`) и распакуйте в корень репозитория:
+2. **Склонируйте репозиторий** (все готовые пребилд-бинарники для Linux `x86_64` — `out/bb-probe`, `out/gpu/libbbgpu.so`, `out/libbbport_dlss.so`, `out/libnvidia-ngx-dlss.so.310.9.1` и `fsr4_shaders/` — **уже включены прямо в репозиторий**, а также продублированы в разделе **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)**):
    ```bash
    git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
    cd bloodborne-pc-vulkan
-   tar -xzvf bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz
    ```
 3. **Запустите игру:**
    ```bash
