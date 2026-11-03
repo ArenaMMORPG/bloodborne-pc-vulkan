@@ -163,9 +163,10 @@ def effect_patches(settings, env=os.environ):
     names=[]
     hot=env.get('BB_HOT_EFFECTS','1')!='0'
     for key,(off,on) in EFFECTS.items():
-        if key not in settings: continue
+        if key not in settings and key != 'skip_intro': continue
         if hot and key in HOT_EFFECTS: continue
-        name=on if settings[key]=='1' else off
+        val=settings.get(key,'1' if key=='skip_intro' else '0')
+        name=on if val=='1' else off
         if name: names.append(name)
     if not hot:
         lod=MODEL_LOD.get(settings.get('model_lod','0'))

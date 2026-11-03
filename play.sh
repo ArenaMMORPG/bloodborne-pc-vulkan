@@ -14,6 +14,22 @@ fi
 
 export BB_PREBUILT="${BB_PREBUILT:-1}"
 export BB_DATA_DIR="${BB_DATA_DIR:-$PWD}"
+
+# Read launcher-persisted startup flags from bbport.ini if present
+INI_FILE="$BB_DATA_DIR/bbport.ini"
+ini_val() {
+    local key="$1" def="$2"
+    if [[ -f "$INI_FILE" ]]; then
+        local v
+        v="$(grep -E "^${key}=" "$INI_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+        if [[ -n "$v" ]]; then
+            echo "$v"
+            return
+        fi
+    fi
+    echo "$def"
+}
+
 export BB_SAVE_LOG="${BB_SAVE_LOG:-1}"
 export BB_GX_MODULES="${BB_GX_MODULES:-all}"
 export BB_FPS="${BB_FPS:-uncap}"
@@ -25,9 +41,9 @@ export BB_BREADCRUMBS="${BB_BREADCRUMBS:-0}"
 export BB_INDIRECT_GUARD="${BB_INDIRECT_GUARD:-0}"
 export BB_OBJECT_MOTION="${BB_OBJECT_MOTION:-0}"
 export BB_LIVE_RES="${BB_LIVE_RES:-0}"
-export BB_FULLSCREEN="${BB_FULLSCREEN:-1}"
-export BB_PRESENT_MODE="${BB_PRESENT_MODE:-Mailbox}"
-export BB_SKIP_NETWORK_CHOICE="${BB_SKIP_NETWORK_CHOICE:-1}"
-export BB_LANGUAGE="${BB_LANGUAGE:-1}"
+export BB_FULLSCREEN="${BB_FULLSCREEN:-$(ini_val fullscreen 1)}"
+export BB_PRESENT_MODE="${BB_PRESENT_MODE:-$(ini_val present_mode Mailbox)}"
+export BB_SKIP_NETWORK_CHOICE="${BB_SKIP_NETWORK_CHOICE:-$(ini_val skip_network_choice 1)}"
+export BB_LANGUAGE="${BB_LANGUAGE:-$(ini_val language 1)}"
 
 exec bash ./run.sh "$@"

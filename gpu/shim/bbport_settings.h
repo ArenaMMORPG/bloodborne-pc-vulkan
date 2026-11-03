@@ -38,7 +38,7 @@ inline constexpr Effect Effects[] = {
     {"effect_dynamic_shadows", "Shadows from dynamic lights", "Тени от динамических источников", true},
     {"effect_ssr", "Screen-space reflections (not in original game)", "Отражения SSR (не было в игре)", false},
     {"effect_bloom", "Bloom", "Свечение (Bloom)", true},
-    {"skip_intro", "Skip startup intros", "Пропуск заставок при запуске", false},
+    {"skip_intro", "Skip startup intros", "Пропуск заставок при запуске", true},
     {"debug_camera", "Free camera (Cross + L3)", "Свободная камера (Cross + L3)", false},
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
 };

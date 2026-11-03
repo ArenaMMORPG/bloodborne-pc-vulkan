@@ -148,7 +148,7 @@ EFFECTS = [
     ("effect_dynamic_shadows", "Тени от динамических источников", True),
     ("effect_ssr", "Отражения SSR (не было в игре)", False),
     ("effect_bloom", "Свечение (Bloom)", True),
-    ("skip_intro", "Пропуск заставок при запуске", False),
+    ("skip_intro", "Пропуск заставок при запуске", True),
     ("debug_camera", "Свободная камера (Cross + L3 / F + Ctrl)", False),
     ("debug_menu", "Debug menu (левый touchpad / Tab; нужны шрифты)", False),
 ]
@@ -176,9 +176,13 @@ READBACKS = [("Relaxed", "", "По умолчанию"), ("Выключены", 
 PREUPLOAD = [("Обычная", "", "Без лишней видеопамяти"), ("Полная", "2", "Около 3 ГБ видеопамяти сверху"),
              ("Выключена", "0")]
 
+_DEFAULT_GAME_DIR = os.environ.get("BB_GAME_DIR", "") or (
+    str(PORT_DIR / "CUSA03173") if (PORT_DIR / "CUSA03173").is_dir() else str(PORT_DIR.parent / "CUSA03173")
+)
+
 DEFAULTS = {
     "ui_language": "en",
-    "game_dir": "" if PACKAGED else str(PORT_DIR.parent / "CUSA03173"),
+    "game_dir": _DEFAULT_GAME_DIR,
     "user_dir": "",
     "mods_dir": "",
     "mods_enabled": True,
@@ -255,6 +259,9 @@ def load_settings():
         settings.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
     except (OSError, ValueError):
         pass
+    # If BB_GAME_DIR was explicitly provided or a local CUSA03173 sits inside DATA_DIR, prefer it
+    if os.environ.get("BB_GAME_DIR") and Path(os.environ["BB_GAME_DIR"], "eboot.bin").is_file():
+        settings["game_dir"] = os.environ["BB_GAME_DIR"]
     # Addresses saved as the old defaults (shadPS4's public shadNet, which accepts only shadPS4's
     # own builds since 2026-10-12, and The Hunter's Dream) become the new ones.
     for key, old_values in online.OLD_DEFAULTS.items():
@@ -1254,6 +1261,10 @@ class LauncherWindow(Adw.ApplicationWindow):
             "dlss_preset": str(combo_value(self.dlss_preset_row)),
             "anisotropic": str(combo_value(self.aniso_row)),
             "fps_limit": str(int(self.limit_row.get_value())),
+            "language": str(combo_value(self.language_row)),
+            "fullscreen": "1" if self.fullscreen_row.get_active() else "0",
+            "present_mode": str(combo_value(self.present_row)),
+            "skip_network_choice": "1" if self.skip_network_row.get_active() else "0",
             "sharpen": "1" if self.sharpen_row.get_active() else "0",
             "sharpness": f"{self.sharpness_row.get_value():.2f}",
             "object_motion": "1" if self.motion_row.get_active() else "0",
@@ -2042,7 +2053,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 class LauncherApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id="io.github.bbport.Launcher",
-                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
 
     def do_activate(self):
         window = self.get_active_window() or LauncherWindow(self)
