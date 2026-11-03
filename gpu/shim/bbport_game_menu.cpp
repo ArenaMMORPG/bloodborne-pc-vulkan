@@ -1019,11 +1019,13 @@ enum NativeAaMode : int {
 
 enum DisplayUpscalerChoice : int {
     DispUpOff = 0,
-    DispUpDlss4 = 1,
-    DispUpDlss3 = 2,
-    DispUpFsr31 = 3,
-    DispUpFsr4 = 4,
-    DispUpFsr411 = 5,
+    DispUpDlss4 = 1,   // Preset K = 11 (DLSS 4.0 Transformer)
+    DispUpDlss45M = 2, // Preset M = 13 (DLSS 4.5 2nd-Gen Transformer)
+    DispUpDlss45L = 3, // Preset L = 12 (DLSS 4.5 2nd-Gen Transformer Ultra)
+    DispUpDlss3 = 4,   // Preset 0 (Driver Default / Auto)
+    DispUpFsr31 = 5,
+    DispUpFsr4 = 6,
+    DispUpFsr411 = 7,
 };
 
 int disp_aspect = BbSettings::AspectAuto;
@@ -1049,7 +1051,7 @@ void SyncDisplayStateFromSettings() {
     disp_output_idx = MenuOutputIndex(
         disp_aspect, BbSettings::NearestOutput(disp_aspect, BbSettings::UnpackSize(s.output_res.load())));
     const int up = std::clamp(s.upscaler.load(), 0, BbSettings::UpscalerCount - 1);
-    const int dlss_p = s.dlss_preset.load() == 0 ? 0 : 11;
+    const int dlss_p = s.dlss_preset.load();
     const int preset = std::clamp(s.preset.load(), 0, BbSettings::PresetCount - 1);
     const bool fxaa = s.effects[GameAaEffectIdx].load();
 
@@ -1068,7 +1070,10 @@ void SyncDisplayStateFromSettings() {
         }
     } else {
         if (up == BbSettings::UpscalerDlss) {
-            disp_upscaler_choice = dlss_p == 0 ? DispUpDlss3 : DispUpDlss4;
+            disp_upscaler_choice = dlss_p == 13   ? DispUpDlss45M
+                                   : dlss_p == 12 ? DispUpDlss45L
+                                   : dlss_p == 0  ? DispUpDlss3
+                                                  : DispUpDlss4;
         } else if (up == BbSettings::UpscalerFsr4) {
             disp_upscaler_choice = DispUpFsr4;
         } else if (up == BbSettings::UpscalerFsr411) {
@@ -1183,17 +1188,23 @@ void RefreshDisplaySlotTexts(int slot) {
     if (item_idx == 4) {
         SetDynamic(name_id, "Upscaler", "Апскейлер");
         SetDynamic(help_id,
-                   "Super-resolution upscaler (Off = Native 100% with Anti-Aliasing; DLSS 4 / DLSS 3 / FSR 3.1)",
-                   "Апскейлер (Выкл = Нативные 100% со сглаживанием; DLSS 4 / DLSS 3 / FSR 3.1)");
+                   "Super-resolution upscaler (Off = Native 100%; DLSS 4 Preset K / DLSS 4.5 Preset M & L / FSR 3.1)",
+                   "Апскейлер (Выкл = Натив 100%; DLSS 4 Preset K / DLSS 4.5 Preset M и L / FSR 3.1)");
         switch (disp_upscaler_choice) {
         case DispUpOff:
             SetDynamic(val_id, "Off (Native 100%)", "Выкл (Натив 100%)");
             break;
         case DispUpDlss4:
-            SetDynamic(val_id, "DLSS 4 (Transformer)", "DLSS 4 (Трансформер)");
+            SetDynamic(val_id, "DLSS 4 (Preset K)", "DLSS 4 (Preset K)");
+            break;
+        case DispUpDlss45M:
+            SetDynamic(val_id, "DLSS 4.5 (Preset M)", "DLSS 4.5 (Preset M)");
+            break;
+        case DispUpDlss45L:
+            SetDynamic(val_id, "DLSS 4.5 (Preset L)", "DLSS 4.5 (Preset L)");
             break;
         case DispUpDlss3:
-            SetDynamic(val_id, "DLSS 3 (CNN)", "DLSS 3 (CNN)");
+            SetDynamic(val_id, "DLSS (Auto Preset)", "DLSS (Авто пресет)");
             break;
         case DispUpFsr4:
             SetDynamic(val_id, "FSR 4", "FSR 4");
@@ -1413,10 +1424,12 @@ void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
     }
 
     if (item_idx == 4) {
-        // Upscaler (Off / DLSS 4 / DLSS 3 / FSR 3.1; FSR 4 on non-DLSS GPUs)
+        // Upscaler (Off / DLSS 4 Preset K / DLSS 4.5 Preset M / DLSS 4.5 Preset L / FSR 3.1)
         std::vector<DisplayUpscalerChoice> choices = {DispUpOff};
         if (s.dlss_supported.load()) {
             choices.push_back(DispUpDlss4);
+            choices.push_back(DispUpDlss45M);
+            choices.push_back(DispUpDlss45L);
             choices.push_back(DispUpDlss3);
         }
         choices.push_back(DispUpFsr31);
@@ -2101,6 +2114,14 @@ void Poll() {
             case DispUpDlss4:
                 target_upscaler = BbSettings::UpscalerDlss;
                 target_dlss_preset = 11;
+                break;
+            case DispUpDlss45M:
+                target_upscaler = BbSettings::UpscalerDlss;
+                target_dlss_preset = 13;
+                break;
+            case DispUpDlss45L:
+                target_upscaler = BbSettings::UpscalerDlss;
+                target_dlss_preset = 12;
                 break;
             case DispUpDlss3:
                 target_upscaler = BbSettings::UpscalerDlss;

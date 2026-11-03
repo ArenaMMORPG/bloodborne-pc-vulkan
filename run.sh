@@ -103,7 +103,7 @@ fps=${BB_FPS:-uncap}
 # discrete GPUs get them); off when unset. 1080p output and TAA always use the live path.
 # The GPU tools (bb-gpu-capabilities: the game's GPU, its live resolution support).
 if [[ -n ${BB_PROBE:-} ]]; then caps=$(dirname -- "$BB_PROBE")/bb-gpu-capabilities
-elif [[ -n ${BB_PREBUILT:-} ]]; then caps=bin/bb-gpu-capabilities
+elif [[ -n ${BB_PREBUILT:-} && -x bin/bb-gpu-capabilities ]]; then caps=bin/bb-gpu-capabilities
 else caps=out/bb-gpu-capabilities; fi
 if [[ -z ${BB_RENDER_RES:-} ]]; then
     read -r scaled_render scaled_output < <("$PYTHON" scripts/patches.py --print-scaled --settings "$BB_CONFIG") || true
@@ -221,7 +221,9 @@ if [[ -z ${BB_PREBUILT:-} && -d fsr4_shaders ]] && command -v spirv-cross >/dev/
     bash tools/fsr4_optimize.sh || echo 'FSR 4: optimized post passes not built' >&2
 fi
 if [[ -n ${BB_PREBUILT:-} ]]; then
-    probe=${BB_PROBE:-bin/bb-probe}
+    if [[ -n ${BB_PROBE:-} ]]; then probe=$BB_PROBE
+    elif [[ -x bin/bb-probe ]]; then probe=bin/bb-probe
+    else probe=out/bb-probe; fi
 else
     bash build.sh
     probe=${BB_PROBE:-out/bb-probe}  # BB_PROBE: a wrapper (gdb) around it
@@ -238,7 +240,7 @@ if [[ ${BB_ONLINE:-0} == 1 && -f scripts/online.py ]]; then
         unset BB_BBSC
     fi
     if [[ $BB_NET_GEN == 20 && -z ${BB_NET_MODULE:-} ]]; then
-        if [[ -n ${BB_PREBUILT:-} ]]; then BB_NET_MODULE=$PWD/bin/gpu/libbbnet20.so; else BB_NET_MODULE=$PWD/out/gpu/libbbnet20.so; fi
+        if [[ -n ${BB_PREBUILT:-} && -f $PWD/bin/gpu/libbbnet20.so ]]; then BB_NET_MODULE=$PWD/bin/gpu/libbbnet20.so; else BB_NET_MODULE=$PWD/out/gpu/libbbnet20.so; fi
         export BB_NET_MODULE
     fi
     export BB_SHADNET_SERVER=${BB_SHADNET_SERVER:-play.seamlesshunt.com:31313}

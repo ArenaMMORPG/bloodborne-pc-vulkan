@@ -163,7 +163,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "mouse_sensitivity") {
         v.mouse_sensitivity = Clamp(f, 0.05f, 20.0f);
     } else if (key == "dlss_preset") {
-        v.dlss_preset = (i == 0) ? 0 : 11;
+        v.dlss_preset = (i == 0 || (i >= 10 && i <= 13)) ? i : 11;
     } else if (key == "anisotropic") {
         v.anisotropic = (i >= 16) ? 16 : (i >= 8) ? 8 : (i >= 4) ? 4 : 0;
     } else if (key == "fps_limit") {

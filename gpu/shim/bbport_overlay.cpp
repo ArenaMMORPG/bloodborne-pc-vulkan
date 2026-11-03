@@ -1763,7 +1763,10 @@ void FpsCounter() {
         : s.upscaler == BbSettings::UpscalerDlss
             ? (BbSettings::RenderPreset() == BbSettings::NativeAA
                    ? "DLAA 4"
-                   : (s.dlss_preset.load(std::memory_order_relaxed) != 0 ? "DLSS 4" : "DLSS 3"))
+                   : (s.dlss_preset.load(std::memory_order_relaxed) == 13   ? "DLSS 4.5 M"
+                      : s.dlss_preset.load(std::memory_order_relaxed) == 12 ? "DLSS 4.5 L"
+                      : s.dlss_preset.load(std::memory_order_relaxed) != 0  ? "DLSS 4 K"
+                                                                            : "DLSS Auto"))
             : (s.effects[4].load(std::memory_order_relaxed) ? "FXAA" : "Off");
 
     const float now_fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : h.fps;
