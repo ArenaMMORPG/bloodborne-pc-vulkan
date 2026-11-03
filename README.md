@@ -88,7 +88,28 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 
 ## 📊 Verified Performance Benchmarks (`2560x1440` Native, Upscaler: `Off`)
 
-Measured on Linux (`Ryzen 9 7950X 16C/32T`, `NVIDIA RTX 4090`, `2560x1440` Native 1440p, `0` write faults/s):
+> **🖥️ Reference Test System:**
+> - **OS / Kernel:** `CachyOS Linux` (`Linux 7.3.1-1-cachyos`, `x86_64`)
+> - **CPU:** `AMD Ryzen 9 7950X` (`16 Cores / 32 Threads`)
+> - **GPU:** `NVIDIA GeForce RTX 4090` (`24 GB GDDR6X`, Driver `615.78.08`)
+> - **Memory:** `64 GB DDR5 RAM`
+> - **Render Resolution:** `2560×1440` Native (`100%` Render Scale, `Upscaler: Off`, `0` Write Faults/s)
+
+<p align="center">
+  <img src="docs/images/english.png" alt="Central Yharnam Heavy Panorama Benchmark Comparison — bloodborne-pc-vulkan vs bbport" width="860"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/yharnam_vulkan.png" alt="bloodborne-pc-vulkan — 165 FPS, 33% GPU Load (207.3 W), 3,388 MB VRAM, 3 Dispatches" width="860"/>
+  <br/>
+  <em><b>Above:</b> <code>bloodborne-pc-vulkan</code> (C++20 Engine + DirectVk 1.3) — <b>165 FPS</b>, <b>33.0% GPU load (207.3 W, 58°C)</b>, <b>3,388 MB VRAM</b>, <b>4.5 GB RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 ms HW GPU Shaders</b>.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/yharnam_bbport.png" alt="Upstream bbport — 139 FPS, 97% GPU Load (288.8 W), 9,320 MB VRAM, 110 Dispatches" width="860"/>
+  <br/>
+  <em><b>Above:</b> Traditional PS4 / PM4 Translation (<code>bbport</code>) in the exact same spot — <b>139 FPS (bottlenecked)</b>, <b>97% GPU load (288.8 W, 64°C / 76°C Hotspot)</b>, <b>9,320 MB VRAM</b>, <b>8.6 GB RAM</b>, <b>2,304 Draws</b>, <b>110 Dispatches</b>, <b>68 Submits</b>.</em>
+</p>
 
 ### 1. Head-to-Head Same-Scene Comparison (`2560x1440` Native, Locked `170 FPS` Cap — Cathedral Ward)
 
@@ -247,6 +268,29 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 | **Stage B (Запись Vulkan / HW GPU Busy)** | `4.30 ms` (упор в лимит) | **`2.33 ms` (`HW GPU Busy: 2.04 ms`)** | **В `1.85 раза` быстрее!** |
 
 ### 📊 Сравнение на тяжёлой городской панораме (`2560x1440` Native, Центральный Ярнам — `2,304` исходных Draw Calls)
+
+> **🖥️ Тестовый стенд (Reference Hardware Setup):**
+> - **ОС / Ядро:** `CachyOS Linux` (`Linux 7.3.1-1-cachyos`, `x86_64`)
+> - **Процессор (CPU):** `AMD Ryzen 9 7950X` (`16 ядер / 32 потока`)
+> - **Видеокарта (GPU):** `NVIDIA GeForce RTX 4090` (`24 ГБ GDDR6X`, драйвер `615.78.08`)
+> - **Оперативная память (RAM):** `64 ГБ DDR5`
+> - **Разрешение рендера:** честные нативные `2560×1440` (`100%` Render Scale, `Upscaler: Off`, `0` Write Faults/s)
+
+<p align="center">
+  <img src="docs/images/russian.png" alt="Сравнение производительности в Центральном Ярнаме — bloodborne-pc-vulkan против bbport" width="860"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/yharnam_vulkan.png" alt="bloodborne-pc-vulkan — 165 FPS, 33% нагрузка GPU (207.3 Вт), 3,388 МБ VRAM, 3 Dispatches" width="860"/>
+  <br/>
+  <em><b>Сверху:</b> Наш <code>bloodborne-pc-vulkan</code> (C++20 + DirectVk 1.3) — <b>165 FPS</b>, <b>нагрузка GPU 33.0% (207.3 Вт, 58°C)</b>, <b>3,388 МБ VRAM</b>, <b>4.5 ГБ RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 мс шейдеры GPU</b>.</em>
+</p>
+
+<p align="center">
+  <img src="docs/images/yharnam_bbport.png" alt="bbport — 139 FPS, 97% нагрузка GPU (288.8 Вт), 9,320 МБ VRAM, 110 Dispatches" width="860"/>
+  <br/>
+  <em><b>Сверху:</b> Обычная трансляция PS4 / PM4 (<code>bbport</code>) в той же самой точке — <b>просадка до 139 FPS</b>, <b>карта забита на 97% (288.8 Вт, 64°C / Hotspot 76°C)</b>, <b>9,320 МБ VRAM</b>, <b>8.6 ГБ RAM</b>, <b>2,304 Draws</b>, <b>110 Dispatches</b>, <b>68 Submits</b>.</em>
+</p>
 
 | Показатель (Панорама Центрального Ярнама, `2560x1440`) | `bbport` (трансляция PS4 / PM4) | **Наш `bloodborne-pc-vulkan` (C++20 + DirectVk 1.3)** | Разница (наш выигрыш) |
 | :--- | :---: | :---: | :--- |
