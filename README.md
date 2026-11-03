@@ -105,7 +105,24 @@ Measured on Linux (`Ryzen 9 7950X 16C/32T`, `NVIDIA RTX 4090`, `2560x1440` Nativ
 | **Stage A (`GpuComm` / `ConstRing` CPU)** | `2.71 ms` (`ConstRing: 1.30 ms`) | **`1.42 ms` (`ConstRing: 0.20 ms`)** | **`1.9×` faster (`ConstRing` `6.5×` faster)** |
 | **Stage B (`Vulkan Record` / `HW GPU Busy`)** | `4.30 ms` (bottlenecked) | **`2.33 ms` (`HW GPU Busy: 2.04 ms`)** | **`1.85×` faster** |
 
-### 2. Uncapped vs Capped Pipeline Telemetry (`2560x1440` Native, Hunter's Dream / Clinic)
+### 2. Heavy City Panorama Comparison (`2560x1440` Native — Central Yharnam Vista, `2,304` Raw Draws)
+
+| Metric (Central Yharnam Panorama @ `2560x1440` Native) | Upstream `bbport` (PS4 / PM4 Translation) | **`bloodborne-pc-vulkan` (C++20 Engine + DirectVk 1.3)** | Measured Improvement |
+| :--- | :---: | :---: | :--- |
+| **Frame Rate & Frame Time** | `139 FPS` (`7.22 ms`, **bottlenecked**) | **`165 FPS` (`6.05 ms`, `2.10 ms` HW GPU Busy)** | **`+26 FPS` higher while using `-81.5 W` less power** |
+| **RTX 4090 Board Power & Temp** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`58°C`, Hotspot `69°C`)** | **Minus `81.5 W` (`-28.2%`) & `-7°C` Hotspot** |
+| **GPU Utilization (`bb-probe` / Total)** | `85.0%` (`97%` total — **GPU pegged**) | **`33.0%` (`55%` total, `3.79 ms` GPU idle gap)** | **`2.6×` lower GPU load (`2.10 ms` shader time)** |
+| **VRAM Allocated** | `9,320 MB` (`9.32 GB`) | **`3,388 MB` (`3.39 GB`, `100% NatTex`)** | **`2.75×` less VRAM (minus `5.93 GB` VRAM)** |
+| **System RAM (`bb-probe` RSS)** | `8.6 GB` | **`4.5 GB`** | **`1.9×` less RAM (minus `4.1 GB` RAM)** |
+| **CPU Utilization (`Ryzen 9 7950X`)** | `23.9%` (`31%` total, `73 W` PPT) | **`13.9%` (`19%` total, `64 W` PPT)** | **`1.7×` lower CPU load** |
+| **Guest `GnmWait` CPU Stall** | `1.19 ms` | **`0.00 ms`** | **100% eliminated (`0.00 ms` stall)** |
+| **Draw Calls / Frame (`Draws`)** | `2,304` | **`1,574`** | **Minus `730` occluded/redundant draws (`-31.7%`)** |
+| **Compute Dispatches / Frame (`Disp`)** | `110` | **`3`** | **`36.7×` fewer dispatches (`110 → 3`)** |
+| **Vulkan Driver Submits / Frame (`Subm`)** | `68` | **`3.0`** | **`22.7×` fewer queue submits (`68 → 3`)** |
+| **Stage A (`GpuComm` / `ConstRing` CPU)** | `3.62 ms` (`ConstRing: 1.91 ms`) | **`2.31 ms` (`ConstRing: 0.32 ms`)** | **`1.57×` faster (`ConstRing` `6.0×` faster)** |
+| **Stage B (`Vulkan Record` Total)** | `6.48 ms` (`Buffers+Sync: 2.32 ms`) | **`3.52 ms` (`Buffers: 0.76 ms`, `DscSav: 53%`)** | **`1.84×` faster (`Buffers` `3.05×` faster)** |
+
+### 3. Uncapped vs Capped Pipeline Telemetry (`2560x1440` Native, Hunter's Dream / Clinic)
 
 | Metric | Traditional Emulation Baseline | **`bloodborne-pc-vulkan` (Uncapped)** | **`bloodborne-pc-vulkan` (170 FPS Cap)** |
 | :--- | :---: | :---: | :---: |
@@ -228,6 +245,23 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 | **Сабмиты в драйвер Vulkan (`Subm`)** | `73` | **`0.1 – 3.0`** | **В `24 раза` меньше (`73 → 3`)!** |
 | **Stage A (RHI / Команды)** | `2.71 ms` (`ConstRing: 1.30 ms`) | **`1.42 ms` (`ConstRing: 0.20 ms`)** | **В `1.9 раза` быстрее (`ConstRing` в `6.5 раза`)!** |
 | **Stage B (Запись Vulkan / HW GPU Busy)** | `4.30 ms` (упор в лимит) | **`2.33 ms` (`HW GPU Busy: 2.04 ms`)** | **В `1.85 раза` быстрее!** |
+
+### 📊 Сравнение на тяжёлой городской панораме (`2560x1440` Native, Центральный Ярнам — `2,304` исходных Draw Calls)
+
+| Показатель (Панорама Центрального Ярнама, `2560x1440`) | `bbport` (трансляция PS4 / PM4) | **Наш `bloodborne-pc-vulkan` (C++20 + DirectVk 1.3)** | Разница (наш выигрыш) |
+| :--- | :---: | :---: | :--- |
+| **Кадровая частота (FPS)** | `139 FPS` (`7.22 ms` — **упор в потолок!**) | **`165 FPS` (`6.05 ms`, шейдеры GPU: всего `2.10 ms`)** | **`+26 FPS` выше при меньшем на `81.5 Вт` потреблении!** |
+| **Потребление и нагрев RTX 4090** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`58°C`, Hotspot `69°C`)** | **Минус `81.5 Вт` (`-28.2%`) и `-7°C` Hotspot!** |
+| **Загрузка GPU (`bb-probe` / Общая)** | `85.0%` (`97%` — **карта забита в упор**) | **`33.0%` (`55%` общая, `3.79 ms` запаса GPU)** | **В `2.6 раза` ниже нагрузка на GPU!** |
+| **Потребление VRAM** | `9,320 MB` (`9.32 ГБ`) | **`3,388 MB` (`3.39 ГБ`, `100% NatTex`)** | **В `2.75 раза` меньше (минус `5.93 ГБ` VRAM)!** |
+| **Оперативная память (`bb-probe` RAM)** | `8.6 GB` | **`4.5 GB`** | **В `1.9 раза` меньше (минус `4.1 ГБ` ОЗУ)!** |
+| **Загрузка процессора (CPU)** | `23.9%` (`31%` общая, `73 W` PPT) | **`13.9%` (`19%` общая, `64 W` PPT)** | **В `1.7 раза` ниже!** |
+| **Простой синхронизации `Guest GnmWait`** | `1.19 ms` | **`0.00 ms`** | **Полностью устранён (`0.00 ms`)!** |
+| **Draw Calls (вызовы отрисовки)** | `2,304` | **`1,574`** | **Минус `730` лишних/закрытых мешей (`-31.7%`)!** |
+| **Compute Dispatches (`Disp`)** | `110` | **`3`** | **В `36.7 раза` меньше (`110 → 3`)!** |
+| **Сабмиты в драйвер Vulkan (`Subm`)** | `68` | **`3.0`** | **В `22.7 раза` меньше (`68 → 3`)!** |
+| **Stage A (RHI / `ConstRing`)** | `3.62 ms` (`ConstRing: 1.91 ms`) | **`2.31 ms` (`ConstRing: 0.32 ms`)** | **В `1.57 раза` быстрее (`ConstRing` в `6.0 раза`)!** |
+| **Stage B (Запись Vulkan)** | `6.48 ms` (`Buffers+Sync: 2.32 ms`) | **`3.52 ms` (`Buffers: 0.76 ms`, `DscSav: 53%`)** | **В `1.84 раза` быстрее (`Buffers` в `3.05 раза`)!** |
 
 ---
 
