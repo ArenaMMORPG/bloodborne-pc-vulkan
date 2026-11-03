@@ -2067,9 +2067,9 @@ void Poll() {
     bool saved = false;
 
     // Apply debounced Display changes (Aspect Ratio, Resolution, Anti-Aliasing, Upscaler, Upscaler Mode)
-    // once the user has rested for 600 ms, so rapidly stepping through choices in the menu is 0 ms.
+    // once the user has rested for 100 ms, so stepping through choices feels instant without double-recreating.
     if (display_heavy_dirty.load(std::memory_order_acquire) &&
-        NowSteadyMs() - display_heavy_dirty_ms.load(std::memory_order_relaxed) >= 600) {
+        NowSteadyMs() - display_heavy_dirty_ms.load(std::memory_order_relaxed) >= 100) {
         display_heavy_dirty.store(false, std::memory_order_release);
         const int aspect = std::clamp(disp_aspect, 0, BbSettings::AspectCount - 1);
         s.output_res = BbSettings::PackSize(MenuOutput(aspect, disp_output_idx));
