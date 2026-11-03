@@ -20,6 +20,7 @@ jobs:
         run: |
           tar -czf bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz \
             play.sh launcher.sh run.sh bin \
+            scripts patches launcher \
             out/bb-probe out/bb-gpu-capabilities \
             out/libbbport_dlss.so out/libnvidia-ngx-dlss.so.310.9.1 \
             out/gpu/libbbgpu.so out/gpu/libbbnet20.so out/gpu/libbbnet.so \

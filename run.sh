@@ -67,7 +67,12 @@ if [[ -z ${PYTHON:-} ]]; then
     fi
 fi
 if [[ -z ${PYTHON:-} ]]; then echo 'Install Python 3 or set PYTHON.' >&2; exit 1; fi
-# BB_GAME_DIR: the game's folder (eboot.bin, sce_module, ...); default next to this directory.
+# BB_GAME_DIR: the game's folder (eboot.bin, sce_module, ...); default in or next to this directory.
+if [[ -z ${BB_GAME_DIR:-} ]]; then
+    for cand in ./CUSA03173 ../CUSA03173 ./CUSA00900 ../CUSA00900 ./CUSA00207 ../CUSA00207 ./CUSA01363 ../CUSA01363; do
+        if [[ -f "$cand/eboot.bin" ]]; then BB_GAME_DIR="$(realpath "$cand")"; break; fi
+    done
+fi
 game=${BB_GAME_DIR:-../CUSA03173}
 if [[ ! -f $game/eboot.bin ]]; then echo "No eboot.bin in $game (set BB_GAME_DIR)." >&2; exit 1; fi
 original_game=$game
