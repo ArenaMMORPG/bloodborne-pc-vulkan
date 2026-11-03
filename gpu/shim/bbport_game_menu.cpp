@@ -56,6 +56,8 @@ constexpr u64 RowInput = 0x1b26b00;
 constexpr u64 ListDraw = 0x1ad06e0;
 /// (page): updates the bottom StatusBar help text for the page's currently selected row.
 constexpr u64 UpdatePageHelpBar = 0x1b1ab20;
+/// (page, input, frame_time): processes Up/Down row navigation on an options page.
+constexpr u64 OptionsPageNavigate = 0x1b1b520;
 /// (page, game_settings): Bloodborne's native System -> Controls page content builder.
 constexpr u64 ControlsContent = 0x1b211a0;
 /// Menu input button check helpers (const u8* input -> bool).
@@ -158,14 +160,15 @@ struct DynamicText {
     char16_t english[DynamicLength]{}, russian[DynamicLength]{};
 };
 constexpr u32 OutputSlots = 12;   ///< BbSettings::OutputList
-constexpr int ControlsSlotCount = 5; ///< 5 dynamic rows below Row 0 ("Section") in Controls
-constexpr int ControlsSectionCount = 4;
+constexpr int ControlsSlotCount = 6; ///< all 6 visible rows in Controls scroll across 20 items
+constexpr int TotalControlsItems = BbSettings::KeyActionCount + 7; ///< 13 keybinds + Mouse Speed + 6 native settings
+constexpr int MaxControlsScroll = TotalControlsItems - ControlsSlotCount;
 std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount> dynamic_texts{};
 constexpr u32 AutoText = DynamicBase;                                       ///< "Auto (21:9)"
 constexpr u32 OutputTexts = DynamicBase + 1;                                ///< the resolutions (OutputSlots)
-constexpr u32 ControlsSlotName = OutputTexts + OutputSlots;                 ///< 5 dynamic row labels in Controls
-constexpr u32 ControlsSlotHelp = ControlsSlotName + ControlsSlotCount;      ///< 5 dynamic row helps in Controls
-constexpr u32 ControlsSlotVal = ControlsSlotHelp + ControlsSlotCount;       ///< 5 dynamic row values in Controls
+constexpr u32 ControlsSlotName = OutputTexts + OutputSlots;                 ///< 6 dynamic row labels in Controls
+constexpr u32 ControlsSlotHelp = ControlsSlotName + ControlsSlotCount;      ///< 6 dynamic row helps in Controls
+constexpr u32 ControlsSlotVal = ControlsSlotHelp + ControlsSlotCount;       ///< 6 dynamic row values in Controls
 
 void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
     const std::u16string text = Utf16(utf8);
@@ -199,8 +202,7 @@ const char16_t* TextOf(u32 id) {
 enum Field : int {
     Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod,
     FirstEffect,
-    ControlsSection = FirstEffect + BbSettings::EffectCount,
-    FirstSlot,
+    FirstSlot = FirstEffect + BbSettings::EffectCount,
     FieldCount = int(FirstSlot) + ControlsSlotCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
@@ -262,7 +264,6 @@ void Fill(const BbSettings::Values& s, int* values) {
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
     }
-    values[ControlsSection] = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         values[FirstSlot + slot] = 0;
     }
@@ -408,18 +409,8 @@ void DefineTexts() {
             help_en.c_str(), help_ru.c_str(), toggle);
     }
 
-    // Unified System -> Controls window: Row 0 switches sections in-place, Rows 1..5 are the
-    // 5 dynamic slots for the selected section.
-    controls_rows.push_back(
-        {ControlsSection,
-         AddText("Section", "Раздел"),
-         AddText("Use Left/Right or Confirm to switch between Combat, Actions, Weapons & Mouse, and Camera",
-                 "Влево/Вправо или ОК: переключение между клавишами Боя, Действий, Оружия и Камерой"),
-         {AddText("Keybinds: Combat (1/4)", "Клавиши: Бой (1/4)"),
-          AddText("Keybinds: Actions (2/4)", "Клавиши: Действия (2/4)"),
-          AddText("Keybinds: Weapons & Mouse (3/4)", "Клавиши: Оружие и мышь (3/4)"),
-          AddText("Camera & Target (4/4)", "Камера и прицел (4/4)")},
-         Kind::Select});
+    // Unified System -> Controls window: all 6 visible rows scroll vertically across all 20 items
+    // (13 Keybinds + Mouse Speed + Controller Vibration + Camera Sensitivity + 4 Camera toggles).
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         controls_rows.push_back(
             {Field(FirstSlot + slot),
@@ -630,7 +621,14 @@ std::atomic<long long> last_capture_step_ms{0};
 u8* active_controls_page = nullptr;
 u8* active_game_settings = nullptr;
 u8* slot_rows[ControlsSlotCount] = {};
-int shown_controls_section = 0;
+int controls_scroll = 0;
+
+int GetSelectedControlsRow() {
+    if (!active_controls_page) return 0;
+    int sel = *reinterpret_cast<int*>(active_controls_page + 0xae8);
+    if (sel < 0) sel = *reinterpret_cast<int*>(active_controls_page + 0xae4);
+    return sel;
+}
 
 long long NowSteadyMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -678,12 +676,9 @@ void PlayMenuClickSound() {
     }
 }
 
-/// Returns keybind action index (0..11) for (section, slot), or -1 if it's a numeric/toggle setting.
-int SlotKeyAction(int section, int slot) {
-    if (section == 0) return slot;      // 0..4: R1, R2, L2, L1, Dodge
-    if (section == 1) return 5 + slot;  // 5..9: Sprint, Heal, UseItem, Interact, LockOn
-    if (section == 2 && slot < 3) return 10 + slot; // 10..11: SwitchRight, SwitchLeft, 12(->11): Gestures
-    return -1;
+/// Returns keybind action index (0..12) for item_idx (0..19), or -1 if it's a slider/toggle setting.
+int ItemKeyAction(int item_idx) {
+    return (item_idx >= 0 && item_idx < BbSettings::KeyActionCount) ? item_idx : -1;
 }
 
 int CurrentMouseSpeedStep() {
@@ -703,13 +698,14 @@ void SetMouseSpeedStep(int step) {
     BbSettings::Save();
 }
 
-void RefreshSlotTexts(int section, int slot) {
+void RefreshSlotTexts(int slot) {
+    const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
     const u32 name_id = ControlsSlotName + u32(slot);
     const u32 help_id = ControlsSlotHelp + u32(slot);
     const u32 val_id = ControlsSlotVal + u32(slot);
 
-    const int k = SlotKeyAction(section, slot);
-    if (k >= 0 && k < BbSettings::KeyActionCount) {
+    const int k = ItemKeyAction(item_idx);
+    if (k >= 0) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
         SetDynamic(help_id, def.help_en, def.help_ru);
@@ -720,63 +716,57 @@ void RefreshSlotTexts(int section, int slot) {
         return;
     }
 
-    if (section == 2 && slot == 3) {
+    if (item_idx == 13) {
         SetDynamic(name_id, "Mouse Speed", "Чувствит. мыши");
         SetDynamic(help_id,
                    "Mouse camera sensitivity (Left/Right): 0 mouse look off, 5 default (1.0x), 10 fast (2.0x)",
                    "Чувствительность камеры мыши (Влево/Вправо): 0 выкл, 5 обычная (1.0x), 10 быстрая (2.0x)");
         const int step = CurrentMouseSpeedStep();
-        if (step == 0) {
-            SetDynamic(val_id, "Off", "Выкл");
-        } else {
-            const std::string txt = fmt::format("{} / 10 ({:.1f}x)", step, step * MouseSensStep);
-            SetDynamic(val_id, txt.c_str(), txt.c_str());
-        }
+        const std::string txt = fmt::format("{}", step);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
         return;
     }
 
-    if (section == 2 && slot == 4) {
+    if (item_idx == 14) {
         SetDynamic(name_id, "Controller Vibration", "Вибрация геймпада");
         SetDynamic(help_id,
                    "Controller vibration strength (Left/Right): 0 off, 10 strongest",
                    "Сила вибрации геймпада (Влево/Вправо): 0 выкл, 10 макс.");
         const int vib = active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
-        if (vib == 0) {
-            SetDynamic(val_id, "Off (0 / 10)", "Выкл (0 / 10)");
-        } else {
-            const std::string txt = fmt::format("{} / 10", vib);
-            SetDynamic(val_id, txt.c_str(), txt.c_str());
-        }
+        const std::string txt = fmt::format("{}", vib);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
         return;
     }
 
-    // Section 3: Camera & Target (Bloodborne's native Controls settings at active_game_settings)
-    if (slot == 0) {
+    if (item_idx == 15) {
+        SetDynamic(name_id, "Camera Sensitivity", "Скорость камеры");
+        SetDynamic(help_id, "Gamepad & lock-on camera rotation speed (Left/Right: 0 .. 10)",
+                   "Скорость вращения камеры (Влево/Вправо: 0 .. 10)");
+        const int sens = active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
+        const std::string txt = fmt::format("{}", sens);
+        SetDynamic(val_id, txt.c_str(), txt.c_str());
+        return;
+    }
+
+    if (item_idx == 16) {
         SetDynamic(name_id, "Camera X-Axis", "Камера по оси X");
         SetDynamic(help_id, "Horizontal camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по горизонтали (Влево/Вправо)");
         const bool inv = active_game_settings && active_game_settings[0x9] != 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
-    } else if (slot == 1) {
+    } else if (item_idx == 17) {
         SetDynamic(name_id, "Camera Y-Axis", "Камера по оси Y");
         SetDynamic(help_id, "Vertical camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по вертикали (Влево/Вправо)");
         const bool inv = active_game_settings && active_game_settings[0xa] != 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
-    } else if (slot == 2) {
-        SetDynamic(name_id, "Camera Sensitivity", "Скорость камеры");
-        SetDynamic(help_id, "Gamepad & lock-on camera rotation speed (Left/Right: 0 .. 10)",
-                   "Скорость вращения камеры (Влево/Вправо: 0 .. 10)");
-        const int sens = active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
-        const std::string txt = fmt::format("{} / 10", sens);
-        SetDynamic(val_id, txt.c_str(), txt.c_str());
-    } else if (slot == 3) {
+    } else if (item_idx == 18) {
         SetDynamic(name_id, "Auto Target Switch", "Автосмена цели");
         SetDynamic(help_id, "Automatically switch lock-on target when current target is defeated",
                    "Автоматическое переключение захвата цели после гибели текущей цели");
         const bool on = active_game_settings && active_game_settings[0x6] != 0;
         SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
-    } else if (slot == 4) {
+    } else if (item_idx == 19) {
         SetDynamic(name_id, "Camera Auto-Adjust", "Автокоррекция камеры");
         SetDynamic(help_id, "Automatically adjust camera when colliding with walls",
                    "Автоматический обход стен при движении камеры");
@@ -785,14 +775,14 @@ void RefreshSlotTexts(int section, int slot) {
     }
 }
 
-int GetSlotSliderValue(int section, int slot) {
-    if (section == 2 && slot == 3) {
+int GetItemSliderValue(int item_idx) {
+    if (item_idx == 13) {
         return CurrentMouseSpeedStep();
     }
-    if (section == 2 && slot == 4) {
+    if (item_idx == 14) {
         return active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
     }
-    if (section == 3 && slot == 2) {
+    if (item_idx == 15) {
         return active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
     }
     return -1;
@@ -821,27 +811,33 @@ void DestroyMovieClip(u8* mc) {
     *reinterpret_cast<u32*>(mc + 0x48) = 0;
 }
 
-void SyncSlotSliderWidget(u8* row, int section, int slot) {
+void SyncSlotSliderWidget(u8* row, int slot, bool is_focused) {
     if (!row || !active_controls_page) return;
     using GetSubFn = void (PS4_SYSV_ABI*)(void*, const void*, const char*, ...);
     auto get_sub = Game<GetSubFn>(GetSubMovieClip);
 
+    const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
     alignas(16) u8 item_mc[0x60] = {};
     alignas(16) u8 slider_mc[0x60] = {};
-    get_sub(item_mc, active_controls_page + 0xdf0, "Item_%d_0", 1 + slot);
+    get_sub(item_mc, active_controls_page + 0xdf0, "Item_%d_0", slot);
     get_sub(slider_mc, item_mc, "Widgets/Slider");
 
-    const int slider_val = GetSlotSliderValue(section, slot);
+    const int slider_val = GetItemSliderValue(item_idx);
     if (slider_val >= 0) {
         SetMovieClipVisible(row + 0x10, 0);
         SetMovieClipVisible(slider_mc, 1);
+
+        alignas(16) u8 cursor_mc[0x60] = {};
+        get_sub(cursor_mc, slider_mc, "Cursor");
+        SetMovieClipVisible(cursor_mc, is_focused ? 1 : 0);
+        DestroyMovieClip(cursor_mc);
 
         alignas(16) u8 left_mc[0x60] = {};
         alignas(16) u8 right_mc[0x60] = {};
         get_sub(left_mc, slider_mc, "LeftArrow");
         get_sub(right_mc, slider_mc, "RightArrow");
-        SetMovieClipVisible(left_mc, 0);
-        SetMovieClipVisible(right_mc, 0);
+        SetMovieClipVisible(left_mc, (is_focused && slider_val > 0) ? 1 : 0);
+        SetMovieClipVisible(right_mc, (is_focused && slider_val < 10) ? 1 : 0);
         DestroyMovieClip(right_mc);
         DestroyMovieClip(left_mc);
 
@@ -884,6 +880,11 @@ void SyncSlotSliderWidget(u8* row, int section, int slot) {
     } else {
         SetMovieClipVisible(slider_mc, 0);
         SetMovieClipVisible(row + 0x10, 1);
+
+        alignas(16) u8 cursor_mc[0x60] = {};
+        get_sub(cursor_mc, row + 0x10, "Cursor");
+        SetMovieClipVisible(cursor_mc, is_focused ? 1 : 0);
+        DestroyMovieClip(cursor_mc);
     }
 
     DestroyMovieClip(slider_mc);
@@ -899,20 +900,21 @@ void UpdateSlotRowDisplay(u8* row, int slot) {
         *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(ControlsSlotVal + u32(slot));
     }
     Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
-    SyncSlotSliderWidget(row, shown_controls_section, slot);
+    const int sel = GetSelectedControlsRow();
+    SyncSlotSliderWidget(row, slot, slot == sel);
 }
 
 void RefreshControlsPage() {
-    shown_controls_section = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
+    controls_scroll = std::clamp(controls_scroll, 0, MaxControlsScroll);
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
-        RefreshSlotTexts(shown_controls_section, slot);
+        RefreshSlotTexts(slot);
     }
     if (active_controls_page) {
         u8* const rows_begin = *reinterpret_cast<u8**>(active_controls_page + 0xe58);
         u8* const rows_end = *reinterpret_cast<u8**>(active_controls_page + 0xe60);
-        if (rows_begin && rows_end && rows_end - rows_begin >= (1 + ControlsSlotCount) * 0x90) {
+        if (rows_begin && rows_end && rows_end - rows_begin >= ControlsSlotCount * 0x90) {
             for (int slot = 0; slot < ControlsSlotCount; ++slot) {
-                u8* const entry = rows_begin + (1 + slot) * 0x90;
+                u8* const entry = rows_begin + slot * 0x90;
                 *reinterpret_cast<const char16_t**>(entry + 0x00) = TextOf(ControlsSlotName + u32(slot));
                 *reinterpret_cast<const char16_t**>(entry + 0x40) = TextOf(ControlsSlotHelp + u32(slot));
                 u8* const widget = *reinterpret_cast<u8**>(entry + 0x80);
@@ -929,32 +931,31 @@ void RefreshControlsPage() {
     }
 }
 
-void StepSlotSetting(u8* row, int section, int slot, int delta, bool wrap) {
-    if (section == 2 && slot == 3) {
+void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
+    const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
+    if (item_idx == 13) {
         int step = CurrentMouseSpeedStep() + delta;
         step = wrap ? (step + MouseSensSteps) % MouseSensSteps : std::clamp(step, 0, MouseSensSteps - 1);
         SetMouseSpeedStep(step);
-    } else if (section == 2 && slot == 4 && active_game_settings) {
+    } else if (item_idx == 14 && active_game_settings) {
         int vib = int(active_game_settings[0x8]) + delta;
         vib = wrap ? (vib + 11) % 11 : std::clamp(vib, 0, 10);
         active_game_settings[0x8] = u8(vib);
-    } else if (section == 3 && active_game_settings) {
-        if (slot == 0) {
-            active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
-        } else if (slot == 1) {
-            active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
-        } else if (slot == 2) {
-            int sens = int(active_game_settings[0xb]) + delta;
-            sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
-            active_game_settings[0xb] = u8(sens);
-        } else if (slot == 3) {
-            active_game_settings[0x6] = active_game_settings[0x6] ? 0 : 1;
-        } else if (slot == 4) {
-            active_game_settings[0x7] = active_game_settings[0x7] ? 0 : 1;
-        }
+    } else if (item_idx == 15 && active_game_settings) {
+        int sens = int(active_game_settings[0xb]) + delta;
+        sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
+        active_game_settings[0xb] = u8(sens);
+    } else if (item_idx == 16 && active_game_settings) {
+        active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
+    } else if (item_idx == 17 && active_game_settings) {
+        active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
+    } else if (item_idx == 18 && active_game_settings) {
+        active_game_settings[0x6] = active_game_settings[0x6] ? 0 : 1;
+    } else if (item_idx == 19 && active_game_settings) {
+        active_game_settings[0x7] = active_game_settings[0x7] ? 0 : 1;
     }
     PlayMenuClickSound();
-    RefreshSlotTexts(section, slot);
+    RefreshSlotTexts(slot);
     UpdateSlotRowDisplay(row, slot);
 }
 
@@ -971,7 +972,7 @@ void StepKeyCapture(u8* row, int slot, int k) {
     }
     if (capture_phase == CapturePhase::WaitEscapeRelease) {
         if (!escape_down && down.empty()) {
-            RefreshSlotTexts(shown_controls_section, slot);
+            RefreshSlotTexts(slot);
             UpdateSlotRowDisplay(row, slot);
             capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
             capturing_action.store(-1, std::memory_order_relaxed);
@@ -1012,7 +1013,7 @@ void StepKeyCapture(u8* row, int slot, int k) {
         }
         BbSettings::SetKeyBinding(k, new_binding);
         BbSettings::Save();
-        RefreshSlotTexts(shown_controls_section, slot);
+        RefreshSlotTexts(slot);
         UpdateSlotRowDisplay(row, slot);
         PlayMenuClickSound();
         capture_cooldown_ms.store(NowSteadyMs() + 200, std::memory_order_relaxed);
@@ -1027,23 +1028,72 @@ ControlsContentFn controls_content_original = nullptr;
 void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
     active_controls_page = static_cast<u8*>(page);
     active_game_settings = game_settings;
+    controls_scroll = 0;
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         slot_rows[slot] = nullptr;
     }
     LoadValues();
-    shown_controls_section = std::clamp(values[ControlsSection], 0, ControlsSectionCount - 1);
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
-        RefreshSlotTexts(shown_controls_section, slot);
+        RefreshSlotTexts(slot);
     }
     AddRows(page, controls_rows);
     u8* const rows_begin = *reinterpret_cast<u8**>(active_controls_page + 0xe58);
     u8* const rows_end = *reinterpret_cast<u8**>(active_controls_page + 0xe60);
-    if (rows_begin && rows_end && rows_end - rows_begin >= (1 + ControlsSlotCount) * 0x90) {
+    if (rows_begin && rows_end && rows_end - rows_begin >= ControlsSlotCount * 0x90) {
         for (int slot = 0; slot < ControlsSlotCount; ++slot) {
-            slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + (1 + slot) * 0x90 + 0x80);
-            SyncSlotSliderWidget(slot_rows[slot], shown_controls_section, slot);
+            slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + slot * 0x90 + 0x80);
+            SyncSlotSliderWidget(slot_rows[slot], slot, slot == 0);
         }
     }
+}
+
+using OptionsPageNavigateFn = void (PS4_SYSV_ABI*)(u8*, u8*, float);
+OptionsPageNavigateFn options_page_navigate_original = nullptr;
+
+void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
+    if (page == active_controls_page) {
+        if (capturing_action.load(std::memory_order_relaxed) >= 0) {
+            return;
+        }
+        const int old_sel = GetSelectedControlsRow();
+        options_page_navigate_original(page, input, frame_time);
+        int new_sel = GetSelectedControlsRow();
+        if (new_sel != old_sel) {
+            if (old_sel == ControlsSlotCount - 1 && new_sel == ControlsSlotCount &&
+                controls_scroll < MaxControlsScroll) {
+                ++controls_scroll;
+                *reinterpret_cast<int*>(page + 0xae8) = -1;
+                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, u32(ControlsSlotCount - 1));
+                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
+                RefreshControlsPage();
+                return;
+            }
+            if (old_sel == 0 && new_sel == ControlsSlotCount && controls_scroll > 0) {
+                --controls_scroll;
+                *reinterpret_cast<int*>(page + 0xae8) = -1;
+                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(page + 0xa70, 0);
+                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(page + 0xa70);
+                RefreshControlsPage();
+                return;
+            }
+            if (old_sel == ControlsSlotCount && new_sel == ControlsSlotCount - 1 &&
+                controls_scroll != MaxControlsScroll) {
+                controls_scroll = MaxControlsScroll;
+                RefreshControlsPage();
+                return;
+            }
+            if (old_sel == ControlsSlotCount && new_sel == 0 && controls_scroll != 0) {
+                controls_scroll = 0;
+                RefreshControlsPage();
+                return;
+            }
+            for (int slot = 0; slot < ControlsSlotCount; ++slot) {
+                SyncSlotSliderWidget(slot_rows[slot], slot, slot == new_sel);
+            }
+        }
+        return;
+    }
+    options_page_navigate_original(page, input, frame_time);
 }
 
 using RowInputFn = u64 (PS4_SYSV_ABI*)(u8*, u64, u64, u64, u64, u64, double);
@@ -1054,31 +1104,6 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
     // The game asks the open page's rows: the resolution row is alive while it does.
     if (val_ptr == &values[OutputRes]) {
         RefreshOutputRow(row);
-    }
-    if (val_ptr == &values[ControlsSection]) {
-        const u8 in = u8(a1);
-        if (row[0x3c0] == 0 && in != 0) {
-            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
-            if (left || right) {
-                const int dir = left ? -1 : 1;
-                values[ControlsSection] =
-                    (values[ControlsSection] + ControlsSectionCount + dir) % ControlsSectionCount;
-                applied[ControlsSection] = values[ControlsSection];
-                Game<int (PS4_SYSV_ABI*)(void*, u32)>(ListSelect)(row + RowList, u32(values[ControlsSection]));
-                Game<void (PS4_SYSV_ABI*)(void*)>(ListShow)(row + RowList);
-                Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
-                PlayMenuClickSound();
-                RefreshControlsPage();
-                return 0;
-            }
-        }
-        const u64 res = row_input_original(row, a1, a2, a3, a4, a5, frame_time);
-        if (values[ControlsSection] != shown_controls_section) {
-            applied[ControlsSection] = values[ControlsSection];
-            RefreshControlsPage();
-        }
-        return res;
     }
     if (val_ptr >= &values[FirstSlot] && val_ptr < &values[int(FirstSlot) + ControlsSlotCount]) {
         const int slot = int(val_ptr - &values[FirstSlot]);
@@ -1103,7 +1128,8 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             RefreshControlsPage();
         }
-        const int k = SlotKeyAction(shown_controls_section, slot);
+        const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
+        const int k = ItemKeyAction(item_idx);
         if (k >= 0) {
             const int active_k = capturing_action.load(std::memory_order_relaxed);
             if (active_k == k && capturing_slot == slot) {
@@ -1133,7 +1159,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
             const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
             if (left || right || confirm) {
-                StepSlotSetting(row, shown_controls_section, slot, left ? -1 : 1, confirm);
+                StepSlotSetting(row, slot, left ? -1 : 1, confirm);
             }
         }
         return 0;
@@ -1337,7 +1363,6 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         default_values[FirstEffect + e] = BbSettings::Effects[e].default_on;
     }
-    default_values[ControlsSection] = 0;
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         default_values[FirstSlot + slot] = 1; // 1 triggers default reset when "Defaults" is clicked
     }
@@ -1354,6 +1379,9 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
         Detour(image, ControlsContent, AddPageItemPrologue, sizeof(AddPageItemPrologue),
                reinterpret_cast<void*>(&ControlsContentHook),
                reinterpret_cast<void**>(&controls_content_original), cursor) &&
+        Detour(image, OptionsPageNavigate, AddPageItemPrologue, sizeof(AddPageItemPrologue),
+               reinterpret_cast<void*>(&OptionsPageNavigateHook),
+               reinterpret_cast<void**>(&options_page_navigate_original), cursor) &&
         Detour(image, RowInput, RowInputPrologue, sizeof(RowInputPrologue),
                reinterpret_cast<void*>(&RowInputHook), reinterpret_cast<void**>(&row_input_original), cursor);
     mprotect(stubs, page, PROT_READ | PROT_EXEC);
