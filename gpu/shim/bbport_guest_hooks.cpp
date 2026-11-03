@@ -314,6 +314,12 @@ extern "C" int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
 
 void ApplyHotEffects(bool force, u64 fresh = 0) {
     auto& settings = BbSettings::Get();
+    // Live Model Detail (LOD) bias: 0x216fc09 reads int32_t at ImageBase + 0x5987d20 (-2..2).
+    if (runtime_memory_is_mapped(ImageBase + 0x5987d20, sizeof(std::int32_t))) {
+        const std::int32_t want_lod = std::clamp(settings.model_lod.load(std::memory_order_relaxed), -2, 2);
+        auto* lod_ptr = reinterpret_cast<std::int32_t*>(ImageBase + 0x5987d20);
+        __atomic_store_n(lod_ptr, want_lod, __ATOMIC_RELAXED);
+    }
     // V5.1: Chromatic Aberration (0x229e990 + 0x21d5f80), DoF (0x21d5f80), and Bloom (0x21d5f80)
     // read BbSettings::Get().effects[...] natively in C++20 without mid-function binary patching.
     if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {

@@ -1257,8 +1257,8 @@ void RefreshDisplaySlotTexts(int slot) {
 
     if (item_idx == 8) {
         SetDynamic(name_id, "Model Detail (LOD)", "Детализация моделей");
-        SetDynamic(help_id, "Level of detail distance for 3D models and geometry (after a restart)",
-                   "Дальность максимальной детализации 3D-моделей (после перезапуска)");
+        SetDynamic(help_id, "Level of detail distance for 3D models and geometry (Left/Right, instant)",
+                   "Дальность максимальной детализации 3D-моделей (Влево/Вправо, мгновенно)");
         const int lod = s.model_lod.load();
         if (lod <= -2) {
             SetDynamic(val_id, "Highest", "Максимальная");
@@ -1494,6 +1494,7 @@ void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
         s.model_lod = LodValues[idx];
         values[ModelLod] = idx;
         applied[ModelLod] = idx;
+        BbGuestHooks::ApplyGameEffects();
         BbSettings::Save();
         PlayMenuClickSound();
         RefreshDisplaySlotTexts(slot);

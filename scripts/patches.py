@@ -167,8 +167,9 @@ def effect_patches(settings, env=os.environ):
         if hot and key in HOT_EFFECTS: continue
         name=on if settings[key]=='1' else off
         if name: names.append(name)
-    lod=MODEL_LOD.get(settings.get('model_lod','0'))
-    if lod: names.append(lod)
+    if not hot:
+        lod=MODEL_LOD.get(settings.get('model_lod','0'))
+        if lod: names.append(lod)
     return names
 SCENE_WIDTH=0x02196A6B-EBOOT_BASE
 SCENE_HEIGHT=0x02196A7A-EBOOT_BASE
@@ -215,7 +216,7 @@ def scaled_sizes(settings):
     out=output_size(settings)
     if out==OUTPUT_SIZE or settings.get('upscaler')=='taa': return None
     scale=1.0
-    if settings.get('upscaler','fsr3')!='off':
+    if os.environ.get('BB_FIXED_PRESET_RES')=='1' and settings.get('upscaler','fsr3')!='off':
         preset=int(settings.get('preset','0') or 0)
         scale=PRESET_SCALES[max(0,min(preset,len(PRESET_SCALES)-1))]
     render=tuple(max(2,round(v/scale/2)*2) for v in out)
