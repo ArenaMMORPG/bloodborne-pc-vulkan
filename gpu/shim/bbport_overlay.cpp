@@ -462,14 +462,20 @@ void Menu() {
             "NVIDIA DLSS Super Resolution (видеокарты RTX; Native AA — это DLAA). Нужны мост DLSS "
             "и библиотека NVIDIA рядом с игрой; без них используется FSR 3.1."));
         const char* dlss_models[] = {
-            BbSettings::MenuText("DLSS 4 (Vision Transformer — Preset K)",
-                                 "DLSS 4 (Vision Transformer — Preset K)"),
-            BbSettings::MenuText("DLSS 3 (CNN — Preset Default)",
-                                 "DLSS 3 (CNN — Классический пресет)")};
-        int dlss_model_idx = s.dlss_preset.load() == 0 ? 1 : 0;
+            BbSettings::MenuText("DLSS 4.5 (2nd-Gen Transformer — Preset M)",
+                                 "DLSS 4.5 (Трансформер 2-го пок. — Preset M)"),
+            BbSettings::MenuText("DLSS 4.5 (2nd-Gen Transformer Ultra — Preset L)",
+                                 "DLSS 4.5 (Трансформер 2-го пок. Ultra — Preset L)"),
+            BbSettings::MenuText("DLSS 4.0 (Vision Transformer — Preset K)",
+                                 "DLSS 4.0 (Vision Transformer — Preset K)"),
+            BbSettings::MenuText("DLSS (Driver Default / Auto Preset)",
+                                 "DLSS (Авто пресет драйвера)")};
+        const int cur_dlss_p = s.dlss_preset.load();
+        int dlss_model_idx = cur_dlss_p == 13 ? 0 : cur_dlss_p == 12 ? 1 : cur_dlss_p == 0 ? 3 : 2;
         if (ImGui::Combo(BbSettings::MenuText("DLSS Model", "Модель DLSS"), &dlss_model_idx,
-                         dlss_models, 2)) {
-            Store(s.dlss_preset, dlss_model_idx == 0 ? 11 : 0, true);
+                         dlss_models, 4)) {
+            const int new_p = dlss_model_idx == 0 ? 13 : dlss_model_idx == 1 ? 12 : dlss_model_idx == 2 ? 11 : 0;
+            Store(s.dlss_preset, new_p, true);
         }
     }
     const auto problem_text = [](const char* text) {
