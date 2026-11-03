@@ -1028,92 +1028,15 @@ enum DisplayUpscalerChoice : int {
 
 int disp_aspect = BbSettings::AspectAuto;
 int disp_output_idx = 0;
-int disp_upscaler = BbSettings::UpscalerFsr3;
-int disp_dlss_preset = 11;
-int disp_preset = BbSettings::Quality;
-bool disp_game_aa = true;
-int last_upscale_preset = BbSettings::Quality;
-int last_native_aa_mode = AaTaa;
+int disp_aa_mode = AaTaa;
+DisplayUpscalerChoice disp_upscaler_choice = DispUpOff;
+int disp_upscale_preset = BbSettings::Quality;
 std::atomic<bool> display_heavy_dirty{false};
 std::atomic<long long> display_heavy_dirty_ms{0};
 
 void MarkDisplayHeavyDirty() {
     display_heavy_dirty_ms.store(NowSteadyMs(), std::memory_order_relaxed);
     display_heavy_dirty.store(true, std::memory_order_release);
-}
-
-DisplayUpscalerChoice CurrentDisplayUpscalerChoice() {
-    if (disp_upscaler == BbSettings::UpscalerOff || disp_upscaler == BbSettings::UpscalerTaa ||
-        disp_preset == BbSettings::NativeAA) {
-        return DispUpOff;
-    }
-    if (disp_upscaler == BbSettings::UpscalerDlss) {
-        return disp_dlss_preset == 0 ? DispUpDlss3 : DispUpDlss4;
-    }
-    if (disp_upscaler == BbSettings::UpscalerFsr4) return DispUpFsr4;
-    if (disp_upscaler == BbSettings::UpscalerFsr411) return DispUpFsr411;
-    return DispUpFsr31;
-}
-
-NativeAaMode CurrentNativeAaMode() {
-    if (disp_upscaler == BbSettings::UpscalerDlss && disp_preset == BbSettings::NativeAA) {
-        return AaDlaa;
-    }
-    if (disp_upscaler == BbSettings::UpscalerTaa ||
-        (disp_upscaler != BbSettings::UpscalerOff && disp_preset == BbSettings::NativeAA)) {
-        return AaTaa;
-    }
-    return disp_game_aa ? AaFxaa : AaOff;
-}
-
-void ApplyNativeAaMode(int mode) {
-    const bool dlss_ok = BbSettings::Get().dlss_supported.load();
-    if (mode == AaDlaa && !dlss_ok) mode = AaTaa;
-    last_native_aa_mode = mode;
-    disp_preset = BbSettings::NativeAA;
-    if (mode == AaOff) {
-        disp_upscaler = BbSettings::UpscalerOff;
-        disp_game_aa = false;
-    } else if (mode == AaFxaa) {
-        disp_upscaler = BbSettings::UpscalerOff;
-        disp_game_aa = true;
-    } else if (mode == AaTaa) {
-        disp_upscaler = BbSettings::UpscalerTaa;
-    } else if (mode == AaDlaa) {
-        disp_upscaler = BbSettings::UpscalerDlss;
-        disp_dlss_preset = 11;
-    }
-}
-
-void ApplyDisplayUpscalerChoice(DisplayUpscalerChoice choice) {
-    if (choice == DispUpOff) {
-        ApplyNativeAaMode(last_native_aa_mode);
-        return;
-    }
-    if (last_upscale_preset < BbSettings::Quality || last_upscale_preset > BbSettings::UltraPerformance) {
-        last_upscale_preset = BbSettings::Quality;
-    }
-    disp_preset = last_upscale_preset;
-    switch (choice) {
-    case DispUpDlss4:
-        disp_upscaler = BbSettings::UpscalerDlss;
-        disp_dlss_preset = 11;
-        break;
-    case DispUpDlss3:
-        disp_upscaler = BbSettings::UpscalerDlss;
-        disp_dlss_preset = 0;
-        break;
-    case DispUpFsr4:
-        disp_upscaler = BbSettings::UpscalerFsr4;
-        break;
-    case DispUpFsr411:
-        disp_upscaler = BbSettings::UpscalerFsr411;
-        break;
-    case DispUpFsr31:
-    default:
-        disp_upscaler = BbSettings::UpscalerFsr3;
-        break;
-    }
 }
 
 void SyncDisplayStateFromSettings() {
@@ -1125,15 +1048,34 @@ void SyncDisplayStateFromSettings() {
     menu_outputs = BbSettings::Outputs(disp_aspect);
     disp_output_idx = MenuOutputIndex(
         disp_aspect, BbSettings::NearestOutput(disp_aspect, BbSettings::UnpackSize(s.output_res.load())));
-    disp_upscaler = std::clamp(s.upscaler.load(), 0, BbSettings::UpscalerCount - 1);
-    disp_dlss_preset = s.dlss_preset.load() == 0 ? 0 : 11;
-    disp_preset = std::clamp(s.preset.load(), 0, BbSettings::PresetCount - 1);
-    disp_game_aa = s.effects[GameAaEffectIdx].load();
-    if (disp_preset >= BbSettings::Quality && disp_preset <= BbSettings::UltraPerformance) {
-        last_upscale_preset = disp_preset;
+    const int up = std::clamp(s.upscaler.load(), 0, BbSettings::UpscalerCount - 1);
+    const int dlss_p = s.dlss_preset.load() == 0 ? 0 : 11;
+    const int preset = std::clamp(s.preset.load(), 0, BbSettings::PresetCount - 1);
+    const bool fxaa = s.effects[GameAaEffectIdx].load();
+
+    if (preset >= BbSettings::Quality && preset <= BbSettings::UltraPerformance) {
+        disp_upscale_preset = preset;
     }
-    if (CurrentDisplayUpscalerChoice() == DispUpOff) {
-        last_native_aa_mode = CurrentNativeAaMode();
+    if (up == BbSettings::UpscalerOff || up == BbSettings::UpscalerTaa || preset == BbSettings::NativeAA) {
+        disp_upscaler_choice = DispUpOff;
+        if (up == BbSettings::UpscalerDlss && preset == BbSettings::NativeAA) {
+            disp_aa_mode = AaDlaa;
+        } else if (up == BbSettings::UpscalerTaa ||
+                   (up != BbSettings::UpscalerOff && preset == BbSettings::NativeAA)) {
+            disp_aa_mode = AaTaa;
+        } else {
+            disp_aa_mode = fxaa ? AaFxaa : AaOff;
+        }
+    } else {
+        if (up == BbSettings::UpscalerDlss) {
+            disp_upscaler_choice = dlss_p == 0 ? DispUpDlss3 : DispUpDlss4;
+        } else if (up == BbSettings::UpscalerFsr4) {
+            disp_upscaler_choice = DispUpFsr4;
+        } else if (up == BbSettings::UpscalerFsr411) {
+            disp_upscaler_choice = DispUpFsr411;
+        } else {
+            disp_upscaler_choice = DispUpFsr31;
+        }
     }
 }
 
@@ -1224,28 +1166,16 @@ void RefreshDisplaySlotTexts(int slot) {
     if (item_idx == 3) {
         SetDynamic(name_id, "Anti-Aliasing", "Сглаживание");
         SetDynamic(help_id,
-                   "Native 100% Anti-Aliasing (Off / FXAA / TAA / DLAA Transformer), or built into active Upscaler",
-                   "Сглаживание в 100% разрешении (Выкл / FXAA / TAA / DLAA Трансформер) или внутри апскейлера");
-        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
-        if (up != DispUpOff) {
-            if (up == DispUpDlss4) {
-                SetDynamic(val_id, "By DLSS 4 (Transformer)", "Встроено в DLSS 4");
-            } else if (up == DispUpDlss3) {
-                SetDynamic(val_id, "By DLSS 3 (CNN)", "Встроено в DLSS 3");
-            } else {
-                SetDynamic(val_id, "By FSR (Temporal)", "Встроено в FSR");
-            }
-            return;
-        }
-        const NativeAaMode aa = CurrentNativeAaMode();
-        if (aa == AaOff) {
+                   "Anti-Aliasing mode when Upscaler is Off (Off / FXAA / TAA / DLAA 4 Transformer)",
+                   "Режим сглаживания (Выкл / FXAA / TAA / DLAA 4 Трансформер)");
+        if (disp_aa_mode == AaOff) {
             SetDynamic(val_id, "Off", "Выкл");
-        } else if (aa == AaFxaa) {
-            SetDynamic(val_id, "FXAA (Game Default)", "FXAA (Родное игры)");
-        } else if (aa == AaTaa) {
-            SetDynamic(val_id, "TAA (Temporal 100%)", "TAA (Временнóе 100%)");
+        } else if (disp_aa_mode == AaFxaa) {
+            SetDynamic(val_id, "FXAA", "FXAA");
+        } else if (disp_aa_mode == AaTaa) {
+            SetDynamic(val_id, "TAA", "TAA");
         } else {
-            SetDynamic(val_id, "DLAA (DLSS 4 Transformer)", "DLAA (DLSS 4 Трансформер)");
+            SetDynamic(val_id, "DLAA (DLSS 4)", "DLAA (DLSS 4)");
         }
         return;
     }
@@ -1253,12 +1183,11 @@ void RefreshDisplaySlotTexts(int slot) {
     if (item_idx == 4) {
         SetDynamic(name_id, "Upscaler", "Апскейлер");
         SetDynamic(help_id,
-                   "Neural / temporal super-resolution upscaler (Left/Right, switches live without restart)",
-                   "Нейросетевой / временнóй апскейлер (Влево/Вправо, переключается сразу без перезапуска)");
-        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
-        switch (up) {
+                   "Super-resolution upscaler (Off = Native 100% with Anti-Aliasing; DLSS 4 / DLSS 3 / FSR 3.1)",
+                   "Апскейлер (Выкл = Нативные 100% со сглаживанием; DLSS 4 / DLSS 3 / FSR 3.1)");
+        switch (disp_upscaler_choice) {
         case DispUpOff:
-            SetDynamic(val_id, "Off (Native 100%)", "Выкл (Нативные 100%)");
+            SetDynamic(val_id, "Off (Native 100%)", "Выкл (Натив 100%)");
             break;
         case DispUpDlss4:
             SetDynamic(val_id, "DLSS 4 (Transformer)", "DLSS 4 (Трансформер)");
@@ -1283,31 +1212,18 @@ void RefreshDisplaySlotTexts(int slot) {
     if (item_idx == 5) {
         SetDynamic(name_id, "Upscaler Mode", "Режим апскейлера");
         SetDynamic(help_id,
-                   "Internal 3D render resolution reconstructed to Output Resolution (Left/Right, applies live)",
-                   "Внутреннее разрешение 3D-рендера перед апскейлом (Влево/Вправо, применяется на лету)");
-        const auto out = MenuOutput(disp_aspect, disp_output_idx);
-        const DisplayUpscalerChoice up = CurrentDisplayUpscalerChoice();
-        if (up == DispUpOff) {
-            const std::string en = fmt::format("Native 100% ({}x{})", out.width, out.height);
-            const std::string ru = fmt::format("Нативные 100% ({}x{})", out.width, out.height);
-            SetDynamic(val_id, en.c_str(), ru.c_str());
-            return;
-        }
-        const int p = std::clamp(disp_preset, int(BbSettings::Quality), int(BbSettings::UltraPerformance));
-        const float scale = BbSettings::PresetScale(p);
-        const int rw = int(std::lround(out.width / scale / 2.0f) * 2);
-        const int rh = int(std::lround(out.height / scale / 2.0f) * 2);
-        const char* p_en = p == BbSettings::Quality          ? "Quality"
-                           : p == BbSettings::Balanced       ? "Balanced"
-                           : p == BbSettings::Performance    ? "Performance"
-                                                             : "Ultra Perf.";
-        const char* p_ru = p == BbSettings::Quality          ? "Качество"
-                           : p == BbSettings::Balanced       ? "Баланс"
-                           : p == BbSettings::Performance    ? "Производит."
-                                                             : "Ультра-произв.";
-        const std::string en = fmt::format("{} ({}x{})", p_en, rw, rh);
-        const std::string ru = fmt::format("{} ({}x{})", p_ru, rw, rh);
-        SetDynamic(val_id, en.c_str(), ru.c_str());
+                   "3D render scale when Upscaler is active: Quality (67%), Balanced (58%), Performance (50%), Ultra Perf. (33%)",
+                   "Масштаб 3D-рендера при включённом апскейлере: Качество (67%), Баланс (58%), Производ. (50%), Ультра (33%)");
+        const int p = std::clamp(disp_upscale_preset, int(BbSettings::Quality), int(BbSettings::UltraPerformance));
+        const char* p_en = p == BbSettings::Quality          ? "Quality (67% Scale)"
+                           : p == BbSettings::Balanced       ? "Balanced (58% Scale)"
+                           : p == BbSettings::Performance    ? "Performance (50% Scale)"
+                                                             : "Ultra Perf. (33% Scale)";
+        const char* p_ru = p == BbSettings::Quality          ? "Качество (67%)"
+                           : p == BbSettings::Balanced       ? "Баланс (58%)"
+                           : p == BbSettings::Performance    ? "Производит. (50%)"
+                                                             : "Ультра-произв. (33%)";
+        SetDynamic(val_id, p_en, p_ru);
         return;
     }
 
@@ -1484,65 +1400,59 @@ void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
         }
         const int n = int(modes.size());
         int cur_idx = 0;
-        const int cur_mode = (CurrentDisplayUpscalerChoice() == DispUpOff)
-                                 ? int(CurrentNativeAaMode())
-                                 : last_native_aa_mode;
         for (int i = 0; i < n; ++i) {
-            if (modes[i] == cur_mode) cur_idx = i;
+            if (modes[i] == disp_aa_mode) cur_idx = i;
         }
-        if (CurrentDisplayUpscalerChoice() == DispUpOff) {
-            cur_idx = (cur_idx + delta + n) % n;
-        }
-        ApplyNativeAaMode(modes[cur_idx]);
+        cur_idx = (cur_idx + delta + n) % n;
+        disp_aa_mode = modes[cur_idx];
         MarkDisplayHeavyDirty();
         PlayMenuClickSound();
-        RefreshDisplayPage();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
         return;
     }
 
     if (item_idx == 4) {
-        // Upscaler (Off / DLSS 4 / DLSS 3 / FSR 3.1 / FSR 4 / FSR 4.1.1)
+        // Upscaler (Off / DLSS 4 / DLSS 3 / FSR 3.1; FSR 4 on non-DLSS GPUs)
         std::vector<DisplayUpscalerChoice> choices = {DispUpOff};
         if (s.dlss_supported.load()) {
             choices.push_back(DispUpDlss4);
             choices.push_back(DispUpDlss3);
         }
         choices.push_back(DispUpFsr31);
-        if (s.fsr4_supported.load()) choices.push_back(DispUpFsr4);
-        if (s.fsr411_supported.load()) choices.push_back(DispUpFsr411);
+        if (!s.dlss_supported.load() || disp_upscaler_choice == DispUpFsr4 || disp_upscaler_choice == DispUpFsr411) {
+            if (s.fsr4_supported.load()) choices.push_back(DispUpFsr4);
+            if (s.fsr411_supported.load()) choices.push_back(DispUpFsr411);
+        }
 
-        const DisplayUpscalerChoice cur = CurrentDisplayUpscalerChoice();
         const int n = int(choices.size());
         int cur_idx = 0;
         for (int i = 0; i < n; ++i) {
-            if (choices[i] == cur) cur_idx = i;
+            if (choices[i] == disp_upscaler_choice) cur_idx = i;
         }
         cur_idx = (cur_idx + delta + n) % n;
-        ApplyDisplayUpscalerChoice(choices[cur_idx]);
+        disp_upscaler_choice = choices[cur_idx];
         MarkDisplayHeavyDirty();
         PlayMenuClickSound();
-        RefreshDisplayPage();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
         return;
     }
 
     if (item_idx == 5) {
-        // Upscaler Mode (Quality / Balanced / Performance / Ultra Performance)
-        if (CurrentDisplayUpscalerChoice() == DispUpOff) {
-            ApplyDisplayUpscalerChoice(s.dlss_supported.load() ? DispUpDlss4 : DispUpFsr31);
-        } else {
-            static constexpr int upscale_presets[] = {
-                BbSettings::Quality, BbSettings::Balanced, BbSettings::Performance, BbSettings::UltraPerformance};
-            int cur_idx = 0;
-            for (int i = 0; i < 4; ++i) {
-                if (upscale_presets[i] == disp_preset) cur_idx = i;
-            }
-            cur_idx = (cur_idx + delta + 4) % 4;
-            disp_preset = upscale_presets[cur_idx];
-            last_upscale_preset = disp_preset;
+        // Upscaler Mode (Quality 67% / Balanced 58% / Performance 50% / Ultra Perf. 33%)
+        static constexpr int upscale_presets[] = {
+            BbSettings::Quality, BbSettings::Balanced, BbSettings::Performance, BbSettings::UltraPerformance};
+        int cur_idx = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (upscale_presets[i] == disp_upscale_preset) cur_idx = i;
         }
+        cur_idx = (cur_idx + delta + 4) % 4;
+        disp_upscale_preset = upscale_presets[cur_idx];
         MarkDisplayHeavyDirty();
         PlayMenuClickSound();
-        RefreshDisplayPage();
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
         return;
     }
 
@@ -1816,12 +1726,9 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             menu_outputs = BbSettings::Outputs(disp_aspect);
             disp_output_idx =
                 MenuOutputIndex(disp_aspect, BbSettings::NearestOutput(disp_aspect, BbSettings::Monitor()));
-            last_upscale_preset = BbSettings::Quality;
-            if (s.dlss_supported.load()) {
-                ApplyNativeAaMode(AaDlaa);
-            } else {
-                ApplyNativeAaMode(AaTaa);
-            }
+            disp_upscaler_choice = DispUpOff;
+            disp_upscale_preset = BbSettings::Quality;
+            disp_aa_mode = s.dlss_supported.load() ? AaDlaa : AaTaa;
             MarkDisplayHeavyDirty();
             s.fps_limit = 0;
             BbFrameRate::SetLimit(0);
@@ -2159,21 +2066,65 @@ void Poll() {
     bool saved = false;
 
     // Apply debounced Display changes (Aspect Ratio, Resolution, Anti-Aliasing, Upscaler, Upscaler Mode)
-    // once the user has rested for 300 ms, so rapidly stepping through choices in the menu is 0 ms.
+    // once the user has rested for 600 ms, so rapidly stepping through choices in the menu is 0 ms.
     if (display_heavy_dirty.load(std::memory_order_acquire) &&
-        NowSteadyMs() - display_heavy_dirty_ms.load(std::memory_order_relaxed) >= 300) {
+        NowSteadyMs() - display_heavy_dirty_ms.load(std::memory_order_relaxed) >= 600) {
         display_heavy_dirty.store(false, std::memory_order_release);
         const int aspect = std::clamp(disp_aspect, 0, BbSettings::AspectCount - 1);
         s.output_res = BbSettings::PackSize(MenuOutput(aspect, disp_output_idx));
         s.aspect = aspect;
-        const int upscaler = std::clamp(disp_upscaler, 0, BbSettings::UpscalerCount - 1);
-        s.upscaler = UpscalerAvailable(upscaler) ? upscaler : int(BbSettings::UpscalerFsr3);
-        s.dlss_preset = disp_dlss_preset;
-        s.preset = std::clamp(disp_preset, 0, BbSettings::PresetCount - 1);
-        s.effects[GameAaEffectIdx] = disp_game_aa;
-        values[FirstEffect + GameAaEffectIdx] = disp_game_aa ? 1 : 0;
-        applied[FirstEffect + GameAaEffectIdx] = disp_game_aa ? 1 : 0;
-        bytes[FirstEffect + GameAaEffectIdx] = u8(disp_game_aa ? 1 : 0);
+
+        int target_upscaler = BbSettings::UpscalerOff;
+        int target_dlss_preset = 11;
+        int target_preset = BbSettings::NativeAA;
+        bool target_fxaa = false;
+
+        if (disp_upscaler_choice == DispUpOff) {
+            target_preset = BbSettings::NativeAA;
+            if (disp_aa_mode == AaOff) {
+                target_upscaler = BbSettings::UpscalerOff;
+                target_fxaa = false;
+            } else if (disp_aa_mode == AaFxaa) {
+                target_upscaler = BbSettings::UpscalerOff;
+                target_fxaa = true;
+            } else if (disp_aa_mode == AaTaa) {
+                target_upscaler = BbSettings::UpscalerTaa;
+            } else {
+                target_upscaler = s.dlss_supported.load() ? BbSettings::UpscalerDlss : BbSettings::UpscalerTaa;
+                target_dlss_preset = 11;
+            }
+        } else {
+            target_preset = std::clamp(disp_upscale_preset, int(BbSettings::Quality), int(BbSettings::UltraPerformance));
+            target_fxaa = (disp_aa_mode == AaFxaa);
+            switch (disp_upscaler_choice) {
+            case DispUpDlss4:
+                target_upscaler = BbSettings::UpscalerDlss;
+                target_dlss_preset = 11;
+                break;
+            case DispUpDlss3:
+                target_upscaler = BbSettings::UpscalerDlss;
+                target_dlss_preset = 0;
+                break;
+            case DispUpFsr4:
+                target_upscaler = BbSettings::UpscalerFsr4;
+                break;
+            case DispUpFsr411:
+                target_upscaler = BbSettings::UpscalerFsr411;
+                break;
+            case DispUpFsr31:
+            default:
+                target_upscaler = BbSettings::UpscalerFsr3;
+                break;
+            }
+        }
+
+        s.upscaler = UpscalerAvailable(target_upscaler) ? target_upscaler : int(BbSettings::UpscalerFsr3);
+        s.dlss_preset = target_dlss_preset;
+        s.preset = target_preset;
+        s.effects[GameAaEffectIdx] = target_fxaa;
+        values[FirstEffect + GameAaEffectIdx] = target_fxaa ? 1 : 0;
+        applied[FirstEffect + GameAaEffectIdx] = target_fxaa ? 1 : 0;
+        bytes[FirstEffect + GameAaEffectIdx] = u8(target_fxaa ? 1 : 0);
         BbGuestHooks::ApplyGameEffects();
         saved = true;
     }
@@ -2191,8 +2142,9 @@ void Poll() {
         if (now_values[FirstEffect + e] != applied[FirstEffect + e]) {
             s.effects[e] = now_values[FirstEffect + e] != 0;
             applied[FirstEffect + e] = now_values[FirstEffect + e];
-            if (e == GameAaEffectIdx) {
-                disp_game_aa = s.effects[e].load();
+            if (e == GameAaEffectIdx && disp_upscaler_choice == DispUpOff &&
+                (disp_aa_mode == AaOff || disp_aa_mode == AaFxaa)) {
+                disp_aa_mode = s.effects[e].load() ? AaFxaa : AaOff;
             }
             effects_changed = true;
         }

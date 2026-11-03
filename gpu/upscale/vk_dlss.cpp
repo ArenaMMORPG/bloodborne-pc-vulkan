@@ -292,9 +292,14 @@ bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
         return false;
     }
     impl->feature.reset();
-    BbDlssFeature feature{desc.input_width,   desc.input_height, desc.output_width,
-                          desc.output_height, desc.quality,      desc.preset,
-                          0,                  desc.hdr ? 1 : 0};
+    BbDlssFeature feature{desc.input_width,
+                          desc.input_height,
+                          desc.output_width,
+                          desc.output_height,
+                          desc.quality,
+                          0,
+                          static_cast<uint32_t>(std::max(0, desc.preset)),
+                          desc.hdr ? 1 : 0};
     if (!impl->api->CreateFeature(command, &feature)) {
         if (desc.preset != 0) {
             feature.preset = 0;
