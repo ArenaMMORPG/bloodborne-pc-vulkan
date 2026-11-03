@@ -64,6 +64,12 @@ constexpr u64 IsLeftPressed = 0x1ae0890;
 constexpr u64 IsRightPressed = 0x1ae0970;
 /// (row): the row shows its value's text (looked up again).
 constexpr u64 RowShowValue = 0x1b2b7c0;
+/// (out_mc 0x60 bytes, parent_mc 0x60 bytes, fmt, ...): looks up a Scaleform child MovieClip.
+constexpr u64 GetSubMovieClip = 0x1adb220;
+/// (mc + 0x8, int value): formats an integer into a Scaleform TextField MovieClip.
+constexpr u64 SetMovieClipIntText = 0x1ad9e90;
+/// Base MovieClipWrapper vtable (+0x10) used when destroying a temporary 0x60-byte MovieClipWrapper.
+constexpr u64 MovieClipBaseVtable = 0x539a070;
 /// (row + RowList, count): the list widget's number of values.
 constexpr u64 ListSetCount = 0x1acf2c0;
 /// (row + RowList, index): the list widget moves to a value; (row + RowList): shows where it is.
@@ -779,6 +785,111 @@ void RefreshSlotTexts(int section, int slot) {
     }
 }
 
+int GetSlotSliderValue(int section, int slot) {
+    if (section == 2 && slot == 3) {
+        return CurrentMouseSpeedStep();
+    }
+    if (section == 2 && slot == 4) {
+        return active_game_settings ? std::clamp(int(active_game_settings[0x8]), 0, 10) : 10;
+    }
+    if (section == 3 && slot == 2) {
+        return active_game_settings ? std::clamp(int(active_game_settings[0xb]), 0, 10) : 5;
+    }
+    return -1;
+}
+
+void SetMovieClipVisible(u8* mc, int visible) {
+    const u64 vtbl = *reinterpret_cast<u64*>(mc);
+    if (!vtbl) return;
+    auto fn = *reinterpret_cast<void (PS4_SYSV_ABI**)(void*, int)>(vtbl + 0x8);
+    if (fn) fn(mc, visible);
+}
+
+void DestroyMovieClip(u8* mc) {
+    *reinterpret_cast<u64*>(mc) = image_base + MovieClipBaseVtable;
+    const u32 flags = *reinterpret_cast<u32*>(mc + 0x48);
+    if (flags & 0x40) {
+        void* mgr = *reinterpret_cast<void**>(mc + 0x40);
+        const u64 val = *reinterpret_cast<u64*>(mc + 0x50);
+        if (mgr) {
+            const u64 vtbl = *reinterpret_cast<u64*>(mgr);
+            auto rel = *reinterpret_cast<void (PS4_SYSV_ABI**)(void*, void*, u64)>(vtbl + 0x18);
+            rel(mgr, mc + 0x30, val);
+        }
+        *reinterpret_cast<u64*>(mc + 0x40) = 0;
+    }
+    *reinterpret_cast<u32*>(mc + 0x48) = 0;
+}
+
+void SyncSlotSliderWidget(u8* row, int section, int slot) {
+    if (!row || !active_controls_page) return;
+    using GetSubFn = void (PS4_SYSV_ABI*)(void*, const void*, const char*, ...);
+    auto get_sub = Game<GetSubFn>(GetSubMovieClip);
+
+    alignas(16) u8 item_mc[0x60] = {};
+    alignas(16) u8 slider_mc[0x60] = {};
+    get_sub(item_mc, active_controls_page + 0xdf0, "Item_%d_0", 1 + slot);
+    get_sub(slider_mc, item_mc, "Widgets/Slider");
+
+    const int slider_val = GetSlotSliderValue(section, slot);
+    if (slider_val >= 0) {
+        SetMovieClipVisible(row + 0x10, 0);
+        SetMovieClipVisible(slider_mc, 1);
+
+        alignas(16) u8 left_mc[0x60] = {};
+        alignas(16) u8 right_mc[0x60] = {};
+        get_sub(left_mc, slider_mc, "LeftArrow");
+        get_sub(right_mc, slider_mc, "RightArrow");
+        SetMovieClipVisible(left_mc, 0);
+        SetMovieClipVisible(right_mc, 0);
+        DestroyMovieClip(right_mc);
+        DestroyMovieClip(left_mc);
+
+        alignas(16) u8 text_mc[0x60] = {};
+        get_sub(text_mc, slider_mc, "Text_0");
+        Game<void (PS4_SYSV_ABI*)(void*, int)>(SetMovieClipIntText)(text_mc + 0x8, slider_val);
+        DestroyMovieClip(text_mc);
+
+        alignas(16) u8 bar_mc[0x60] = {};
+        get_sub(bar_mc, slider_mc, "Bar");
+        void* bar_inner = *reinterpret_cast<void**>(bar_mc + 0x18);
+        if (bar_inner) {
+            alignas(16) u8 gfval[0x30] = {};
+            auto get_val = **reinterpret_cast<void (PS4_SYSV_ABI***)(void*, void*)>(bar_inner);
+            get_val(gfval, bar_inner);
+            const u32 flags = *reinterpret_cast<u32*>(gfval + 0x20);
+            if (flags & 0x8f) {
+                void* mgr = *reinterpret_cast<void**>(gfval + 0x18);
+                const u64 obj = *reinterpret_cast<u64*>(gfval + 0x28);
+                if (mgr) {
+                    const u64 vtbl = *reinterpret_cast<u64*>(mgr);
+                    auto goto_and_stop =
+                        *reinterpret_cast<void (PS4_SYSV_ABI**)(void*, u64, u64, u32)>(vtbl + 0x158);
+                    goto_and_stop(mgr, obj, u64(1 + std::clamp(slider_val, 0, 10) * 10), 1);
+                }
+            }
+            const u32 flags_after = *reinterpret_cast<u32*>(gfval + 0x20);
+            if (flags_after & 0x40) {
+                void* mgr = *reinterpret_cast<void**>(gfval + 0x18);
+                const u64 obj = *reinterpret_cast<u64*>(gfval + 0x28);
+                if (mgr) {
+                    const u64 vtbl = *reinterpret_cast<u64*>(mgr);
+                    auto rel = *reinterpret_cast<void (PS4_SYSV_ABI**)(void*, void*, u64)>(vtbl + 0x18);
+                    rel(mgr, gfval + 0x08, obj);
+                }
+                *reinterpret_cast<u64*>(gfval + 0x18) = 0;
+            }
+        }
+        DestroyMovieClip(bar_mc);
+    } else {
+        SetMovieClipVisible(slider_mc, 0);
+        SetMovieClipVisible(row + 0x10, 1);
+    }
+
+    DestroyMovieClip(slider_mc);
+    DestroyMovieClip(item_mc);
+}
+
 void UpdateSlotRowDisplay(u8* row, int slot) {
     if (!row) return;
     u8* items = row + RowValues;
@@ -788,6 +899,7 @@ void UpdateSlotRowDisplay(u8* row, int slot) {
         *reinterpret_cast<const char16_t**>(items + i * ValueSize + 8) = TextOf(ControlsSlotVal + u32(slot));
     }
     Game<void (PS4_SYSV_ABI*)(void*)>(RowShowValue)(row);
+    SyncSlotSliderWidget(row, shown_controls_section, slot);
 }
 
 void RefreshControlsPage() {
@@ -929,6 +1041,7 @@ void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
     if (rows_begin && rows_end && rows_end - rows_begin >= (1 + ControlsSlotCount) * 0x90) {
         for (int slot = 0; slot < ControlsSlotCount; ++slot) {
             slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + (1 + slot) * 0x90 + 0x80);
+            SyncSlotSliderWidget(slot_rows[slot], shown_controls_section, slot);
         }
     }
 }
