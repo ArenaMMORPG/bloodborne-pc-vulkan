@@ -689,7 +689,8 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             if (pYebisState[0x3200] == 0) {
                 uint32_t v0 = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
                 uint32_t v4 = *reinterpret_cast<uint32_t*>(evalBuf + 0x04);
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x220) = (v0 != 0 && v4 == 0) ? 1u : 0u;
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x220) =
+                    (gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectGameAa) && v0 != 0 && v4 == 0) ? 1u : 0u;
             }
 
             if (gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectMotionBlur)) {
@@ -799,7 +800,7 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
         *reinterpret_cast<uint32_t*>(passCtx + 0x11c) = 0;
 
         uint8_t bHasPassA = 0;
-        if (viewBytes[0x296a] != 0) {
+        if (gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectGameAa)) {
             float wA = *reinterpret_cast<float*>(viewBytes + 0x2b64);
             uint8_t* pAA = static_cast<uint8_t*>(sub_21e14c0(*reinterpret_cast<void**>(selfBytes + 0x5998), viewBytes + 0x2ab0));
             uint8_t* pAB = static_cast<uint8_t*>(sub_21e14c0(*reinterpret_cast<void**>(selfBytes + 0x5998), viewBytes + 0x2b18));
