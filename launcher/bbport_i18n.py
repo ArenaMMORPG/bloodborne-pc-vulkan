@@ -474,6 +474,18 @@ EN = {
     "Игра и язык": "Game and Language",
     "Папки игры и сохранений, язык интерфейса и параметры запуска":
         "Game and save folders, interface language, and launch behavior",
+    "FastSync / Mailbox (По умолчанию)": "FastSync / Mailbox (Default)",
+    "Без разрывов картинки (tearing) и без зажима FPS под герцовку монитора — лучший выбор":
+        "No screen tearing and no FPS cap lock — best for G-Sync and high-Hz monitors",
+    "VSync Вкл. (FIFO)": "VSync On (FIFO)",
+    "Классическая вертикальная синхронизация: жёстко привязывает FPS к частоте монитора":
+        "Classic vertical sync: locks frame rate to your monitor's refresh rate",
+    "Адаптивный VSync (FIFO Relaxed)": "Adaptive VSync (FIFO Relaxed)",
+    "Синхронизирует кадры на полной частоте монитора, но отключает ожидание при просадках FPS":
+        "Syncs at full refresh rate, but drops VSync wait if FPS dips below monitor Hz",
+    "VSync Выкл. (Immediate)": "VSync Off (Immediate)",
+    "Вывод кадров напрямую без ожидания: минимальная задержка ввода, но возможны разрывы (tearing)":
+        "Direct frame presentation: lowest input lag, but may cause screen tearing",
 }
 
 PT_BR = {

@@ -154,8 +154,16 @@ FPS_PRESET_CHOICES = [
     ("240 FPS", 240), ("360 FPS", 360),
     ("Своё значение", -1),
 ]
-PRESENT_MODES = [("Mailbox", "Mailbox"), ("FIFO (VSync)", "Fifo"),
-                 ("FIFO Relaxed", "FifoRelaxed"), ("Immediate", "Immediate")]
+PRESENT_MODES = [
+    ("FastSync / Mailbox (По умолчанию)", "Mailbox",
+     "Без разрывов картинки (tearing) и без зажима FPS под герцовку монитора — лучший выбор"),
+    ("VSync Вкл. (FIFO)", "Fifo",
+     "Классическая вертикальная синхронизация: жёстко привязывает FPS к частоте монитора"),
+    ("Адаптивный VSync (FIFO Relaxed)", "FifoRelaxed",
+     "Синхронизирует кадры на полной частоте монитора, но отключает ожидание при просадках FPS"),
+    ("VSync Выкл. (Immediate)", "Immediate",
+     "Вывод кадров напрямую без ожидания: минимальная задержка ввода, но возможны разрывы (tearing)"),
+]
 # A third element is a note shown under the row's title while that choice is selected: the
 # choice labels stay short, so the selected one is shown in full.
 DRAW_PIPE = [("Авто", "", "Включён при 8 и более потоках процессора"), ("Включён", "1"),
@@ -916,7 +924,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                                  self.ini.get("model_lod", "0"))
         effects.add(self.lod_row)
         for key, title, default in EFFECTS:
-            if key == "debug_menu":
+            if key in ("skip_intro", "debug_camera", "debug_menu"):
                 continue
             row = Adw.SwitchRow(title=tr(title),
                                 active=self.ini.get(key, "1" if default else "0") == "1")
@@ -952,12 +960,13 @@ class LauncherWindow(Adw.ApplicationWindow):
             title=tr("Для разработчика и диагностики"),
             description=tr("Логирование, профилирование GPU, отладочное меню игры и переменные окружения"))
         for key, title, default in EFFECTS:
-            if key == "debug_menu":
+            if key in ("debug_camera", "debug_menu"):
                 row = Adw.SwitchRow(
                     title=tr(title),
-                    subtitle=tr("Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в "
-                                "dvdroot_ps4 игры или модом; без неё патч не применяется"),
                     active=self.ini.get(key, "1" if default else "0") == "1")
+                if key == "debug_menu":
+                    row.set_subtitle(tr("Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в "
+                                        "dvdroot_ps4 игры или модом; без неё патч не применяется"))
                 self.effect_rows[key] = row
                 dev.add(row)
         self.mangohud_row = Adw.SwitchRow(title="MangoHud", active=self.settings["mangohud"])
@@ -1070,6 +1079,13 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         self.language_row = combo_row(tr("Язык системы"), None, LANGUAGES, self.settings["language"])
         game.add(self.language_row)
+
+        for key, title, default in EFFECTS:
+            if key == "skip_intro":
+                row = Adw.SwitchRow(title=tr(title),
+                                    active=self.ini.get(key, "1" if default else "0") == "1")
+                self.effect_rows[key] = row
+                game.add(row)
 
         self.skip_network_row = Adw.SwitchRow(
             title=tr("Пропускать выбор «по сети / вне сети»"),
