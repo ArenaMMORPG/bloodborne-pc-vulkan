@@ -605,12 +605,13 @@ class FolderList:
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Bloodborne PC Vulkan (C++20 / DirectVk 1.3)")
-        self.set_default_size(760, 820)
+        self.set_default_size(1020, 720)
         self.settings = load_settings()
         set_language(self.settings.get("ui_language", ""))
         self.ini, self.ini_lines = load_ini()
         self._ini_mtime_ns = ini_mtime_ns()
         self._reloading_ini = False
+        self._stopping_manually = False
         self.process = None
         self.stream = None
         self.fsr411_build = None  # tools/fsr4cap/build_assets.sh while it runs
@@ -620,33 +621,101 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def build(self):
         """(Re)creates the window's content in the current launcher language."""
+        prev_page = (self.stack.get_visible_child_name()
+                     if hasattr(self, "stack") and self.stack.get_visible_child_name()
+                     else "display")
+        log_text = self.log_text() if hasattr(self, "log_view") else ""
+
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        self.stack = Adw.ViewStack()
-        switcher = Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE)
-        header.set_title_widget(switcher)
+        self.window_title = Adw.WindowTitle(
+            title="Bloodborne PC Vulkan",
+            subtitle=tr("Экран и FPS"))
+        header.set_title_widget(self.window_title)
         self.launch_button = Gtk.Button()
+        self.launch_button.add_css_class("pill")
         self.launch_button.connect("clicked", self.on_launch)
         header.pack_end(self.launch_button)
         toolbar.add_top_bar(header)
 
+        main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, hexpand=True, vexpand=True)
+        self.sidebar_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self.sidebar_list.add_css_class("navigation-sidebar")
+        self.sidebar_list.connect("row-selected", self.on_sidebar_row_selected)
+        sidebar_scroller = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vscrollbar_policy=Gtk.PolicyType.AUTOMATIC,
+            vexpand=True,
+            width_request=255,
+            child=self.sidebar_list)
+        main_box.append(sidebar_scroller)
+        main_box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+
+        self.stack = Gtk.Stack(
+            hexpand=True,
+            vexpand=True,
+            transition_type=Gtk.StackTransitionType.CROSSFADE,
+            transition_duration=150)
+        main_box.append(self.stack)
+
         self.toasts = Adw.ToastOverlay()
-        self.toasts.set_child(self.stack)
+        self.toasts.set_child(main_box)
         toolbar.set_content(self.toasts)
         self.set_content(toolbar)
 
-        log_text = self.log_text() if hasattr(self, "log_view") else ""
-        self.stack.add_titled_with_icon(self.build_settings_page(), "settings", tr("Настройки"),
-                                        "preferences-system-symbolic")
-        self.stack.add_titled_with_icon(self.build_online_page(), "online", tr("Онлайн"),
-                                        "network-workgroup-symbolic")
-        self.stack.add_titled_with_icon(self.build_log_page(), "log", tr("Журнал"),
-                                        "utilities-terminal-symbolic")
+        self.effect_rows = {}
+        self.control_rows = {}
+        self._sidebar_rows = {}
+        self._page_titles = {}
+
+        pages = [
+            ("display", tr("Экран и FPS"), "video-display-symbolic", self.build_display_page()),
+            ("upscaler", tr("Апскейл и Сглаживание"), "applications-graphics-symbolic",
+             self.build_upscaler_page()),
+            ("effects", tr("Эффекты графики"), "weather-clear-night-symbolic",
+             self.build_effects_page()),
+            ("engine", tr("Движок и Отладка"), "utilities-system-monitor-symbolic",
+             self.build_engine_page()),
+            ("controls", tr("Управление"), "input-gaming-symbolic", self.build_controls_page()),
+            ("game", tr("Игра и Моды"), "folder-symbolic", self.build_game_page()),
+            ("online", tr("Онлайн"), "network-workgroup-symbolic", self.build_online_page()),
+            ("log", tr("Журнал"), "utilities-terminal-symbolic", self.build_log_page()),
+        ]
+        for name, title, icon_name, widget in pages:
+            self.stack.add_named(widget, name)
+            self._page_titles[name] = title
+            row = Gtk.ListBoxRow()
+            row._page_name = name
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                              margin_top=9, margin_bottom=9, margin_start=10, margin_end=10)
+            row_box.append(Gtk.Image.new_from_icon_name(icon_name))
+            row_box.append(Gtk.Label(label=title, xalign=0.0, hexpand=True))
+            row.set_child(row_box)
+            self.sidebar_list.append(row)
+            self._sidebar_rows[name] = row
+
+        self.output_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         self.log_view.get_buffer().set_text(log_text)
+        self.switch_page(prev_page if prev_page in self._sidebar_rows else "display")
         self.update_launch_button()
         self.update_game_status()
         self.update_user_status()
         self.update_upscaler_status()
+
+    def on_sidebar_row_selected(self, _listbox, row):
+        if row is not None and hasattr(row, "_page_name"):
+            name = row._page_name
+            self.stack.set_visible_child_name(name)
+            if hasattr(self, "window_title"):
+                self.window_title.set_subtitle(self._page_titles.get(name, ""))
+
+    def switch_page(self, name):
+        row = getattr(self, "_sidebar_rows", {}).get(name)
+        if row is not None:
+            self.sidebar_list.select_row(row)
+        self.stack.set_visible_child_name(name)
+        if hasattr(self, "window_title"):
+            self.window_title.set_subtitle(self._page_titles.get(name, ""))
 
     def update_launch_button(self):
         running = self.process is not None
@@ -659,19 +728,323 @@ class LauncherWindow(Adw.ApplicationWindow):
         if hasattr(self, "fsr411_button"):
             self.fsr411_button.set_sensitive(not running)
 
-    # --- settings page -------------------------------------------------------------------
+    # --- sidebar pages -------------------------------------------------------------------
 
-    def build_settings_page(self):
+    def build_display_page(self):
         page = Adw.PreferencesPage()
 
-        launcher = Adw.PreferencesGroup()
+        screen = Adw.PreferencesGroup(
+            title=tr("Экран и видеокарта"),
+            description=tr("Разрешение, соотношение сторон, выбор монитора и видеокарты"))
+        self.gpu_row = Adw.ComboRow(title=tr("Видеокарта"))
+        self.gpu_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
+                                            lambda _button: self.fill_gpus()))
+        self.fill_gpus()
+        screen.add(self.gpu_row)
+
+        self.display_row = Adw.ComboRow(title=tr("Монитор"))
+        self.display_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
+                                                lambda _button: self.fill_displays()))
+        self.fill_displays()
+        screen.add(self.display_row)
+
+        self.aspect_row = Adw.ComboRow(title=tr("Соотношение сторон"), subtitle=tr(
+            "Шире 16:9 — больше обзор по бокам, выше — сверху и снизу; интерфейс у краёв экрана"))
+        self.aspect_row.values = ASPECTS
+        self.output_row = Adw.ComboRow(
+            title=tr("Разрешение вывода"),
+            subtitle=tr("Разрешение экрана, интерфейса и рендера (G-Buffer меняется в игре на лету, постобработка Yebis2 — при запуске)"))
+        self.output_row.values = []
+        screen.add(self.output_row)
+        screen.add(self.aspect_row)
+
+        aspect = self.ini.get("aspect_ratio", "auto")
+        self.fill_aspects(aspect if aspect in ASPECTS else "auto")
+        self.fill_outputs(parse_size(self.ini.get("output_res", "1920x1080")))
+        self.aspect_row.connect("notify::selected",
+                                lambda *_: self.fill_outputs(parse_size(combo_value(self.output_row))))
+        self.display_row.connect("notify::selected", lambda *_: self.on_display_changed())
+
+        self.fullscreen_row = Adw.SwitchRow(title=tr("Полноэкранный режим"),
+                                            active=self.settings["fullscreen"])
+        screen.add(self.fullscreen_row)
+        self.hdr_row = Adw.SwitchRow(title=tr("Разрешить HDR"), active=self.settings["hdr"])
+        screen.add(self.hdr_row)
+        page.add(screen)
+
+        frames = Adw.PreferencesGroup(
+            title=tr("Частота кадров и синхронизация"),
+            description=tr("Лимит FPS и вертикальная синхронизация; пресет и точный лимит меняются в игре на лету"))
+        ini_fps_limit = int(self.ini.get("fps_limit", "0") or 0)
+        cur_fps = ini_fps_limit if ini_fps_limit > 0 else int(self.settings.get("fps_limit", 0) or 0)
+        preset_vals = [v for _, v in FPS_PRESET_CHOICES if v >= 0]
+        self.fps_row = combo_row(
+            tr("Пресет частоты кадров"),
+            tr("Переключается в игре на лету (System → Display или F8); потолок FixedBlockPool разблокирован"),
+            FPS_PRESET_CHOICES, cur_fps if cur_fps in preset_vals else -1)
+        frames.add(self.fps_row)
+        self.limit_row = Adw.SpinRow.new_with_range(0, 5000, 1)
+        self.limit_row.set_title(tr("Точное ограничение FPS"))
+        self.limit_row.set_subtitle(tr("0 — без лимита (честный анлимит 0.0 мс); хранится в bbport.ini"))
+        self.limit_row.set_value(cur_fps)
+        self._syncing_fps = False
+        def on_fps_preset(*_):
+            if self._syncing_fps:
+                return
+            val = combo_value(self.fps_row)
+            if val >= 0:
+                self._syncing_fps = True
+                self.limit_row.set_value(val)
+                self._syncing_fps = False
+        def on_fps_spin(*_):
+            if self._syncing_fps:
+                return
+            val = int(self.limit_row.get_value())
+            target = val if val in preset_vals else -1
+            self._syncing_fps = True
+            self.fps_row.set_selected(self.fps_row.values.index(target))
+            self._syncing_fps = False
+        self.fps_row.connect("notify::selected", on_fps_preset)
+        self.limit_row.connect("notify::value", on_fps_spin)
+        frames.add(self.limit_row)
+        self.present_row = combo_row(tr("Режим показа кадров"), None, PRESENT_MODES,
+                                     self.settings["present_mode"])
+        frames.add(self.present_row)
+        page.add(frames)
+
+        telemetry = Adw.PreferencesGroup(title=tr("Оверлей телеметрии"))
+        self.show_fps_row = Adw.SwitchRow(
+            title=tr("Оверлей телеметрии и отладки (FPS / Статистика DirectVk)"),
+            subtitle=tr("Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM"),
+            active=self.ini.get("show_fps") == "1")
+        telemetry.add(self.show_fps_row)
+        page.add(telemetry)
+        return page
+
+    def build_upscaler_page(self):
+        page = Adw.PreferencesPage()
+
+        upscaler = Adw.PreferencesGroup(
+            title=tr("Сглаживание и апскейлер"),
+            description=tr("Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8"))
+        raw_up = self.ini.get("upscaler", "off")
+        raw_preset = int(self.ini.get("preset", "0") or 0)
+        raw_aa = self.ini.get("aa_mode", "")
+        if raw_aa in ("off", "fxaa", "taa", "dlaa"):
+            init_aa = raw_aa
+        elif raw_up == "taa":
+            init_aa = "taa"
+        elif self.ini.get("effect_game_aa", "1") == "1":
+            init_aa = "fxaa"
+        else:
+            init_aa = "off"
+        init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
+        self.aa_row = combo_row(
+            tr("Сглаживание"),
+            tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении"),
+            ANTI_ALIASING, init_aa)
+        upscaler.add(self.aa_row)
+        self.upscaler_row = combo_row(tr("Апскейлер"), None, UPSCALERS, init_up)
+        self.aa_row.connect("notify::selected", lambda *_: self.on_aa_changed())
+        self.upscaler_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
+        upscaler.add(self.upscaler_row)
+
+        self.preset_row = combo_row(tr("Режим масштабирования"), None, PRESETS, raw_preset)
+        self.preset_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
+        upscaler.add(self.preset_row)
+
+        self.dlss_preset_row = combo_row(
+            tr("Модель DLSS (Пресет)"),
+            tr("Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0"),
+            DLSS_PRESETS, self.ini.get("dlss_preset", "11"))
+        upscaler.add(self.dlss_preset_row)
+
+        self.dlss_row = Adw.ActionRow(title=tr("DLSS: библиотека NVIDIA"))
+        self.dlss_row.add_suffix(flat_button("document-open-symbolic", tr("Выбрать файл…"),
+                                             lambda _b: self.choose_ngx()))
+        self.dlss_reset_button = flat_button("edit-undo-symbolic", tr("Убрать выбранную"),
+                                             lambda _b: self.reset_ngx())
+        self.dlss_row.add_suffix(self.dlss_reset_button)
+        upscaler.add(self.dlss_row)
+        self.update_dlss_row()
+
+        self.fsr411_row = Adw.ActionRow(title=tr("FSR 4.1.1 из своей DLL AMD"))
+        self.fsr411_button = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.fsr411_button.connect("clicked", self.on_fsr411_button)
+        self.fsr411_row.add_suffix(self.fsr411_button)
+        self.fsr411_row.set_visible((FSR4CAP_DIR / "build_assets.sh").is_file())
+        upscaler.add(self.fsr411_row)
+        self.update_fsr411_row()
+
+        self.motion_row = Adw.SwitchRow(
+            title=tr("Векторы движения объектов"),
+            subtitle=tr("Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS"),
+            active=self.ini.get("object_motion") == "1")
+        upscaler.add(self.motion_row)
+        page.add(upscaler)
+
+        clarity = Adw.PreferencesGroup(
+            title=tr("Чёткость текстур, иконок и резкость"),
+            description=tr("Анизотропная фильтрация пола/стен, 2x/4x реконструкция иконок интерфейса и фильтр резкости RCAS"))
+        self.aniso_row = combo_row(
+            tr("Анизотропная фильтрация"),
+            tr("Чёткость текстур пола и стен под острым углом (меняется в игре на лету)"),
+            ANISOTROPIC_LEVELS, self.ini.get("anisotropic", "16"))
+        clarity.add(self.aniso_row)
+        self.ui_upscale_row = Adw.SwitchRow(
+            title=tr("Апскейл иконок и интерфейса (AI / SDF 2x–4x)"),
+            subtitle=tr("2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)"),
+            active=self.ini.get("ui_upscale", "1") != "0")
+        clarity.add(self.ui_upscale_row)
+        self.sharpen_row = Adw.SwitchRow(title=tr("Резкость (RCAS)"),
+                                         active=self.ini.get("sharpen") == "1")
+        clarity.add(self.sharpen_row)
+        self.sharpness_row = Adw.SpinRow.new_with_range(0.0, 2.0, 0.05)
+        self.sharpness_row.set_title(tr("Сила резкости"))
+        self.sharpness_row.set_digits(2)
+        self.sharpness_row.set_value(float(self.ini.get("sharpness", "0.5")))
+        clarity.add(self.sharpness_row)
+        page.add(clarity)
+        return page
+
+    def build_effects_page(self):
+        page = Adw.PreferencesPage()
+        effects = Adw.PreferencesGroup(
+            title=tr("Геометрия и визуальные эффекты"),
+            description=tr("Все графические эффекты работают нативно в C++20 / DirectVk и переключаются прямо во время игры"))
+        self.lod_row = combo_row(tr("Детализация моделей"), None, MODEL_LOD,
+                                 self.ini.get("model_lod", "0"))
+        effects.add(self.lod_row)
+        for key, title, default in EFFECTS:
+            if key == "debug_menu":
+                continue
+            row = Adw.SwitchRow(title=tr(title),
+                                active=self.ini.get(key, "1" if default else "0") == "1")
+            self.effect_rows[key] = row
+            effects.add(row)
+        page.add(effects)
+        return page
+
+    def build_engine_page(self):
+        page = Adw.PreferencesPage()
+
+        perf = Adw.PreferencesGroup(
+            title=tr("Производительность (C++20 Engine и DirectVk 1.3)"),
+            description=tr("Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)"))
+        self.pipe_row = combo_row(
+            tr("Двухстадийный конвейер GPU"),
+            tr("Быстрее на 20–30%; при нестабильности выключите"), DRAW_PIPE,
+            self.settings["draw_pipe"])
+        perf.add(self.pipe_row)
+        self.occlusion_cull_row = Adw.SwitchRow(
+            title=tr("Аппаратное 3D-отсечение невидимых объектов (Occlusion Culler)"),
+            subtitle=tr("Отсекает закрытые стенами меши и микро-тени на GPU (−35..45% лишних Draw Calls)"),
+            active=self.settings.get("hw_occlusion_cull", True))
+        perf.add(self.occlusion_cull_row)
+        self.native_shaders_row = Adw.SwitchRow(
+            title=tr("Нативные шейдеры Vulkan 1.3 GLSL (96 шейдеров)"),
+            subtitle=tr("Заменяет транслированные шейдеры PS4 GCN на ручные шейдеры Vulkan 1.3 GLSL"),
+            active=self.settings.get("native_shaders", True))
+        perf.add(self.native_shaders_row)
+        page.add(perf)
+
+        dev = Adw.PreferencesGroup(
+            title=tr("Для разработчика и диагностики"),
+            description=tr("Логирование, профилирование GPU, отладочное меню игры и переменные окружения"))
+        for key, title, default in EFFECTS:
+            if key == "debug_menu":
+                row = Adw.SwitchRow(
+                    title=tr(title),
+                    subtitle=tr("Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в "
+                                "dvdroot_ps4 игры или модом; без неё патч не применяется"),
+                    active=self.ini.get(key, "1" if default else "0") == "1")
+                self.effect_rows[key] = row
+                dev.add(row)
+        self.mangohud_row = Adw.SwitchRow(title="MangoHud", active=self.settings["mangohud"])
+        dev.add(self.mangohud_row)
+        self.save_log_row = Adw.SwitchRow(
+            title=tr("Сохранять журнал и статистику в файл"),
+            subtitle=tr("В папку logs в каталоге данных: для разбора рывков и вылетов"),
+            active=self.settings.get("save_log", False))
+        dev.add(self.save_log_row)
+        self.profile_row = Adw.SwitchRow(title=tr("Профиль GPU в журнале"),
+                                         subtitle="BB_GPU_PROFILE",
+                                         active=self.settings["gpu_profile"])
+        dev.add(self.profile_row)
+        self.validation_row = Adw.SwitchRow(title=tr("Слои валидации Vulkan"),
+                                            subtitle=tr("Сильно замедляет"),
+                                            active=self.settings["vk_validation"])
+        dev.add(self.validation_row)
+        self.extra_row = Adw.EntryRow(title=tr("Доп. переменные (ИМЯ=значение через пробел)"),
+                                      text=self.settings["extra_env"])
+        dev.add(self.extra_row)
+        page.add(dev)
+        return page
+
+    def build_controls_page(self):
+        page = Adw.PreferencesPage()
+
+        device_group = Adw.PreferencesGroup(title=tr("Контроллер и камера мышью"))
+        self.gamepad_row = Adw.ComboRow(title=tr("Контроллер"))
+        self.gamepad_row.connect("notify::selected", lambda *_: self.show_gamepad())
+        self.gamepad_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
+                                                lambda _button: self.fill_gamepads()))
+        self.fill_gamepads()
+        device_group.add(self.gamepad_row)
+
+        self.mouse_look_row = Adw.SwitchRow(
+            title=tr("Камера мышью"),
+            subtitle=tr("Щелчок в окне игры захватывает мышь, F1 — отпускает"),
+            active=self.ini.get("mouse_look", "1") == "1")
+        device_group.add(self.mouse_look_row)
+        self.mouse_sensitivity_row = Adw.SpinRow.new_with_range(0.1, 10.0, 0.05)
+        self.mouse_sensitivity_row.set_title(tr("Чувствительность мыши"))
+        self.mouse_sensitivity_row.set_digits(2)
+        self.mouse_sensitivity_row.set_value(float(self.ini.get("mouse_sensitivity", "1.0")))
+        device_group.add(self.mouse_sensitivity_row)
+        self.mouse_invert_row = Adw.SwitchRow(title=tr("Инвертировать мышь по вертикали"),
+                                              active=self.ini.get("mouse_invert_y") == "1")
+        device_group.add(self.mouse_invert_row)
+        def mouse_rows_sensitive(*_):
+            for row in (self.mouse_sensitivity_row, self.mouse_invert_row):
+                row.set_sensitive(self.mouse_look_row.get_active())
+        self.mouse_look_row.connect("notify::active", mouse_rows_sensitive)
+        mouse_rows_sensitive()
+        page.add(device_group)
+
+        bindings = Adw.PreferencesGroup(title=tr("Назначение клавиш и кнопок"))
+        for kind, title, icon in (("key", tr("Клавиатура и мышь"), "input-keyboard-symbolic"),
+                                  ("pad", tr("Геймпад"), "input-gaming-symbolic")):
+            expander = Adw.ExpanderRow(
+                title=title,
+                subtitle=tr("Назначение кнопок; также настраивается прямо в игре в меню System → Controls"))
+            for name, label, key_default, pad_default in CONTROLS:
+                default = key_default if kind == "key" else pad_default
+                if default is None:
+                    continue
+                row = Adw.ActionRow(title=tr(label))
+                row.add_suffix(flat_button(icon, tr("Назначить"),
+                                           lambda _b, k=kind, n=name: self.assign_control(k, n)))
+                row.add_suffix(flat_button("edit-undo-symbolic", tr("Сбросить"),
+                                           lambda _b, k=kind, n=name: self.set_control(k, n, None)))
+                expander.add_row(row)
+                self.control_rows[(kind, name)] = (row, default)
+                self.show_control(kind, name)
+            bindings.add(expander)
+        page.add(bindings)
+        return page
+
+    def build_game_page(self):
+        page = Adw.PreferencesPage()
+
+        game = Adw.PreferencesGroup(
+            title=tr("Игра и язык"),
+            description=tr("Папки игры и сохранений, язык интерфейса и параметры запуска"))
         self.ui_language_row = combo_row(tr("Язык лаунчера") + " / Launcher language", None,
                                          UI_LANGUAGES, self.settings.get("ui_language", ""))
         self.ui_language_row.connect("notify::selected", self.on_ui_language)
-        launcher.add(self.ui_language_row)
-        page.add(launcher)
+        game.add(self.ui_language_row)
 
-        game = Adw.PreferencesGroup(title=tr("Игра"))
         self.game_row = Adw.ActionRow(title=tr("Папка игры (CUSA03173)"))
         self.game_status = Gtk.Image()
         self.game_row.add_suffix(self.game_status)
@@ -681,7 +1054,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                                              tr("Открыть в файловом менеджере"),
                                              lambda _b: open_folder(self, self.game_dir())))
         game.add(self.game_row)
-        # Saves and the shader cache: user/ in the data directory unless chosen.
+
         self.user_row = Adw.ActionRow(title=tr("Папка сохранений"))
         self.user_status = Gtk.Image()
         self.user_row.add_suffix(self.user_status)
@@ -694,18 +1067,16 @@ class LauncherWindow(Adw.ApplicationWindow):
                                       self.on_reset_user)
         self.user_row.add_suffix(self.user_reset)
         game.add(self.user_row)
+
         self.language_row = combo_row(tr("Язык системы"), None, LANGUAGES, self.settings["language"])
         game.add(self.language_row)
-        page.add(game)
 
-        mode = Adw.PreferencesGroup(title=tr("Режим работы"))
-        # The GPU the game runs on, as in shadPS4 (laptops with two GPUs).
-        self.gpu_row = Adw.ComboRow(title=tr("Видеокарта"))
-        self.gpu_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
-                                            lambda _button: self.fill_gpus()))
-        self.fill_gpus()
-        mode.add(self.gpu_row)
-        page.add(mode)
+        self.skip_network_row = Adw.SwitchRow(
+            title=tr("Пропускать выбор «по сети / вне сети»"),
+            subtitle=tr("Игра сразу открывает главное меню в режиме вне сети (патч игры)"),
+            active=self.settings.get("skip_network_choice", True))
+        game.add(self.skip_network_row)
+        page.add(game)
 
         self.mods_group = Adw.PreferencesGroup(
             title=tr("Моды"), description=tr(
@@ -742,268 +1113,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.patch_list = FolderList(self.patches_group)
         self.refresh_patches()
         page.add(self.patches_group)
-
-        screen = Adw.PreferencesGroup(title=tr("Экран"))
-        # The aspect ratio, then its resolutions (rebuilt when it changes, the height kept).
-        self.aspect_row = Adw.ComboRow(title=tr("Соотношение сторон"), subtitle=tr(
-            "Шире 16:9 — больше обзор по бокам, выше — сверху и снизу; интерфейс у краёв экрана"))
-        self.aspect_row.values = ASPECTS
-        self.output_row = Adw.ComboRow(
-            title=tr("Разрешение вывода"),
-            subtitle=tr("Разрешение экрана, интерфейса и рендера (G-Buffer меняется в игре на лету, постобработка Yebis2 — при запуске)"))
-        self.output_row.values = []
-        screen.add(self.aspect_row)
-        screen.add(self.output_row)
-        self.fullscreen_row = Adw.SwitchRow(title=tr("Полноэкранный режим"),
-                                            active=self.settings["fullscreen"])
-        screen.add(self.fullscreen_row)
-        # Issue #69: the window (and fullscreen) went to the monitor SDL calls primary.
-        self.display_row = Adw.ComboRow(title=tr("Монитор"))
-        self.display_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
-                                                lambda _button: self.fill_displays()))
-        self.fill_displays()
-        screen.add(self.display_row)
-        aspect = self.ini.get("aspect_ratio", "auto")
-        self.fill_aspects(aspect if aspect in ASPECTS else "auto")
-        self.fill_outputs(parse_size(self.ini.get("output_res", "1920x1080")))
-        self.aspect_row.connect("notify::selected",
-                                lambda *_: self.fill_outputs(parse_size(combo_value(self.output_row))))
-        self.display_row.connect("notify::selected", lambda *_: self.on_display_changed())
-        self.present_row = combo_row(tr("Режим показа кадров"), None, PRESENT_MODES,
-                                     self.settings["present_mode"])
-        screen.add(self.present_row)
-        self.hdr_row = Adw.SwitchRow(title=tr("Разрешить HDR"), active=self.settings["hdr"])
-        screen.add(self.hdr_row)
-        page.add(screen)
-
-        # Issue #15: the first gamepad SDL found was taken (wheels and other controllers too).
-        controls = Adw.PreferencesGroup(title=tr("Управление"))
-        self.gamepad_row = Adw.ComboRow(title=tr("Контроллер"))
-        # Controller names are long: the selected one is shown in full under the title.
-        self.gamepad_row.connect("notify::selected", lambda *_: self.show_gamepad())
-        self.gamepad_row.add_suffix(flat_button("view-refresh-symbolic", tr("Обновить список"),
-                                                lambda _button: self.fill_gamepads()))
-        self.fill_gamepads()
-        controls.add(self.gamepad_row)
-        # Bindings: "Assign" waits for a key or button (bb-gpu-capabilities --read-input).
-        self.control_rows = {}
-        for kind, title, icon in (("key", tr("Клавиатура и мышь"), "input-keyboard-symbolic"),
-                                  ("pad", tr("Геймпад"), "input-gaming-symbolic")):
-            expander = Adw.ExpanderRow(title=title,
-                                       subtitle=tr("Назначение кнопок; также настраивается прямо в игре в меню System → Controls"))
-            for name, label, key_default, pad_default in CONTROLS:
-                default = key_default if kind == "key" else pad_default
-                if default is None:
-                    continue
-                row = Adw.ActionRow(title=tr(label))
-                row.add_suffix(flat_button(icon, tr("Назначить"),
-                                           lambda _b, k=kind, n=name: self.assign_control(k, n)))
-                row.add_suffix(flat_button("edit-undo-symbolic", tr("Сбросить"),
-                                           lambda _b, k=kind, n=name: self.set_control(k, n, None)))
-                expander.add_row(row)
-                self.control_rows[(kind, name)] = (row, default)
-                self.show_control(kind, name)
-            controls.add(expander)
-        # Mouse look (runtime_pad.c): a click in the game takes the mouse, F1 lets it go; the mouse
-        # turns the game camera itself (gpu/shim/bbport_guest_hooks.cpp, BB_NATIVE_MOUSE).
-        self.mouse_look_row = Adw.SwitchRow(
-            title=tr("Камера мышью"),
-            subtitle=tr("Щелчок в окне игры захватывает мышь, F1 — отпускает"),
-            active=self.ini.get("mouse_look", "1") == "1")
-        controls.add(self.mouse_look_row)
-        self.mouse_sensitivity_row = Adw.SpinRow.new_with_range(0.1, 10.0, 0.05)
-        self.mouse_sensitivity_row.set_title(tr("Чувствительность мыши"))
-        self.mouse_sensitivity_row.set_digits(2)
-        self.mouse_sensitivity_row.set_value(float(self.ini.get("mouse_sensitivity", "1.0")))
-        controls.add(self.mouse_sensitivity_row)
-        self.mouse_invert_row = Adw.SwitchRow(title=tr("Инвертировать мышь по вертикали"),
-                                              active=self.ini.get("mouse_invert_y") == "1")
-        controls.add(self.mouse_invert_row)
-        def mouse_rows_sensitive(*_):
-            for row in (self.mouse_sensitivity_row, self.mouse_invert_row):
-                row.set_sensitive(self.mouse_look_row.get_active())
-        self.mouse_look_row.connect("notify::active", mouse_rows_sensitive)
-        mouse_rows_sensitive()
-        page.add(controls)
-
-        upscaler = Adw.PreferencesGroup(
-            title=tr("Сглаживание и апскейлер"),
-            description=tr("Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8"))
-        raw_up = self.ini.get("upscaler", "off")
-        raw_preset = int(self.ini.get("preset", "0") or 0)
-        raw_aa = self.ini.get("aa_mode", "")
-        if raw_aa in ("off", "fxaa", "taa", "dlaa"):
-            init_aa = raw_aa
-        elif raw_up == "taa":
-            init_aa = "taa"
-        elif self.ini.get("effect_game_aa", "1") == "1":
-            init_aa = "fxaa"
-        else:
-            init_aa = "off"
-        init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
-        self.aa_row = combo_row(
-            tr("Сглаживание"),
-            tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении"),
-            ANTI_ALIASING, init_aa)
-        upscaler.add(self.aa_row)
-        self.upscaler_row = combo_row(tr("Апскейлер"), None, UPSCALERS, init_up)
-        self.aa_row.connect("notify::selected", lambda *_: self.on_aa_changed())
-        self.upscaler_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
-        upscaler.add(self.upscaler_row)
-        # FSR 4.1.1 is built from the user's own AMD DLL (nothing of AMD's is shipped).
-        self.fsr411_row = Adw.ActionRow(title=tr("FSR 4.1.1 из своей DLL AMD"))
-        self.fsr411_button = Gtk.Button(valign=Gtk.Align.CENTER)
-        self.fsr411_button.connect("clicked", self.on_fsr411_button)
-        self.fsr411_row.add_suffix(self.fsr411_button)
-        self.fsr411_row.set_visible((FSR4CAP_DIR / "build_assets.sh").is_file())
-        upscaler.add(self.fsr411_row)
-        self.update_fsr411_row()
-        # DLSS: NVIDIA's library, chosen like the FSR 4.1.1 DLL (the package may bring one).
-        self.dlss_row = Adw.ActionRow(title=tr("DLSS: библиотека NVIDIA"))
-        self.dlss_row.add_suffix(flat_button("document-open-symbolic", tr("Выбрать файл…"),
-                                             lambda _b: self.choose_ngx()))
-        self.dlss_reset_button = flat_button("edit-undo-symbolic", tr("Убрать выбранную"),
-                                             lambda _b: self.reset_ngx())
-        self.dlss_row.add_suffix(self.dlss_reset_button)
-        upscaler.add(self.dlss_row)
-        self.update_dlss_row()
-        self.dlss_preset_row = combo_row(
-            tr("Модель DLSS (Пресет)"),
-            tr("Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0"),
-            DLSS_PRESETS, self.ini.get("dlss_preset", "11"))
-        upscaler.add(self.dlss_preset_row)
-        self.preset_row = combo_row(tr("Режим масштабирования"), None, PRESETS, raw_preset)
-        self.preset_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
-        self.output_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
-        upscaler.add(self.preset_row)
-        self.aniso_row = combo_row(
-            tr("Анизотропная фильтрация"),
-            tr("Чёткость текстур пола и стен под острым углом (меняется в игре на лету)"),
-            ANISOTROPIC_LEVELS, self.ini.get("anisotropic", "16"))
-        upscaler.add(self.aniso_row)
-        self.ui_upscale_row = Adw.SwitchRow(
-            title=tr("Апскейл иконок и интерфейса (AI / SDF 2x–4x)"),
-            subtitle=tr("2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)"),
-            active=self.ini.get("ui_upscale", "1") != "0")
-        upscaler.add(self.ui_upscale_row)
-        self.sharpen_row = Adw.SwitchRow(title=tr("Резкость (RCAS)"),
-                                         active=self.ini.get("sharpen") == "1")
-        upscaler.add(self.sharpen_row)
-        self.sharpness_row = Adw.SpinRow.new_with_range(0.0, 2.0, 0.05)
-        self.sharpness_row.set_title(tr("Сила резкости"))
-        self.sharpness_row.set_digits(2)
-        self.sharpness_row.set_value(float(self.ini.get("sharpness", "0.5")))
-        upscaler.add(self.sharpness_row)
-        self.motion_row = Adw.SwitchRow(
-            title=tr("Векторы движения объектов"),
-            subtitle=tr("Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS"),
-            active=self.ini.get("object_motion") == "1")
-        upscaler.add(self.motion_row)
-        self.show_fps_row = Adw.SwitchRow(
-            title=tr("Оверлей телеметрии и отладки (FPS / Статистика DirectVk)"),
-            subtitle=tr("Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM"),
-            active=self.ini.get("show_fps") == "1")
-        upscaler.add(self.show_fps_row)
-        page.add(upscaler)
-
-        effects = Adw.PreferencesGroup(
-            title=tr("Эффекты игры"),
-            description=tr("Графические эффекты работают нативно в C++20 / DirectVk и меняются в игре на лету; системные патчи ниже применяются при запуске"))
-        self.lod_row = combo_row(tr("Детализация моделей"), None, MODEL_LOD,
-                                 self.ini.get("model_lod", "0"))
-        effects.add(self.lod_row)
-        self.effect_rows = {}
-        for key, title, default in EFFECTS:
-            row = Adw.SwitchRow(title=tr(title),
-                                active=self.ini.get(key, "1" if default else "0") == "1")
-            if key == "debug_menu":
-                row.set_subtitle(tr("Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в "
-                                    "dvdroot_ps4 игры или модом; без неё патч не применяется"))
-            self.effect_rows[key] = row
-            effects.add(row)
-        # The title's "play online / play offline": the port has no PSN.
-        self.skip_network_row = Adw.SwitchRow(
-            title=tr("Пропускать выбор «по сети / вне сети»"),
-            subtitle=tr("Игра сразу открывает главное меню в режиме вне сети (патч игры)"),
-            active=self.settings.get("skip_network_choice", True))
-        effects.add(self.skip_network_row)
-        page.add(effects)
-
-        frames = Adw.PreferencesGroup(title=tr("Частота кадров"))
-        ini_fps_limit = int(self.ini.get("fps_limit", "0") or 0)
-        cur_fps = ini_fps_limit if ini_fps_limit > 0 else int(self.settings.get("fps_limit", 0) or 0)
-        preset_vals = [v for _, v in FPS_PRESET_CHOICES if v >= 0]
-        self.fps_row = combo_row(
-            tr("Пресет частоты кадров"),
-            tr("Переключается в игре на лету (System → Display или F8); потолок FixedBlockPool разблокирован"),
-            FPS_PRESET_CHOICES, cur_fps if cur_fps in preset_vals else -1)
-        frames.add(self.fps_row)
-        self.limit_row = Adw.SpinRow.new_with_range(0, 5000, 1)
-        self.limit_row.set_title(tr("Точное ограничение FPS"))
-        self.limit_row.set_subtitle(tr("0 — без лимита (честный анлимит 0.0 мс); хранится в bbport.ini"))
-        self.limit_row.set_value(cur_fps)
-        self._syncing_fps = False
-        def on_fps_preset(*_):
-            if self._syncing_fps:
-                return
-            val = combo_value(self.fps_row)
-            if val >= 0:
-                self._syncing_fps = True
-                self.limit_row.set_value(val)
-                self._syncing_fps = False
-        def on_fps_spin(*_):
-            if self._syncing_fps:
-                return
-            val = int(self.limit_row.get_value())
-            target = val if val in preset_vals else -1
-            self._syncing_fps = True
-            self.fps_row.set_selected(self.fps_row.values.index(target))
-            self._syncing_fps = False
-        self.fps_row.connect("notify::selected", on_fps_preset)
-        self.limit_row.connect("notify::value", on_fps_spin)
-        frames.add(self.limit_row)
-        page.add(frames)
-
-        perf = Adw.PreferencesGroup(
-            title=tr("Производительность (C++20 Engine и DirectVk 1.3)"),
-            description=tr("Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)"))
-        self.pipe_row = combo_row(
-            tr("Двухстадийный конвейер GPU"),
-            tr("Быстрее на 20–30%; при нестабильности выключите"), DRAW_PIPE,
-            self.settings["draw_pipe"])
-        perf.add(self.pipe_row)
-        self.occlusion_cull_row = Adw.SwitchRow(
-            title=tr("Аппаратное 3D-отсечение невидимых объектов (Occlusion Culler)"),
-            subtitle=tr("Отсекает закрытые стенами меши и микро-тени на GPU (−35..45% лишних Draw Calls)"),
-            active=self.settings.get("hw_occlusion_cull", True))
-        perf.add(self.occlusion_cull_row)
-        self.native_shaders_row = Adw.SwitchRow(
-            title=tr("Нативные шейдеры Vulkan 1.3 GLSL (96 шейдеров)"),
-            subtitle=tr("Заменяет транслированные шейдеры PS4 GCN на ручные шейдеры Vulkan 1.3 GLSL"),
-            active=self.settings.get("native_shaders", True))
-        perf.add(self.native_shaders_row)
-        page.add(perf)
-
-        dev = Adw.PreferencesGroup(title=tr("Для разработчика"))
-        self.mangohud_row = Adw.SwitchRow(title="MangoHud", active=self.settings["mangohud"])
-        dev.add(self.mangohud_row)
-        self.save_log_row = Adw.SwitchRow(
-            title=tr("Сохранять журнал и статистику в файл"),
-            subtitle=tr("В папку logs в каталоге данных: для разбора рывков и вылетов"),
-            active=self.settings.get("save_log", False))
-        dev.add(self.save_log_row)
-        self.profile_row = Adw.SwitchRow(title=tr("Профиль GPU в журнале"),
-                                         subtitle="BB_GPU_PROFILE",
-                                         active=self.settings["gpu_profile"])
-        dev.add(self.profile_row)
-        self.validation_row = Adw.SwitchRow(title=tr("Слои валидации Vulkan"),
-                                            subtitle=tr("Сильно замедляет"),
-                                            active=self.settings["vk_validation"])
-        dev.add(self.validation_row)
-        self.extra_row = Adw.EntryRow(title=tr("Доп. переменные (ИМЯ=значение через пробел)"),
-                                      text=self.settings["extra_env"])
-        dev.add(self.extra_row)
-        page.add(dev)
         return page
 
     def on_ui_language(self, row, _param):
@@ -1888,10 +1997,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         if self.online_row.get_active() and "@" in self.npid_row.get_text():
             self.alert("Bloodborne", tr("Online ID — это имя учётной записи (NPID), "
                                         "зарегистрированное на сервере, а не адрес email"))
-            self.stack.set_visible_child_name("online")
+            self.switch_page("online")
             return
         self.store()
         self.log_view.get_buffer().set_text("")
+        self._stopping_manually = False
         launcher = Gio.SubprocessLauncher.new(
             Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         launcher.set_environ([f"{k}={v}" for k, v in self.environment().items()])
@@ -1906,7 +2016,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.read_line()
         self.process.wait_async(None, self.on_exit)
         self.update_launch_button()
-        self.stack.set_visible_child_name("log")
 
     def read_line(self):
         self.stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line)
@@ -1924,6 +2033,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def stop_game(self):
         if not self.process:
             return
+        self._stopping_manually = True
         pid = int(self.process.get_identifier())
         try:
             os.killpg(pid, signal.SIGTERM)
@@ -1945,11 +2055,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         except GLib.Error:
             pass
         status = process.get_exit_status() if process.get_if_exited() else -1
+        stopped_by_user = getattr(self, "_stopping_manually", False)
+        self._stopping_manually = False
         self.process = None
         self.reload_from_ini()
         self.update_launch_button()
         self.update_game_status()
         self.append_log(tr("\n— игра завершилась (код {}) —\n").format(status))
+        if status != 0 and not stopped_by_user:
+            self.switch_page("log")
 
     def on_close(self, _window):
         self.reload_from_ini()

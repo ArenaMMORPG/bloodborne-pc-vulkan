@@ -448,6 +448,32 @@ EN = {
         "Performance (C++20 Engine and DirectVk 1.3)",
     "Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)":
         "Decompiled C++20 graphics engine (2,940 / 2,940 functions) and DirectVk 1.3 backend with Split PC VRAM (0 page-faults/s)",
+    "Экран и FPS": "Display and FPS",
+    "Апскейл и Сглаживание": "Upscaler and Anti-Aliasing",
+    "Эффекты графики": "Graphics Effects",
+    "Движок и Отладка": "Engine and Debug",
+    "Игра и Моды": "Game and Mods",
+    "Экран и видеокарта": "Display and GPU",
+    "Разрешение, соотношение сторон, выбор монитора и видеокарты":
+        "Output resolution, aspect ratio, monitor, and GPU selection",
+    "Частота кадров и синхронизация": "Frame Rate and VSync",
+    "Лимит FPS и вертикальная синхронизация; пресет и точный лимит меняются в игре на лету":
+        "FPS cap and vertical sync; preset and exact cap switch live in-game",
+    "Оверлей телеметрии": "Telemetry Overlay",
+    "Чёткость текстур, иконок и резкость": "Texture Filtering, UI Upscale and Sharpening",
+    "Анизотропная фильтрация пола/стен, 2x/4x реконструкция иконок интерфейса и фильтр резкости RCAS":
+        "Floor/wall anisotropic filtering, 2x/4x UI icon reconstruction, and RCAS sharpening",
+    "Геометрия и визуальные эффекты": "Geometry and Visual Effects",
+    "Все графические эффекты работают нативно в C++20 / DirectVk и переключаются прямо во время игры":
+        "All graphics effects run natively in C++20 / DirectVk and switch live in-game",
+    "Для разработчика и диагностики": "Developer and Diagnostics",
+    "Логирование, профилирование GPU, отладочное меню игры и переменные окружения":
+        "Logging, GPU profiling, in-game debug menu, and environment variables",
+    "Контроллер и камера мышью": "Controller and Mouse Look",
+    "Назначение клавиш и кнопок": "Key and Button Bindings",
+    "Игра и язык": "Game and Language",
+    "Папки игры и сохранений, язык интерфейса и параметры запуска":
+        "Game and save folders, interface language, and launch behavior",
 }
 
 PT_BR = {
