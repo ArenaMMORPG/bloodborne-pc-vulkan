@@ -421,16 +421,61 @@ void Menu() {
                 frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg);
     ToyPadSection();
 
-    ImGui::SeparatorText(BbSettings::MenuText("Temporal upscaler", "Временной апскейлер"));
+    ImGui::SeparatorText(BbSettings::MenuText("Anti-Aliasing & Upscaler", "Сглаживание и апскейлер"));
+    {
+        const char* aa_labels[] = {
+            BbSettings::MenuText("Off", "Выкл"),
+            BbSettings::MenuText("FXAA (Subpixel AA)", "FXAA (Субпиксельное сглаживание)"),
+            BbSettings::MenuText("TAA (Temporal AA)", "TAA (Темпоральное сглаживание)"),
+            BbSettings::MenuText("DLAA (DLSS Native 100%)", "DLAA (Нативное DLSS 100%)")};
+        const int cur_up = s.upscaler.load();
+        int aa_mode = cur_up == BbSettings::UpscalerTaa
+                          ? 2
+                          : (cur_up == BbSettings::UpscalerDlss && s.preset.load() == 0)
+                                ? 3
+                                : s.effects[4].load() ? 1 : 0;
+        if (ImGui::BeginCombo(BbSettings::MenuText("Anti-Aliasing", "Сглаживание"), aa_labels[aa_mode])) {
+            for (int i = 0; i < 4; ++i) {
+                const bool supported = i == 3 ? s.dlss_supported.load() : true;
+                ImGui::BeginDisabled(!supported);
+                if (ImGui::Selectable(aa_labels[i], i == aa_mode)) {
+                    if (i == 0) {
+                        Store(s.effects[4], false, true);
+                        if (s.upscaler.load() == BbSettings::UpscalerTaa) {
+                            Store(s.upscaler, int(BbSettings::UpscalerOff), true);
+                        }
+                    } else if (i == 1) {
+                        Store(s.effects[4], true, true);
+                        if (s.upscaler.load() == BbSettings::UpscalerTaa) {
+                            Store(s.upscaler, int(BbSettings::UpscalerOff), true);
+                        }
+                    } else if (i == 2) {
+                        Store(s.upscaler, int(BbSettings::UpscalerTaa), true);
+                    } else if (i == 3) {
+                        Store(s.upscaler, int(BbSettings::UpscalerDlss), true);
+                        Store(s.preset, int(BbSettings::NativeAA), true);
+                    }
+                    BbGuestHooks::ApplyGameEffects();
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+    }
     const char* upscalers[] = {
-        BbSettings::MenuText("Off", "Выкл"), "FSR 3.1", "FSR 4 (INT8)", "FSR 4.1.1",
+        BbSettings::MenuText("Off (Native 100%)", "Выключен (Native 100%)"),
+        "FSR 3.1",
+        "FSR 4 (INT8)",
+        "FSR 4.1.1",
         BbSettings::MenuText("TAA (native anti-aliasing)", "TAA (нативное сглаживание)"),
         "DLSS (NVIDIA RTX)"};
     static_assert(sizeof(upscalers) / sizeof(upscalers[0]) == BbSettings::UpscalerCount);
-    static const char* later[] = {"XeSS"};
     int upscaler = s.upscaler;
-    if (ImGui::BeginCombo(BbSettings::MenuText("Upscaler", "Апскейлер"), upscalers[upscaler])) {
+    const char* active_upscaler_label =
+        upscaler == BbSettings::UpscalerTaa ? upscalers[BbSettings::UpscalerOff] : upscalers[upscaler];
+    if (ImGui::BeginCombo(BbSettings::MenuText("Upscaler", "Апскейлер"), active_upscaler_label)) {
         for (int i = 0; i < BbSettings::UpscalerCount; ++i) {
+            if (i == BbSettings::UpscalerTaa) continue;
             const bool supported = i == BbSettings::UpscalerFsr4     ? s.fsr4_supported.load()
                                    : i == BbSettings::UpscalerFsr411 ? s.fsr411_supported.load()
                                    : i == BbSettings::UpscalerDlss   ? s.dlss_supported.load()
@@ -445,13 +490,6 @@ void Menu() {
                 ImGui::TextDisabled("%s", BbSettings::MenuText("— not supported by this GPU",
                                                          "— не поддерживается видеокартой"));
             }
-        }
-        for (const char* name : later) {
-            ImGui::BeginDisabled();
-            ImGui::Selectable(name, false);
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", BbSettings::MenuText("— in development", "— в работе"));
         }
         ImGui::EndCombo();
     }
@@ -563,37 +601,13 @@ void Menu() {
     ImGui::Text(
         BbSettings::MenuText("Active scene render: %d x %d", "Активный рендер сцены: %d x %d"),
         s.active_render_width.load(), s.active_render_height.load());
-    if (BbSettings::FixedRenderSession()) {
-        ImGui::Text(BbSettings::MenuText("Startup preset: %s", "Пресет при запуске: %s"),
-                    BbSettings::PresetName(s.startup_preset));
-        if (const char* automatic = std::getenv("BB_AUTO_RENDER_RES");
-            automatic && automatic[0] == '1') {
-            Hint(BbSettings::MenuText(
-                "When output is not 1080p, the entire game renders at the preset resolution "
-                "(startup patch): this is fastest on Steam Deck and weaker GPUs. Preset or output "
-                "resolution changes require a restart. Enable Live resolution changes below to "
-                "change them without restarting (post-processing then stays at 1080p, which is "
-                "slower).",
-                "При выводе не 1080p вся игра рисуется в разрешении пресета (патч при запуске): "
-                "это быстрее всего на Steam Deck и слабых GPU. Смена пресета или разрешения "
-                "вывода — после перезапуска. Пункт «Смена разрешения на лету» ниже включает "
-                "смену без перезапуска (постобработка тогда остаётся в 1080p, медленнее)."));
-        } else {
-            Hint(BbSettings::MenuText(
-                "BB_RENDER_RES fixes the scene size at startup. Remove this explicit environment "
-                "variable to change resolution and presets without restarting the game.",
-                "BB_RENDER_RES фиксирует размер сцены при запуске. Уберите эту явную переменную "
-                "для смены разрешения и пресетов без перезапуска игры."));
-        }
-    } else {
-        Hint(BbSettings::MenuText(
-            "Native AA: the upscaler acts as anti-aliasing. Other presets reduce the scene render "
-            "resolution relative to the output. The UI renders at output resolution. "
-            "The preset applies from the next frame without restarting the game.",
-            "Native AA: апскейлер работает как сглаживание. Остальные пресеты уменьшают разрешение "
-            "отрисовки сцены относительно вывода. Интерфейс рисуется в разрешении вывода. "
-            "Пресет применяется со следующего кадра без перезапуска игры."));
-    }
+    Hint(BbSettings::MenuText(
+        "Native AA: the upscaler acts as anti-aliasing. Other presets reduce the 3D G-Buffer and "
+        "deferred lighting resolution immediately on the next frame (full Yebis2 post-FX rebuild "
+        "applies on game restart).",
+        "Native AA: апскейлер работает как сглаживание. Остальные пресеты уменьшают разрешение "
+        "3D G-Buffer и освещения со следующего кадра (полная перестройка постобработки Yebis2 — "
+        "после перезапуска)."));
     Checkbox(BbSettings::MenuText("Sharpening (RCAS)", "Резкость (RCAS)"), s.sharpen);
     ImGui::BeginDisabled(!s.sharpen);
     Slider(BbSettings::MenuText("Sharpness", "Сила резкости"), s.sharpness, 0.0f, 2.0f);
@@ -713,57 +727,13 @@ void Menu() {
         }
         ImGui::EndCombo();
     }
-    if (BbSettings::FixedRenderSession()) {
-        Hint(BbSettings::MenuText(
-            "Size of the final frame and UI. The preset sets the scene size relative to "
-            "the output: 4K Performance = 1920x1080. Another aspect ratio widens the view (the "
-            "UI keeps to the screen edges). Applies after restarting the game.",
-            "Размер готового кадра и интерфейса. Пресет задаёт размер сцены относительно "
-            "вывода: 4K Performance = 1920x1080. Другое соотношение сторон расширяет обзор "
-            "(интерфейс у краёв экрана). Применяется после перезапуска игры."));
-    } else {
-        Hint(BbSettings::MenuText(
-            "The final frame and UI size changes at the next frame boundary. "
-            "The preset sets the scene size relative to the output: 4K Performance = 1920x1080. "
-            "Another aspect ratio widens the view (the UI keeps to the screen edges). "
-            "Changing the size resets the upscaler's history and may cause a brief pause.",
-            "Размер готового кадра и интерфейса меняется на границе следующего кадра. "
-            "Пресет задаёт размер сцены относительно вывода: 4K Performance = 1920x1080. "
-            "Другое соотношение сторон расширяет обзор (интерфейс у краёв экрана). "
-            "Смена размера сбрасывает историю апскейлера и может вызвать короткую паузу."));
-    }
-    const char* live_modes[] = {BbSettings::MenuText("Auto (based on GPU)", "Авто (по видеокарте)"),
-                                BbSettings::MenuText("Off (faster)", "Выключена (быстрее)"),
-                                BbSettings::MenuText("On", "Включена")};
-    int live = s.live_resolution + 1;
-    if (ImGui::BeginCombo(
-            BbSettings::MenuText("Live resolution changes", "Смена разрешения на лету"),
-            live_modes[live])) {
-        for (int i = 0; i < 3; ++i) {
-            if (ImGui::Selectable(live_modes[i], i == live)) {
-                Store(s.live_resolution, i - 1, true);
-            }
-        }
-        ImGui::EndCombo();
-    }
-    if (BbSettings::FixedRenderSession() && s.startup_live_resolution != 0) {
-        // Started with a fixed render size (BB_LIVE_RES=0 or BB_RENDER_RES): the setting is
-        // not what this session runs.
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s",
-                           BbSettings::MenuText("This session started with a fixed resolution: "
-                                                "changes apply after a restart",
-                                                "Эта сессия запущена с фиксированным разрешением: "
-                                                "смена — после перезапуска"));
-    }
     Hint(BbSettings::MenuText(
-        "On: output resolution and preset change without restarting, but game post-processing "
-        "stays at 1080p, which is noticeably slower on Steam Deck and older GPUs. "
-        "Off: everything renders at the preset resolution, and changes require a restart. Auto "
-        "enables this on powerful discrete GPUs. Applies after restarting the game.",
-        "Включена: разрешение вывода и пресет меняются без перезапуска, но постобработка игры "
-        "остаётся в 1080p — на Steam Deck и старых видеокартах это заметно медленнее. "
-        "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Авто включает "
-        "её на мощных дискретных видеокартах. Применяется после перезапуска игры."));
+        "The output frame, UI, and 3D G-Buffer resolution update on the next frame boundary "
+        "(full Yebis2 post-FX buffer reallocation applies on restart). Another aspect ratio "
+        "widens the view while keeping UI anchored to screen edges.",
+        "Размер кадра, интерфейса и 3D G-Buffer меняется на следующем кадре (полное "
+        "перевыделение буферов постобработки Yebis2 — после перезапуска). Другое соотношение "
+        "сторон расширяет обзор, оставляя интерфейс у краёв экрана."));
     ImGui::SeparatorText(BbSettings::MenuText("Game effects & Texture filtering",
                                               "Эффекты игры и фильтрация текстур"));
     {
@@ -799,6 +769,7 @@ void Menu() {
         ImGui::EndCombo();
     }
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
+        if (e == 4) continue; // effect_game_aa is controlled by the Anti-Aliasing combo above
         const auto& effect = BbSettings::Effects[e];
         Checkbox(BbSettings::MenuText(effect.label, effect.label_ru), s.effects[e]);
         if (std::string_view(effect.key) == "debug_camera") {
@@ -814,14 +785,14 @@ void Menu() {
     }
     BbGuestHooks::ApplyGameEffects();
     Hint(BbSettings::MenuText(
-        "SSR reflections, intros, free camera and debug menu apply after a restart. Other effects "
-        "switch immediately. Motion blur and shadows from dynamic lights place a significant load on the GPU.",
-        "Отражения SSR, заставки, свободная камера и debug menu применяются после перезапуска. "
-        "Остальные эффекты переключаются сразу. Размытие в движении и тени от динамических источников заметно нагружают GPU."));
+        "All visual effects (including SSR reflections, Bloom, DoF, Motion Blur, SSAO, and Model LOD) "
+        "switch live in-game. Skip intro videos, free camera, and debug menu apply on startup.",
+        "Все графические эффекты (включая отражения SSR, Bloom, DoF, Motion Blur, SSAO и детализацию "
+        "моделей) переключаются в игре на лету. Пропуск заставок, свободная камера и debug menu "
+        "применяются при запуске."));
 
     bool restart =
-        s.object_motion != s.startup_object_motion ||
-        s.live_resolution != s.startup_live_resolution || BbSettings::ResolutionNeedsRestart();
+        s.object_motion != s.startup_object_motion || BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= !BbSettings::IsHotEffect(e) && s.effects[e] != s.startup_effects[e];
     }
@@ -838,12 +809,13 @@ void Menu() {
 
     ImGui::SeparatorText(BbSettings::MenuText("Frame rate limit", "Лимит кадров (FPS)"));
     {
-        static const int steps[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360};
-        static const char* labels[] = {"Uncapped", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
-        static const char* labels_ru[] = {"Без лимита", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
+        static const int steps[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360, 480, 1000, 2000, 5000};
+        static const char* labels[] = {"Uncapped (Unlimited)", "30", "60", "90", "120", "144", "165", "170", "240", "360", "480", "1000", "2000", "5000"};
+        static const char* labels_ru[] = {"Без лимита (Анлимит)", "30", "60", "90", "120", "144", "165", "170", "240", "360", "480", "1000", "2000", "5000"};
+        constexpr int step_count = int(sizeof(steps) / sizeof(steps[0]));
         const int cur_limit = BbFrameRate::Limit();
         int index = -1;
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < step_count; ++i) {
             if (steps[i] == cur_limit) index = i;
         }
         char combo_preview[48];
@@ -856,7 +828,7 @@ void Menu() {
         }
         if (ImGui::BeginCombo(BbSettings::MenuText("Preset (F3: 30 FPS toggle)", "Пресет (F3: 30 FPS вкл/выкл)"),
                               combo_preview)) {
-            for (int i = 0; i < 10; ++i) {
+            for (int i = 0; i < step_count; ++i) {
                 if (ImGui::Selectable(BbSettings::MenuText(labels[i], labels_ru[i]), i == index)) {
                     Store(s.fps_limit, steps[i], true);
                     BbFrameRate::SetLimit(steps[i]);
@@ -867,7 +839,7 @@ void Menu() {
         int custom_fps = cur_limit;
         if (ImGui::SliderInt(BbSettings::MenuText("Custom FPS (Ctrl+click to type)",
                                                   "Точный FPS (Ctrl+клик — ввести число)"),
-                             &custom_fps, 0, 500, custom_fps == 0 ? "Uncapped" : "%d FPS")) {
+                             &custom_fps, 0, 5000, custom_fps == 0 ? "Uncapped (Unlimited)" : "%d FPS")) {
             if (custom_fps > 0 && custom_fps < 30) custom_fps = 30;
             Store(s.fps_limit, custom_fps, true);
             BbFrameRate::SetLimit(custom_fps);

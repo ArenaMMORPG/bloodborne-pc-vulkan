@@ -77,7 +77,7 @@ void main() {
     uint buf5_dword_off = buf5_off >> 2u;
     uint buf6_off = bitfieldExtract(t140, int(16u), int(8u));
     uint buf6_dword_off = buf6_off >> 2u;
-    bool t155 = gl_FrontFacing;
+    bool t155 = true; // gl_FrontFacing: preserve canopy normal & lightmap dot on foliage backfaces
     uint t156 = t155 ? 1u : 0u;
     uint t158 = uint(20u) + uint(buf0_dword_off);
     uint t160 = ssbo_1.data[t158];

@@ -447,8 +447,8 @@ bool TemporalUpscaler::OnFrameStart() {
         BbSettings::Get().active_render_width = render_width;
         BbSettings::Get().active_render_height = render_height;
     } else {
-        const auto active_size = active && depth_blit
-            ? SceneResolution::ForPreset(preset, {target_width, target_height})
+        const auto active_size = depth_blit
+            ? SceneResolution::ForPreset(active ? preset : 0, {target_width, target_height})
             : scene_targets.BaseSize();
         scene_targets.SetSize(active_size);
         BbSettings::Get().active_render_width = active_size.width;

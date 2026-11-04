@@ -384,7 +384,7 @@ private:
         char name[16];
         std::snprintf(name, sizeof(name), "bb:Resolve%u", worker);
         Common::SetCurrentThreadName(name);
-        BbThreads::PinToGpuDomain();
+        BbThreads::PinToHelperDomain();
         static const int spin_us = [] {
             if (const char* env = std::getenv("BB_RESOLVE_SPIN_US")) {
                 return std::max(0, std::atoi(env));

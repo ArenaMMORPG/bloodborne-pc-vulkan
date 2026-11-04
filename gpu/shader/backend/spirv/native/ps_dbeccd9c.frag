@@ -61,7 +61,7 @@ void main() {
     uint buf3_dword_off = buf3_off >> 2u;
     vec3 t147 = vec3(0.0);
     float t148 = t147.z;
-    bool t149 = gl_FrontFacing;
+    bool t149 = true; // gl_FrontFacing: preserve canopy normal & lightmap dot on foliage backfaces
     uint t150 = t149 ? 1u : 0u;
     uint t152 = uint(4u) + uint(buf0_dword_off);
     uint t154 = ssbo_1.data[t152];

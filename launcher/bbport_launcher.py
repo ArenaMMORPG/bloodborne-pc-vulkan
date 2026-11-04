@@ -41,14 +41,6 @@ DATA_DIR = Path(os.environ.get("BB_DATA_DIR", PORT_DIR))
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "bb_vulkan-launcher"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 MAX_LOG_LINES = 5000
-# The memory model (run.sh: BB_PC_MODEL): "auto" is the new one on every GPU (0.6), or either by
-# hand. The new one goes through the layer's memory module on
-# every GPU (no sparse binding of the game's memory; BB_LAYER_MEMORY=0: AMD's sparse arena).
-PC_MODEL_SUBTITLE = ("Новая: видеокарта работает с памятью игры напрямую, как в игре для ПК, а команды "
-                     "графики переводятся, а не эмулируются. Старая — модель памяти 0.3 со всеми "
-                     "исправлениями. Если драйвер не проходит проверку при запуске — старая")
-MEMORY_MODELS = [("Авто: новая на любой видеокарте", "auto"), ("Новая", "new"),
-                 ("Старая (как в 0.3)", "old")]
 # FSR 4.1.1 assets built from the user's AMD DLL (tools/fsr4cap, also in the package).
 FSR4CAP_DIR = PORT_DIR / "tools" / "fsr4cap"
 sys.path.insert(0, str(FSR4CAP_DIR))
@@ -81,9 +73,12 @@ FSR411_BUILD_ERRORS = {
 # Choices: (label, value). The first entry is the default. Labels are translated when shown.
 UI_LANGUAGES = [("Как в системе", ""), ("Русский", "ru"), ("English", "en"), ("Português (Brasil)", "pt_BR"),
                 ("简体中文", "zh_CN")]
-UPSCALERS = [("DLSS (NVIDIA RTX)", "dlss"), ("FSR 3.1", "fsr3"), ("FSR 4", "fsr4"),
-             ("FSR 4.1.1", "fsr411"), ("TAA (нативное сглаживание)", "taa"),
-             ("FXAA", "fxaa"), ("Выключен (Native 100%)", "off")]
+ANTI_ALIASING = [("FXAA (Субпиксельное сглаживание)", "fxaa"),
+                 ("TAA (Темпоральное сглаживание)", "taa"),
+                 ("DLAA (Нативное DLSS 100%)", "dlaa"),
+                 ("Выкл.", "off")]
+UPSCALERS = [("Выключен (Native 100%)", "off"), ("DLSS (NVIDIA RTX)", "dlss"),
+             ("FSR 3.1", "fsr3"), ("FSR 4", "fsr4"), ("FSR 4.1.1", "fsr411")]
 DLSS_PRESETS = [("DLSS 4.5 (Preset M — 2nd Gen Transformer)", "13"),
                 ("DLSS 4.5 (Preset L — 2nd Gen Transformer)", "12"),
                 ("DLSS 4 (Preset K — Transformer)", "11"),
@@ -138,15 +133,14 @@ def parse_size(text, default=(1920, 1080)):
         return (w, h) if w > 0 and h > 0 else default
     except ValueError:
         return default
-# Game effects (patches applied at start): bbport.ini key, title, default.
+# Game effects: bbport.ini key, title, default.
 EFFECTS = [
     ("effect_chromatic_aberration", "Хроматическая аберрация", True),
     ("effect_dof", "Глубина резкости (DoF)", True),
     ("effect_motion_blur", "Размытие в движении", True),
     ("effect_ssao", "Затенение SSAO", True),
-    ("effect_game_aa", "Собственное сглаживание игры", True),
     ("effect_dynamic_shadows", "Тени от динамических источников", True),
-    ("effect_ssr", "Отражения SSR (не было в игре)", False),
+    ("effect_ssr", "Отражения SSR (меняются в игре на лету)", False),
     ("effect_bloom", "Свечение (Bloom)", True),
     ("skip_intro", "Пропуск заставок при запуске", True),
     ("debug_camera", "Свободная камера (Cross + L3 / F + Ctrl)", False),
@@ -154,8 +148,13 @@ EFFECTS = [
 ]
 MODEL_LOD = [("Как в игре", "0"), ("Максимальная (-2)", "-2"), ("Ниже (1)", "1"),
              ("Минимальная (2)", "2")]
-FPS_MODES = [("Без ограничения", "uncap"), ("60", "60"), ("90", "90"),
-             ("30 (как на PS4)", "30")]
+FPS_PRESET_CHOICES = [
+    ("Без лимита (Анлимит)", 0), ("30 FPS (PS4)", 30), ("60 FPS", 60), ("90 FPS", 90),
+    ("120 FPS", 120), ("144 FPS", 144), ("165 FPS", 165), ("170 FPS", 170),
+    ("240 FPS", 240), ("360 FPS", 360), ("480 FPS", 480), ("1000 FPS", 1000),
+    ("2000 FPS", 2000), ("5000 FPS", 5000),
+    ("Своё значение", -1),
+]
 PRESENT_MODES = [("Mailbox", "Mailbox"), ("FIFO (VSync)", "Fifo"),
                  ("FIFO Relaxed", "FifoRelaxed"), ("Immediate", "Immediate")]
 # A third element is a note shown under the row's title while that choice is selected: the
@@ -170,7 +169,6 @@ LANGUAGES = [("Английский", "1"), ("Английский (Велико
              ("Польский", "16"), ("Турецкий", "19"), ("Корейский", "9"),
              ("Китайский (упрощённый)", "11"), ("Китайский (традиционный)", "10"),
              ("Финский", "12"), ("Шведский", "13"), ("Датский", "14"), ("Норвежский", "15")]
-LIVE_RESOLUTION = [("Авто (по видеокарте)", "auto"), ("Выключена (быстрее)", "0"), ("Включена", "1")]
 
 _DEFAULT_GAME_DIR = os.environ.get("BB_GAME_DIR", "") or (
     str(PORT_DIR / "CUSA03173") if (PORT_DIR / "CUSA03173").is_dir() else str(PORT_DIR.parent / "CUSA03173")
@@ -201,9 +199,6 @@ DEFAULTS = {
     "mangohud": False,
     "frame_stats": False,
     "save_log": False,
-    "crash_diag": False,
-    "memory_model": "auto",
-    "as_0_3": False,
     "gpu_profile": False,
     "vk_validation": False,
     "extra_env": "",
@@ -242,6 +237,7 @@ INI_DEFAULTS = {
     "output_res": "1920x1080",
     "model_lod": "0",
     "live_resolution": "0",
+    "effect_game_aa": "1",
     "mouse_look": "1",
     "mouse_sensitivity": "1.00",
     "mouse_invert_y": "0",
@@ -394,7 +390,7 @@ def game_environment(s):
     env["BB_SKIP_NETWORK_CHOICE"] = "1" if s.get("skip_network_choice", True) else "0"
     if s["hdr"]:
         env["BB_HDR"] = "1"
-    env["BB_FPS"] = s["fps_mode"]
+    env["BB_FPS"] = "uncap"
     env["BB_FPS_LIMIT"] = str(s["fps_limit"]) if s["fps_limit"] > 0 else "0"
     if s["draw_pipe"]:
         env["BB_DRAW_PIPE"] = s["draw_pipe"]
@@ -405,10 +401,9 @@ def game_environment(s):
     env.pop("BB_PREUPLOAD", None)
     if s["mangohud"]:
         env["MANGOHUD"] = "1"
-    if s["frame_stats"]:
-        env["BB_FRAME_STATS"] = "1"
     if s.get("save_log"):
         env["BB_SAVE_LOG"] = "1"
+        env["BB_FRAME_STATS"] = "1"
     # Use the DirectBuffers / DirectTextures Split PC VRAM model (BB_PC_MODEL=0) & all C++20 GX modules
     env["BB_PC_MODEL"] = os.environ.get("BB_PC_MODEL", "0")
     env["BB_GX_MODULES"] = os.environ.get("BB_GX_MODULES", "all")
@@ -421,10 +416,6 @@ def game_environment(s):
                       if name == s["gpu"]), None)
         if index is not None:
             env["BB_GPU_ID"] = str(index)
-    if s.get("crash_diag"):
-        env["BB_FREE_CHECK"] = "1"
-        env["BB_WRITE_LOG"] = "1"
-        env["BB_PRODUCER_CHECK"] = "1"
     if s["gpu_profile"]:
         env["BB_GPU_PROFILE"] = "1"
     if s["vk_validation"]:
@@ -605,7 +596,7 @@ class FolderList:
 
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Bloodborne")
+        super().__init__(application=app, title="Bloodborne PC Vulkan (C++20 / DirectVk 1.3)")
         self.set_default_size(760, 820)
         self.settings = load_settings()
         set_language(self.settings.get("ui_language", ""))
@@ -746,15 +737,12 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.aspect_row = Adw.ComboRow(title=tr("Соотношение сторон"), subtitle=tr(
             "Шире 16:9 — больше обзор по бокам, выше — сверху и снизу; интерфейс у краёв экрана"))
         self.aspect_row.values = ASPECTS
-        self.output_row = Adw.ComboRow(title=tr("Разрешение вывода"),
-                                       subtitle=tr("Апскейлер дорисовывает кадр; Steam Deck — 1280×800 (16:10)"))
+        self.output_row = Adw.ComboRow(
+            title=tr("Разрешение вывода"),
+            subtitle=tr("Разрешение экрана, интерфейса и рендера (G-Buffer меняется в игре на лету, постобработка Yebis2 — при запуске)"))
         self.output_row.values = []
         screen.add(self.aspect_row)
         screen.add(self.output_row)
-        self.live_row = combo_row(tr("Смена разрешения на лету"),
-                                  tr("Без перезапуска, но медленнее на Steam Deck и старых GPU"),
-                                  LIVE_RESOLUTION, self.ini.get("live_resolution", "0"))
-        screen.add(self.live_row)
         self.fullscreen_row = Adw.SwitchRow(title=tr("Полноэкранный режим"),
                                             active=self.settings["fullscreen"])
         screen.add(self.fullscreen_row)
@@ -791,7 +779,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         for kind, title, icon in (("key", tr("Клавиатура и мышь"), "input-keyboard-symbolic"),
                                   ("pad", tr("Геймпад"), "input-gaming-symbolic")):
             expander = Adw.ExpanderRow(title=title,
-                                       subtitle=tr("Назначение кнопок; применяется при запуске игры"))
+                                       subtitle=tr("Назначение кнопок; также настраивается прямо в игре в меню System → Controls"))
             for name, label, key_default, pad_default in CONTROLS:
                 default = key_default if kind == "key" else pad_default
                 if default is None:
@@ -828,9 +816,27 @@ class LauncherWindow(Adw.ApplicationWindow):
         page.add(controls)
 
         upscaler = Adw.PreferencesGroup(
-            title=tr("Апскейлер"),
-            description=tr("Хранится в bbport.ini; в игре меняется через меню (Insert или L3+R3)"))
-        self.upscaler_row = combo_row(tr("Апскейлер"), None, UPSCALERS, self.ini["upscaler"])
+            title=tr("Сглаживание и апскейлер"),
+            description=tr("Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8"))
+        raw_up = self.ini.get("upscaler", "off")
+        raw_preset = int(self.ini.get("preset", "0") or 0)
+        if raw_up == "taa":
+            init_aa, init_up = "taa", "off"
+        elif raw_up == "dlss" and raw_preset == 0:
+            init_aa, init_up = "dlaa", "dlss"
+        elif self.ini.get("effect_game_aa", "1") == "1":
+            init_aa = "fxaa"
+            init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
+        else:
+            init_aa = "off"
+            init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
+        self.aa_row = combo_row(
+            tr("Сглаживание"),
+            tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении"),
+            ANTI_ALIASING, init_aa)
+        upscaler.add(self.aa_row)
+        self.upscaler_row = combo_row(tr("Апскейлер"), None, UPSCALERS, init_up)
+        self.aa_row.connect("notify::selected", lambda *_: self.on_aa_changed())
         self.upscaler_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         upscaler.add(self.upscaler_row)
         # FSR 4.1.1 is built from the user's own AMD DLL (nothing of AMD's is shipped).
@@ -855,7 +861,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             tr("Preset M/L — трансформер 2-го поколения (DLSS 4.5); Preset K — DLSS 4.0"),
             DLSS_PRESETS, self.ini.get("dlss_preset", "11"))
         upscaler.add(self.dlss_preset_row)
-        self.preset_row = combo_row(tr("Режим масштабирования"), None, PRESETS, int(self.ini.get("preset", "0")))
+        self.preset_row = combo_row(tr("Режим масштабирования"), None, PRESETS, raw_preset)
         self.preset_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         self.output_row.connect("notify::selected", lambda *_: self.update_upscaler_status())
         upscaler.add(self.preset_row)
@@ -908,18 +914,43 @@ class LauncherWindow(Adw.ApplicationWindow):
         page.add(effects)
 
         frames = Adw.PreferencesGroup(title=tr("Частота кадров"))
-        self.fps_row = combo_row(tr("Режим"), tr("Какой патч частоты кадров применить к игре"),
-                                 FPS_MODES, self.settings["fps_mode"])
-        frames.add(self.fps_row)
-        self.limit_row = Adw.SpinRow.new_with_range(0, 480, 1)
-        self.limit_row.set_title(tr("Ограничение FPS"))
-        self.limit_row.set_subtitle(tr("0 — без ограничения; хранится в bbport.ini и меняется в игре"))
         ini_fps_limit = int(self.ini.get("fps_limit", "0") or 0)
-        self.limit_row.set_value(ini_fps_limit if ini_fps_limit > 0 else self.settings["fps_limit"])
+        cur_fps = ini_fps_limit if ini_fps_limit > 0 else int(self.settings.get("fps_limit", 0) or 0)
+        preset_vals = [v for _, v in FPS_PRESET_CHOICES if v >= 0]
+        self.fps_row = combo_row(
+            tr("Пресет частоты кадров"),
+            tr("Переключается в игре на лету (System → Display или F8); потолок FixedBlockPool разблокирован"),
+            FPS_PRESET_CHOICES, cur_fps if cur_fps in preset_vals else -1)
+        frames.add(self.fps_row)
+        self.limit_row = Adw.SpinRow.new_with_range(0, 5000, 1)
+        self.limit_row.set_title(tr("Точное ограничение FPS"))
+        self.limit_row.set_subtitle(tr("0 — без лимита (честный анлимит 0.0 мс); хранится в bbport.ini"))
+        self.limit_row.set_value(cur_fps)
+        self._syncing_fps = False
+        def on_fps_preset(*_):
+            if self._syncing_fps:
+                return
+            val = combo_value(self.fps_row)
+            if val >= 0:
+                self._syncing_fps = True
+                self.limit_row.set_value(val)
+                self._syncing_fps = False
+        def on_fps_spin(*_):
+            if self._syncing_fps:
+                return
+            val = int(self.limit_row.get_value())
+            target = val if val in preset_vals else -1
+            self._syncing_fps = True
+            self.fps_row.set_selected(self.fps_row.values.index(target))
+            self._syncing_fps = False
+        self.fps_row.connect("notify::selected", on_fps_preset)
+        self.limit_row.connect("notify::value", on_fps_spin)
         frames.add(self.limit_row)
         page.add(frames)
 
-        perf = Adw.PreferencesGroup(title=tr("Производительность"))
+        perf = Adw.PreferencesGroup(
+            title=tr("Производительность (C++20 Engine & DirectVk 1.3)"),
+            description=tr("Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)"))
         self.pipe_row = combo_row(
             tr("Двухстадийный конвейер GPU"),
             tr("Быстрее на 20–30%; при нестабильности выключите"), DRAW_PIPE,
@@ -945,15 +976,6 @@ class LauncherWindow(Adw.ApplicationWindow):
             subtitle=tr("В папку logs в каталоге данных: для разбора рывков и вылетов"),
             active=self.settings.get("save_log", False))
         dev.add(self.save_log_row)
-        self.crash_diag_row = Adw.SwitchRow(
-            title=tr("Диагностика вылетов"),
-            subtitle=tr("Проверяет кучу игры и записывает записи в её память; немного медленнее"),
-            active=self.settings.get("crash_diag", False))
-        dev.add(self.crash_diag_row)
-        self.stats_row = Adw.SwitchRow(title=tr("Статистика кадров в журнале"),
-                                       subtitle="BB_FRAME_STATS",
-                                       active=self.settings["frame_stats"])
-        dev.add(self.stats_row)
         self.profile_row = Adw.SwitchRow(title=tr("Профиль GPU в журнале"),
                                          subtitle="BB_GPU_PROFILE",
                                          active=self.settings["gpu_profile"])
@@ -1029,8 +1051,18 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.update_user_status()
         self.store()
 
+    def on_aa_changed(self):
+        aa = combo_value(self.aa_row)
+        if aa == "dlaa":
+            self.upscaler_row.set_selected(self.upscaler_row.values.index("dlss"))
+            self.preset_row.set_selected(self.preset_row.values.index(0))
+        elif aa == "taa":
+            self.upscaler_row.set_selected(self.upscaler_row.values.index("off"))
+        self.update_upscaler_status()
+
     def update_upscaler_status(self):
         value = combo_value(self.upscaler_row)
+        aa = combo_value(self.aa_row) if hasattr(self, "aa_row") else "fxaa"
         if value == "fsr4":
             ok = (PORT_DIR / "fsr4_shaders").is_dir()
             hint = tr("Ассеты найдены") if ok else tr("Нет ассетов: tools/fetch_fsr4_assets.sh")
@@ -1049,10 +1081,13 @@ class LauncherWindow(Adw.ApplicationWindow):
             hint = tr("DLSS найден (нужна видеокарта NVIDIA RTX)") if found else tr(
                 "DLSS не найден: выберите библиотеку NVIDIA ниже (и нужна сборка с мостом DLSS). Игра включит FSR 3.1")
         else:
-            hint = tr("Сглаживание в разрешении вывода без модели FSR") if value == "taa" else None
-        self.preset_row.set_sensitive(value not in ("taa", "off"))
-        self.sharpen_row.set_sensitive(value != "off")
-        self.sharpness_row.set_sensitive(value != "off")
+            hint = tr("Сглаживание TAA активно в разрешении вывода") if aa == "taa" else None
+        is_active = value != "off" or aa == "taa"
+        self.preset_row.set_sensitive(value != "off")
+        if hasattr(self, "dlss_preset_row"):
+            self.dlss_preset_row.set_sensitive(value == "dlss" or aa == "dlaa")
+        self.sharpen_row.set_sensitive(is_active)
+        self.sharpness_row.set_sensitive(is_active)
         self.upscaler_row.set_subtitle(hint or "")
 
     def game_problem(self, path):
@@ -1228,19 +1263,19 @@ class LauncherWindow(Adw.ApplicationWindow):
         s["fullscreen"] = self.fullscreen_row.get_active()
         s["present_mode"] = combo_value(self.present_row)
         s["hdr"] = self.hdr_row.get_active()
-        s["fps_mode"] = combo_value(self.fps_row)
+        s["fps_mode"] = "uncap"
         s["fps_limit"] = int(self.limit_row.get_value())
         s["draw_pipe"] = combo_value(self.pipe_row)
         s["hw_occlusion_cull"] = self.occlusion_cull_row.get_active()
         s["native_shaders"] = self.native_shaders_row.get_active()
         s.pop("readbacks", None)
         s.pop("preupload", None)
+        s.pop("crash_diag", None)
+        s.pop("frame_stats", None)
+        s.pop("memory_model", None)
+        s.pop("as_0_3", None)
         s["mangohud"] = self.mangohud_row.get_active()
-        s["frame_stats"] = self.stats_row.get_active()
         s["save_log"] = self.save_log_row.get_active()
-        s["crash_diag"] = self.crash_diag_row.get_active()
-        s["memory_model"] = "new"
-        s["as_0_3"] = False
         s["gpu_profile"] = self.profile_row.get_active()
         s["vk_validation"] = self.validation_row.get_active()
         s["extra_env"] = self.extra_row.get_text().strip()
@@ -1259,9 +1294,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.save_mod_profile()
         self.save_patch_profile()
         save_settings(s)
+        aa_val = combo_value(self.aa_row)
+        up_val = combo_value(self.upscaler_row)
+        saved_upscaler = "taa" if (aa_val == "taa" and up_val == "off") else ("dlss" if aa_val == "dlaa" else up_val)
+        saved_preset = "0" if aa_val == "dlaa" else str(combo_value(self.preset_row))
         self.ini.update({
-            "upscaler": combo_value(self.upscaler_row),
-            "preset": str(combo_value(self.preset_row)),
+            "upscaler": saved_upscaler,
+            "preset": saved_preset,
             "dlss_preset": str(combo_value(self.dlss_preset_row)),
             "anisotropic": str(combo_value(self.aniso_row)),
             "fps_limit": str(int(self.limit_row.get_value())),
@@ -1276,7 +1315,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             "aspect_ratio": combo_value(self.aspect_row),
             "output_res": combo_value(self.output_row),
             "model_lod": combo_value(self.lod_row),
-            "live_resolution": combo_value(self.live_row),
+            "live_resolution": "0",
+            "effect_game_aa": "1" if aa_val == "fxaa" else "0",
             "mouse_look": "1" if self.mouse_look_row.get_active() else "0",
             "mouse_sensitivity": f"{self.mouse_sensitivity_row.get_value():.2f}",
             "mouse_invert_y": "1" if self.mouse_invert_row.get_active() else "0",

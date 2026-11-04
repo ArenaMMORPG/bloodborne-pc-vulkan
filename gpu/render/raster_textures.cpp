@@ -932,9 +932,9 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image
     // N3.2: Single-pass zero-write fast path when every non-null texture in the set is a settled
     // read-only DirectImmutable asset in ShaderReadOnlyOptimal (no LRU churn, no bound_images
     // write+clear, no Image cache-line dirtying, and no Runtime::Transit / GetBarriers calls).
-    // Safe even when prompts_on is true because entry.immutable_ro already excludes MaybePromptIcon,
-    // prompt_icon, and prompt_atlas.
-    if (set.all_direct_immutable && !upscaler_on) {
+    // Safe even when prompts_on or upscaler_on is true because entry.immutable_ro already excludes
+    // MaybePromptIcon, prompt_icon, prompt_atlas, scene_proxy, and GpuModified render targets.
+    if (set.all_direct_immutable) {
         bool fast_ok = true;
         for (u32 i = 0; i < count; ++i) {
             const auto& entry = set.entries[i];
@@ -1006,7 +1006,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const u64* image
             continue;
         }
         auto& image = texture_cache.GetImageUntouched(entry.id);
-        if (entry.immutable_ro && !upscaler_on &&
+        if (entry.immutable_ro &&
             image.backing->subresource_states.empty() &&
             image.backing->state.layout == vk::ImageLayout::eShaderReadOnlyOptimal &&
             image.backing->state.access_mask == vk::AccessFlagBits2::eShaderRead) {

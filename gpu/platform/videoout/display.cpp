@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "bbport_frame_rate.h"
+#include "bbport_threads.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
@@ -284,6 +285,7 @@ void Display::RunPresenter(std::function<void()> work, bool only_if_idle) {
 
 void Display::PresentThread(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:Present");
+    BbThreads::PinToGpuDomain();
     while (true) {
         std::function<void()> work;
         {

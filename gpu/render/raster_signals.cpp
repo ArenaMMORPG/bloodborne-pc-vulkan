@@ -635,17 +635,15 @@ void Rasterizer::GpuSignalLoop(std::stop_token token) {
         bool watched = false;
         auto asked_at = wait_start - std::chrono::seconds(1);
         while (!token.stop_requested()) {
-            // Short waits first: a tick not handed to the GPU yet is asked for (below).
-            const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, 2'000'000);
+            // Short waits first: if the tick is not handed to the GPU yet, use a 50 us poll instead
+            // of blocking for 2 ms before requesting a flush.
+            const u64 wait_ns = scheduler.IsSubmitted(tick) ? 2'000'000ULL : 50'000ULL;
+            const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, wait_ns);
             if (result == vk::Result::eSuccess) {
                 break;
             }
-            // The fence waits for work still being recorded, and the GPU command thread may be
-            // idle already (it submits for fences once when it runs out of work; a fence queued
-            // after that waited forever: a black screen, the guest polling the label). Ask it to
-            // submit, every 50 ms while this lasts.
             if (result == vk::Result::eTimeout && !scheduler.IsSubmitted(tick) &&
-                std::chrono::steady_clock::now() - asked_at >= std::chrono::milliseconds(50)) {
+                std::chrono::steady_clock::now() - asked_at >= std::chrono::microseconds(250)) {
                 asked_at = std::chrono::steady_clock::now();
                 liverpool->SendCommand([this] {
                     if (PipeSignals()) {

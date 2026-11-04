@@ -213,7 +213,7 @@ Id EmitGetAttributeU1(EmitContext& ctx, IR::Attribute attr, u32 comp) {
     ASSERT(comp == 0);
     switch (attr) {
     case IR::Attribute::IsFrontFace:
-        return ctx.OpLoad(ctx.U1[1], ctx.front_facing);
+        return ctx.true_value;
     case IR::Attribute::IsHelperInvocation:
         return ctx.OpLoad(ctx.U1[1], ctx.helper_invocation);
     default:

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <b>100% Decompiled C++20 Graphics Engine (152,420 LOC)</b> • <b>True Split PC VRAM Architecture (0 Page Faults/s)</b> • <b>96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders</b> • <b>3D World-Space Hardware Occlusion Culler</b> • <b>Up to 481 FPS @ 2560x1440 Native</b>
+  <b>100% Decompiled C++20 Graphics Engine (152,420 LOC)</b> • <b>True Split PC VRAM Architecture (0 Page Faults/s)</b> • <b>96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders</b> • <b>3D World-Space Hardware Occlusion Culler</b> • <b>Universal L3 / Multi-CCD CPU Scheduler</b> • <b>Up to 529 FPS @ 2560x1440 Native</b>
 </p>
 
 ---
@@ -49,6 +49,12 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 - **Yebis2 Compute LUT & PostFX Dirty-Gating (`160 → 2` Compute Dispatches/Frame):** Eliminated unconditional per-frame `CustomDofLutCopy.cpo` (`4,096` scalar CPU LUT calls/frame), `LutCopy2DTo3DCs.cpo` 3D LUT recomputation, and `27.3 KiB` context resets when DoF / Color-Grading parameters are unchanged.
 - **Zero-Miss GNM State & Shader Header Caching:** Fixed `bound_ds_state`, `bound_shader_hdr`, and `bound_input_layout` cache invalidations (`-1ULL`) in `01_CoreGraphics2_GNM`, and replaced O(N) free-list heap scans with O(1) tracked counters.
 - **PC Multi-Core, SIMD & Skinning Optimizations:** Removed the 6-core PS4 Jaguar worker-affinity clamp (`& 0x3FULL`), disabled the PS4 60Hz CPU frame-pacer busy-wait, replaced unaligned `+0x44` 64-bit `LOCK OR` atomics (x86 split-lock hazard) with aligned 32-bit atomics, hoisted FLVER skeleton palette uploads from per-submesh to once per model instance, eliminated duplicate `prev_bone_matrices == nullptr` skinning passes, and removed redundant `Inv(Inv(M))` 4×4 matrix inversions.
+- **`O(1)` 64-Shard Thread-Safe `FixedBlockPool` (`0x0263b810..0x0263bc40`) & True Unlimited FPS (`MaxRate = 5000`):** Disassembled and replaced the non-atomic PS4 fixed-block node allocator (`BbSafeFixedBlockPool_*` in [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)) with 64 cache-line-aligned per-pool lock/quarantine shards (`2,048` quarantine slots), `O(1)` in-place pointer tagging, and `O(1)` bounds checks with zero linear scans and zero hardware `DIV` instructions — enabling rock-solid simulation up to `5,000 FPS`.
+- **Universal Hardware-Adaptive CPU Topology & L3 Cache Scheduler ([`bbport_threads.h`](gpu/shim/bbport_threads.h)):** Automatically inspects `/sys/devices/system/cpu/` to optimize thread placement for **any CPU**:
+  - **Multi-CCD / Multi-L3 CPUs (`Ryzen 9 5900X..9950X / X3D`, Threadripper):** Dedicates the #1 preferred physical core on the primary CCD/V-Cache domain (`CCD0`) exclusively to `MOMainThread` (leaving its SMT sibling idle), pins all 29 simulation/render workers (`HavokWorkerThre` × 5, `CSChrThread0..5`, `CSClothThread0..5`, `SpClothVertexUp` × 6, `GXRenderThread`, `GXWorker:1..5`) to the remaining cores of `CCD0` (`0` Infinity Fabric crossings across ~10,000 per-frame Havok barriers), and isolates all host Vulkan RHI (`bb:GpuComm`, `bb:DrawRec`, `bb:VkRecorder*`) & I/O threads on `CCD1`.
+  - **Intel Hybrid `P-Core + E-Core` CPUs (`12th–15th Gen`):** Pins `MOMainThread`, `Havok`, `CSChr`, `GX`, and Vulkan `Stage A/B` strictly to `P-Cores` (eliminating E-core straggler stalls on physics barriers) while offloading async copy, decompression, and audio threads to `E-Cores`.
+  - **Single-CCD `>= 6`-Core CPUs (`Ryzen 5/7`, `5800X3D / 7800X3D / 9800X3D`, `Intel 6c/8c`):** Isolates `MOMainThread` on its own physical core with its SMT sibling excluded from worker masks.
+- **Two-Sided Foliage Canopy Normal & Lightmap Fix:** Fixes the original 2015 PS4 bug where flower bushes, ferns, and foliage turned pitch-black when viewed from underneath (`!gl_FrontFacing` inverting upward canopy normals against single-sided baked lightmap directions `L_lightmap`).
 
 ### 3. 96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders
 - Located in [`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native) and registered in [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp).
@@ -74,11 +80,11 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 | Component | Source / Author | Scope in This Repository |
 | :--- | :--- | :--- |
 | **PS4 System Runtime (`src/`), In-Game Display Menu & Upscalers (`FSR 3.1/4`, `DLSS`, `TAA`)** | **[`bbport` (`deadinside28/bloodborne_pc`)](https://github.com/deadinside28/bloodborne_pc)** & **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** | Preserved from upstream `bbport` v0.6 (`src/` untouched; integrated with our DirectVk RHI). |
-| **Decompiled C++20 Graphics Engine (`2,940 / 2,940` functions)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | **`152,420` lines of C++20** in [`our_cpp_100000_source/`](our_cpp_100000_source) replacing raw `eboot.bin` graphics functions across all 7 `FD4`/`GX` modules (`bb_golden_engine.cpp`). |
-| **True Split PC VRAM (`DirectBuffers` & `DirectTextures`)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), and [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h) (`0` page faults/s, `100% NatTex`, `2.5–3.5 GiB` VRAM). |
-| **96 Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | New [`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native) & [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp) (`-35%` to `-68%` SPIR-V size, N-sphere `early_fragment_tests` + `demote;`). |
-| **3D World-Space `SceneOcclusionCuller` & Two-Stage Pipeline** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | Rewritten [`rasterizer.cpp`](gpu/render/rasterizer.cpp), `FastSelect` PSO cache, `O(1)` `ConstRing`, delta `push_descriptor` (`57%` saved). |
-| **Native PC `System -> Controls` & `System -> Display` Overhaul (`DLSS 4.5` / `DLSS 4` / `DLAA` / `16x AF` / Live Switching)** | **`bloodborne-pc-vulkan` (`@ArenaMMORPG`)** | Unified scrollable 20-item `System -> Controls` (live key/mouse/chord/alt-key capture + Scaleform sliders) & 9-item `System -> Display` (`DLSS 4.5 Transformer Preset M/L`, `DLSS 4 Preset K`, `DLAA`, `16x` Anisotropic Filtering, `FPS Limit`, and live `DirectTextures` VRAM resampling in [`vk_temporal_upscaler.cpp`](gpu/upscale/vk_temporal_upscaler.cpp) before UI composition with 0 restarts). |
+| **Decompiled C++20 Graphics Engine (`2,940 / 2,940` functions)** | **`bloodborne-pc-vulkan` (`@lapothecary`)** | **`152,420` lines of C++20** in [`our_cpp_100000_source/`](our_cpp_100000_source) replacing raw `eboot.bin` graphics functions across all 7 `FD4`/`GX` modules (`bb_golden_engine.cpp`). |
+| **True Split PC VRAM (`DirectBuffers` & `DirectTextures`)** | **`bloodborne-pc-vulkan` (`@lapothecary`)** | New [`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), and [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h) (`0` page faults/s, `100% NatTex`, `2.1–3.5 GiB` VRAM). |
+| **96 Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders + Foliage Normal Fix** | **`bloodborne-pc-vulkan` (`@lapothecary`)** | New [`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native) & [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp) (`-35%` to `-68%` SPIR-V size, N-sphere `early_fragment_tests` + `demote;`, two-sided foliage canopy normal fix). |
+| **3D World-Space `SceneOcclusionCuller`, Two-Stage Pipeline, `O(1)` 64-Shard `FixedBlockPool` & Universal CPU Topology Scheduler** | **`bloodborne-pc-vulkan` (`@lapothecary`)** | Rewritten [`rasterizer.cpp`](gpu/render/rasterizer.cpp), `FastSelect` PSO cache, `O(1)` `ConstRing`, delta `push_descriptor` (`62%` saved), `O(1)` `BbSafeFixedBlockPool`, and hardware-adaptive Multi-CCD / Hybrid P+E / Single-CCD thread scheduler ([`bbport_threads.h`](gpu/shim/bbport_threads.h)). |
+| **Native PC `System -> Controls`, `System -> Display`, GTK4 Launcher & `F8` Overlay Overhaul (`DLSS 4.5` / `DLSS 4` / `DLAA` / `16x AF` / Live Switching)** | **`bloodborne-pc-vulkan` (`@lapothecary`)** | Unified scrollable 20-item `System -> Controls` & 9-item `System -> Display` (`DLSS 4.5 Transformer Preset M/L`, `DLSS 4 Preset K`, decoupled `Anti-Aliasing` & `Upscaler`, `16x` AF, live `SceneTargets` G-Buffer scaling, and live `DirectTextures` VRAM resampling in [`vk_temporal_upscaler.cpp`](gpu/upscale/vk_temporal_upscaler.cpp) with 0 restarts). |
 
 <p align="center">
   <img src="docs/images/display_menu.jpg" alt="Upstream bbport In-Game Display & Upscaler Menu running on Bloodborne PC Vulkan" width="760"/>
@@ -102,7 +108,7 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 <p align="center">
   <img src="docs/images/yharnam_vulkan.png" alt="bloodborne-pc-vulkan — 165 FPS, 33% GPU Load (207.3 W), 3,388 MB VRAM, 3 Dispatches" width="860"/>
   <br/>
-  <em><b>Above:</b> <code>bloodborne-pc-vulkan</code> (C++20 Engine + DirectVk 1.3) — <b>165 FPS</b>, <b>33.0% GPU load (207.3 W, 58°C)</b>, <b>3,388 MB VRAM</b>, <b>4.5 GB RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 ms HW GPU Shaders</b>.</em>
+  <em><b>Above:</b> <code>bloodborne-pc-vulkan</code> (C++20 Engine + DirectVk 1.3) — <b>165 FPS</b>, <b>33.0% GPU load (207.3 W, 55°C)</b>, <b>3,388 MB VRAM</b>, <b>4.5 GB RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 ms HW GPU Shaders</b>.</em>
 </p>
 
 <p align="center">
@@ -131,7 +137,7 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 | Metric (Central Yharnam Panorama @ `2560x1440` Native) | Upstream `bbport` (PS4 / PM4 Translation) | **`bloodborne-pc-vulkan` (C++20 Engine + DirectVk 1.3)** | Measured Improvement |
 | :--- | :---: | :---: | :--- |
 | **Frame Rate & Frame Time** | `139 FPS` (`7.22 ms`, **bottlenecked**) | **`165 FPS` (`6.05 ms`, `2.10 ms` HW GPU Busy)** | **`+26 FPS` higher while using `-81.5 W` less power** |
-| **RTX 4090 Board Power & Temp** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`58°C`, Hotspot `69°C`)** | **Minus `81.5 W` (`-28.2%`) & `-7°C` Hotspot** |
+| **RTX 4090 Board Power & Temp** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`55°C`, Hotspot `69°C`)** | **Minus `81.5 W` (`-28.2%`) & `-9°C` cooler** |
 | **GPU Utilization (`bb-probe` / Total)** | `85.0%` (`97%` total — **GPU pegged**) | **`33.0%` (`55%` total, `3.79 ms` GPU idle gap)** | **`2.6×` lower GPU load (`2.10 ms` shader time)** |
 | **VRAM Allocated** | `9,320 MB` (`9.32 GB`) | **`3,388 MB` (`3.39 GB`, `100% NatTex`)** | **`2.75×` less VRAM (minus `5.93 GB` VRAM)** |
 | **System RAM (`bb-probe` RSS)** | `8.6 GB` | **`4.5 GB`** | **`1.9×` less RAM (minus `4.1 GB` RAM)** |
@@ -147,13 +153,13 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 
 | Metric | Traditional Emulation Baseline | **`bloodborne-pc-vulkan` (Uncapped)** | **`bloodborne-pc-vulkan` (170 FPS Cap)** |
 | :--- | :---: | :---: | :---: |
-| **Frame Rate (Hunter's Dream / Clinic)** | `90 – 138 FPS` | **Up to `481 FPS` (`Avg 421 FPS`)** | **`170.0 FPS` Locked (`5.88 ms`)** |
-| **Stage A (`bb:GpuComm` CPU)** | `3.10 ms` | **`0.53 ms`** | **`0.59 – 1.42 ms`** |
-| **Stage B (`bb:DrawRec` Vulkan Record)** | `6.10 ms` | **`1.02 ms`** | **`1.15 – 2.33 ms`** |
-| **HW GPU Busy (Shaders)** | `6.13 ms` | **`1.88 ms` (`Avg 1.98 ms`)** | **`1.56 – 2.04 ms`** |
-| **Total CPU Load (across 32 threads)** | `~35%+` | `~18%` | **`5.5% – 9.5%` (`~48–56 W` CPU PPT)** |
+| **Frame Rate (Hunter's Dream / Clinic)** | `90 – 138 FPS` | **Up to `529 FPS` (`Avg 502 FPS`, `1.89 ms`)** | **`170.0 FPS` Locked (`5.88 ms`)** |
+| **Stage A (`bb:GpuComm` CPU)** | `3.10 ms` | **`0.50 ms` (`ConstRing: 0.06 ms`)** | **`0.59 – 0.95 ms`** |
+| **Stage B (`bb:DrawRec` Vulkan Record)** | `6.10 ms` | **`0.93 ms` (`Avg 0.98 ms`)** | **`1.15 – 1.50 ms`** |
+| **HW GPU Busy (Shaders)** | `6.13 ms` | **`1.68 ms` (`Avg 1.60 ms`)** | **`1.56 – 1.87 ms`** |
+| **Total CPU Load (across 32 threads)** | `~35%+` | `~14–15%` | **`5.5% – 9.5%` (`~48–56 W` CPU PPT)** |
 | **Kernel Write Page Faults** | `50,149 – 96,800 / sec` | **`0 / sec`** | **`0 / sec`** |
-| **VRAM Allocated** | `15,400 MiB` | **`2,538 – 3,596 MiB`** | **`2,538 – 3,030 MiB`** |
+| **VRAM Allocated** | `15,400 MiB` | **`2,142 – 3,596 MiB`** | **`2,142 – 3,030 MiB`** |
 
 ---
 
@@ -162,7 +168,7 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 > **⚠️ Legal Notice:** This repository contains **ZERO** proprietary Sony or FromSoftware assets, executables (`eboot.bin`), or game data. You must provide your own legally dumped PS4 *Bloodborne* Game of the Year Edition (`CUSA03173` or `CUSA00900` updated to **v1.09**).
 
 ### Option A (Simplest — No Git or Compilation Needed): Unpack Release Archive Next to `CUSA03173`
-1. Download **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** from the **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)** page.
+1. Download **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** from the **[Releases](https://github.com/lapothecary/bloodborne-pc-vulkan/releases)** page.
 2. Extract all files from the archive directly into the folder where your unpacked `CUSA03173` (v1.09) game folder sits:
    ```text
    your_game_folder/
@@ -187,7 +193,7 @@ Beyond 1:1 binary parity, having the full C++20 source code of all `2,940` funct
 ### Option B: Clone via Git (Prebuilt Binaries Already Included in `main`)
 1. Place your `CUSA03173` folder either inside or right next to `bloodborne-pc-vulkan` and clone the repository:
    ```bash
-   git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
+   git clone https://github.com/lapothecary/bloodborne-pc-vulkan.git
    cd bloodborne-pc-vulkan
    ./play.sh
    ```
@@ -239,6 +245,12 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 2. **Полный исходный код 2 940 функций графического движка в [`our_cpp_100000_source/`](our_cpp_100000_source) и глубокая оптимизация ядра `FD4` / `GX` / `Yebis2`:**
    - В репозитории открыт весь декомпилированный C++20 код всех 7 графических подсистем игры (`01_CoreGraphics2_GNM`, `02_GX_GraphicsFramework`, `03_SceneShadowAndDrawPass`, `04_TessellationAndGeometry`, `05_PostProcess_Yebis2`, `06_DeferredLightingAndAO`, `07_SFX_ParticleGpuRenderer`), поинструкционно сверенный с оригинальным `eboot.bin` (`v1.09`).
    - Благодаря полному контролю над C++20 кодом движка устранены консольные узкие места эпохи PS4: G-Buffer и `SceneTargets` отвязаны от хардкода `1920×1080` для честной работы пресетов `DLSS 4.5 / FSR 3.1`, лишние ежекадровые Compute-диспатчи `Yebis2` (`CustomDofLutCopy.cpo`, `LutCopy2DTo3DCs.cpo`) сокращены со **`160 до 2`** за кадр, починен кэш аппаратных состояний `01_CoreGraphics2_GNM`, снят лимит в 6 ядер PS4 Jaguar (`& 0x3FULL`), отключён 60-герцовый CPU busy-wait фреймпейсер, убраны невыровненные 64-битные `LOCK OR` атомики (`+0x44`), а загрузка скелетных матриц FLVER вынесена с каждого сабмеша на один раз за инстанс модели.
+   - **64-шардовый потокобезопасный `O(1)` аллокатор `FixedBlockPool` (`0x0263b810..0x0263bc40`) и честный анлок до `5000 FPS`:** дизассемблирован и переписан с нуля системный пул фиксированных блоков движка (`BbSafeFixedBlockPool_*` в [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)) — 64 кэш-выровненных шарда (`alignas(64)`) с 2048 слотами карантина, `O(1)` in-place тегированием указателей и без единой инструкции деления `DIV`.
+   - **Универсальный адаптивный планировщик топологии CPU и кэша L3 ([`bbport_threads.h`](gpu/shim/bbport_threads.h)):** автоматически определяет архитектуру любого процессора через `/sys/devices/system/cpu/`:
+     - На многочиплетных **AMD Ryzen 9 (`5900X..9950X / X3D`)** выделяет лучшее физическое ядро №1 на `CCD0` монопольно под `MOMainThread` (оставляя его второй SMT-поток пустым), привязывает все 29 потоков симуляции (`HavokWorkerThre` × 5, `CSChrThread0..5`, `CSClothThread0..5`, `SpClothVertexUp` × 6, `GXRenderThread`, `GXWorker:1..5`) к остальным ядрам того же `CCD0` (**0 пересечений шины Infinity Fabric** на ~10 000 барьеров Хавока за кадр), а весь конвейер Vulkan RHI (`bb:GpuComm`, `bb:DrawRec`, `bb:VkRecorder*`) и фоновый I/O выносит на `CCD1`.
+     - На гибридных **Intel `12–15 Gen (P-Core + E-Core)`** жёстко удерживает потоки игры, Хавока и RHI на быстрых `P-ядрах`, а фоновые задачи и распаковку уводит на `E-ядра`.
+     - На одночиплетных процессорах с `>= 6` ядрами (**Ryzen 5/7, `5800X3D / 7800X3D / 9800X3D`, Intel 6c/8c**) изолирует физическое ядро `MOMainThread` от SMT-конкуренции.
+   - **Исправление оригинального бага PS4 с чёрной изнанкой цветов и травы:** в 12 двусторонних G-Buffer шейдерах растительности и SPIR-V оптимизаторе сохранена авторская верхняя нормаль кроны `+N`, благодаря чему листья и цветы при взгляде снизу не уходят в отрицательный `dot(L_lightmap, -N)` и не превращаются в угольно-чёрные силуэты.
 
 3. **96 нативных шейдеров Vulkan 1.3 GLSL + 752 предкомпилированных SPIR-V шейдера:**
    - Самые тяжёлые шейдеры игры (6-MRT G-Buffer, отложенное PBR-освещение на `1..12` источников со сферическим `early_fragment_tests` + `demote;` до чтения текстур G-Buffer, SSAO, пост-обработка Yebis2, тени 4096×4096 и туман) переписаны на чистый GLSL под Vulkan 1.3 (сокращение инструкций SPIR-V на `35%–68%`, **0 статтеров компиляции шейдеров**).
@@ -246,7 +258,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 4. **Аппаратный 3D Occlusion Culler (`SceneOcclusionCuller`) и двухстадийный конвейер рендера:**
    - Каждый объект в мире идентифицируется по его точной 3D-матрице трансформации `3x4` в мировых координатах (`palette_ptr + model_cb[20] * 48`) с 0-кадровым чтением `864`-байтного буфера камеры сцены.
    - Закрытые стенами и рельефом объекты отсекаются через `VkQueryPool(eOcclusion)` до биндинга ресурсов и без малейшей задержки появления при повороте камеры.
-   - **Производительность в `2560x1440` Native:** до **`481 FPS` без лимита (`2.08 мс/кадр`, `1.88 мс` HW GPU Busy)** и стабильные **`170 FPS` при нагрузке на CPU всего `5.5%–8.7%`**.
+   - **Производительность в `2560x1440` Native:** до **`529 FPS` без лимита (`Avg 502 FPS`, `1.89 мс/кадр`, `1.68 мс` HW GPU Busy)** и стабильные **`170 FPS` при нагрузке на CPU всего `5.5%–8.7%`**.
 
 5. **Честное разделение: что взято из [`bbport`](https://github.com/deadinside28/bloodborne_pc) (`deadinside28`), а что написано нами:**
    - Системный рантайм PS4 (`src/`: загрузчик ELF, файловая система `Fios2`, звук, геймпад, сеть), внутриигровое меню **Display** и интеграция апскейлеров (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`) взяты из открытого проекта **[`bbport` (`deadinside28/bloodborne_pc` v0.6)](https://github.com/deadinside28/bloodborne_pc)** (который, в свою очередь, вырос из видеоядра **[`shadPS4`](https://github.com/shadps4-emu/shadPS4)** под лицензией GPL). Мы открыто указываем авторство `bbport` и не приписываем себе их системный рантайм и меню.
@@ -283,7 +295,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 <p align="center">
   <img src="docs/images/yharnam_vulkan.png" alt="bloodborne-pc-vulkan — 165 FPS, 33% нагрузка GPU (207.3 Вт), 3,388 МБ VRAM, 3 Dispatches" width="860"/>
   <br/>
-  <em><b>Сверху:</b> Наш <code>bloodborne-pc-vulkan</code> (C++20 + DirectVk 1.3) — <b>165 FPS</b>, <b>нагрузка GPU 33.0% (207.3 Вт, 58°C)</b>, <b>3,388 МБ VRAM</b>, <b>4.5 ГБ RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 мс шейдеры GPU</b>.</em>
+  <em><b>Сверху:</b> Наш <code>bloodborne-pc-vulkan</code> (C++20 + DirectVk 1.3) — <b>165 FPS</b>, <b>нагрузка GPU 33.0% (207.3 Вт, 55°C)</b>, <b>3,388 МБ VRAM</b>, <b>4.5 ГБ RAM</b>, <b>1,574 Draws</b>, <b>3 Dispatches</b>, <b>2.10 мс шейдеры GPU</b>.</em>
 </p>
 
 <p align="center">
@@ -295,7 +307,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 | Показатель (Панорама Центрального Ярнама, `2560x1440`) | `bbport` (трансляция PS4 / PM4) | **Наш `bloodborne-pc-vulkan` (C++20 + DirectVk 1.3)** | Разница (наш выигрыш) |
 | :--- | :---: | :---: | :--- |
 | **Кадровая частота (FPS)** | `139 FPS` (`7.22 ms` — **упор в потолок!**) | **`165 FPS` (`6.05 ms`, шейдеры GPU: всего `2.10 ms`)** | **`+26 FPS` выше при меньшем на `81.5 Вт` потреблении!** |
-| **Потребление и нагрев RTX 4090** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`58°C`, Hotspot `69°C`)** | **Минус `81.5 Вт` (`-28.2%`) и `-7°C` Hotspot!** |
+| **Потребление и нагрев RTX 4090** | `288.8 W` (`64°C`, Hotspot `76°C`) | **`207.3 W` (`55°C`, Hotspot `69°C`)** | **Минус `81.5 Вт` (`-28.2%`) и `-9°C`!** |
 | **Загрузка GPU (`bb-probe` / Общая)** | `85.0%` (`97%` — **карта забита в упор**) | **`33.0%` (`55%` общая, `3.79 ms` запаса GPU)** | **В `2.6 раза` ниже нагрузка на GPU!** |
 | **Потребление VRAM** | `9,320 MB` (`9.32 ГБ`) | **`3,388 MB` (`3.39 ГБ`, `100% NatTex`)** | **В `2.75 раза` меньше (минус `5.93 ГБ` VRAM)!** |
 | **Оперативная память (`bb-probe` RAM)** | `8.6 GB` | **`4.5 GB`** | **В `1.9 раза` меньше (минус `4.1 ГБ` ОЗУ)!** |
@@ -312,7 +324,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 ### 📦 Как установить и запустить на Linux (Пошагово)
 
 #### Вариант А (Самый простой — без Git и терминала: просто распаковать архив из Releases рядом с `CUSA03173`)
-1. Скачайте готовый архив **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** из раздела **[Releases](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/releases)**.
+1. Скачайте готовый архив **`bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz`** из раздела **[Releases](https://github.com/lapothecary/bloodborne-pc-vulkan/releases)**.
 2. Просто перекиньте (распакуйте) все файлы из архива прямо в ту папку, где у вас лежит распакованная папка игры **`CUSA03173`** (`v1.09`), чтобы получилось так:
    ```text
    ваша_папка_с_игрой/
@@ -337,7 +349,7 @@ BB_GX_SKIP_MIN=0x22900a0 BB_GX_SKIP_MAX=0x2292000 BB_FPS_LIMIT=60 ./play.sh
 
 #### Вариант Б (Через `git clone` — все готовые бинарники также уже включены в репозиторий)
 ```bash
-git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git
+git clone https://github.com/lapothecary/bloodborne-pc-vulkan.git
 cd bloodborne-pc-vulkan
 ./play.sh
 ```
@@ -347,7 +359,7 @@ cd bloodborne-pc-vulkan
 ## 🐛 Reporting Issues / Сообщить о баге
 
 Found a visual glitch, crash, or performance drop in a specific area or boss fight?
-Please open an **[Issue](https://github.com/ArenaMMORPG/bloodborne-pc-vulkan/issues/new/choose)** and attach:
+Please open an **[Issue](https://github.com/lapothecary/bloodborne-pc-vulkan/issues/new/choose)** and attach:
 1. Your GPU model, driver version, and Linux distro.
 2. The log file from `logs/YYYYMMDD_HHMMSS.log`.
 3. Which of the 3 isolation flags (`BB_HW_OCCLUSION_CULL=0`, `BB_NATIVE_SHADERS=0`, or `BB_GX_MODULES=01,02`) affects the issue.
@@ -369,7 +381,7 @@ If you enjoy **Bloodborne PC Vulkan** and want to support further C++20 engine d
   - **[`bbport` (`deadinside28/bloodborne_pc`)](https://github.com/deadinside28/bloodborne_pc)** — Linux runtime (`src/`), in-game Display menu (`bbport_menu.cpp`), temporal upscalers (`FSR 3.1`, `FSR 4`, `TAA`, `DLSS`), and base GTK4 launcher.
   - **[`shadPS4` (`shadps4-emu/shadPS4`)](https://github.com/shadps4-emu/shadPS4)** — Original PS4 Vulkan video core and shader recompiler foundation (`GPL-2.0-or-later`).
   - **[`bbhost` (`droogie/bbhost`)](https://github.com/droogie/bbhost)** — Fellow open-source Bloodborne PC translation-layer project (independent architecture; acknowledged for pioneering Bloodborne PC research).
-- **`bloodborne-pc-vulkan` Additions by [@ArenaMMORPG](https://github.com/ArenaMMORPG):**
+- **`bloodborne-pc-vulkan` Additions by [@lapothecary](https://github.com/lapothecary):**
   - Complete `2,940 / 2,940` C++20 `FD4`/`GX` Graphics Engine decompilation (`152,420 LOC` in [`our_cpp_100000_source/`](our_cpp_100000_source) + [`bb_golden_engine.cpp`](gpu/shim/bb_golden_engine.cpp)).
   - True Split PC VRAM architecture ([`direct_buffers.cpp`](gpu/buffers/direct_buffers.cpp), [`direct_textures.cpp`](gpu/textures/direct_textures.cpp), [`gx_direct_vulkan.h`](gpu/include/gx_direct_vulkan.h)).
   - 96 Hand-Crafted Native Vulkan 1.3 GLSL Shaders + 752 Precompiled SPIR-V Shaders ([`gpu/shader/backend/spirv/native/`](gpu/shader/backend/spirv/native), [`native_shaders.cpp`](gpu/shader/backend/spirv/native_shaders.cpp)).

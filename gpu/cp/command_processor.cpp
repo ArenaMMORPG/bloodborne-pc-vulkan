@@ -604,17 +604,32 @@ void CommandProcessor::WaitForWork(std::stop_token stop) {
     const auto has_work = [this] { return num_commands || num_submits || submit_done; };
     const auto idle_start = std::chrono::steady_clock::now();
     u64 flush_ns = 0;
-    // BB_HONEST_LABELS: fences (and GPU idle) wait for work not submitted yet; it goes out once
-    // this thread has had nothing to do for BB_HONEST_IDLE_US (0.2 ms): the guest may be waiting.
+    // BB_HONEST_LABELS: fences (and GPU idle) wait for work not submitted yet; flush unsubmitted
+    // signals after a brief 20 us coalesce window instead of sleeping 200+ us in a kernel futex.
     if (rasterizer && Vulkan::Rasterizer::HonestLabels() &&
         (rasterizer->HasUnsubmittedSignals() || !rasterizer->DrawPipeIdle())) {
         static const auto idle_wait = std::chrono::microseconds([] {
             const char* env = std::getenv("BB_HONEST_IDLE_US");
             return env ? std::strtoll(env, nullptr, 10) : 200ll;
         }());
-        std::unique_lock lock{submit_mutex};
-        if (!submit_cv.wait_for(lock, idle_wait, has_work)) {
-            lock.unlock();
+        static const bool spin_wait = BbThreads::Available() >= 12;
+        bool got_work = has_work();
+        if (!got_work && idle_wait.count() > 0) {
+            if (spin_wait) {
+                const auto until = std::chrono::steady_clock::now() + idle_wait;
+                for (u32 s = 1; !has_work() && !stop.stop_requested(); ++s) {
+                    _mm_pause();
+                    if (!(s & 63u) && std::chrono::steady_clock::now() >= until) {
+                        break;
+                    }
+                }
+                got_work = has_work();
+            } else {
+                std::unique_lock lock{submit_mutex};
+                got_work = submit_cv.wait_for(lock, idle_wait, has_work);
+            }
+        }
+        if (!got_work) {
             const auto flush_start = std::chrono::steady_clock::now();
             if (rasterizer->PipeSignals()) {
                 // The recording thread submits once it gets there (waiting for it to run dry,
@@ -661,6 +676,8 @@ void CommandProcessor::WaitForWork(std::stop_token stop) {
 
 void CommandProcessor::StallWatch(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:StallWatch");
+    BbThreads::PinToHelperDomain();
+    BbThreads::ApplyProcessThreadTopology();
     using Clock = std::chrono::steady_clock;
     constexpr auto Limit = std::chrono::seconds(5);
     u64 last_submitted = ~0ull, last_decoded = ~0ull;
@@ -668,6 +685,7 @@ void CommandProcessor::StallWatch(std::stop_token stop) {
     bool reported = false;
     while (!stop.stop_requested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        BbThreads::ApplyProcessThreadTopology();
         u64 submitted, decoded, pending;
         {
             std::scoped_lock lock{submit_mutex};
@@ -794,6 +812,7 @@ void CommandProcessor::Run(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:GpuComm");
     BbSections::command_thread = true;
     BbThreads::PinToGpuDomain();
+    BbThreads::ApplyProcessThreadTopology();
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {
         BbStats::gpu_thread_clock.store(int(clock));
     }

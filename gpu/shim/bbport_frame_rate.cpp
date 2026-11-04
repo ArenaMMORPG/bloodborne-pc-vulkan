@@ -43,17 +43,18 @@ std::atomic<bool> unlocked{false};
 u64 image_base = 0;
 
 constexpr float Frame30 = 1.0f / 30.0f;
-/// The highest frame rate the pacer allows ("uncap", and the most BB_FPS_LIMIT can ask for). The
-/// game itself breaks above it: on loading screens at 880-1000 FPS its main loop outran its worker
-/// threads and a pool allocator popped a freed node (guest fault at +0x263b8e7, 2 of 2 loads);
-/// at 480 all loads went through (4 of 4). The cap was 240 before.
-constexpr int MaxRate = 480;
-constexpr float ShortestFrame = 1.0f / MaxRate;
+/// With FixedBlockPool (0x0263b8b0 / 0x0263b9b0) now thread-safe and quarantine-protected in C++20,
+/// the pacer supports true uncapped frame rate (`ShortestFrame = 0.0f` when `fps_limit == 0`) or
+/// explicit targets up to `MaxRate = 5000` FPS, while clamping simulation `dt >= MinSimDt` so
+/// Havok physics never divides by zero on sub-millisecond frames.
+constexpr int MaxRate = 5000;
+constexpr float ShortestFrame = 0.0f;
+constexpr float MinSimDt = 1.0f / float(MaxRate);
 
 /// What the redirected instructions read, rewritten by FrameStep for each frame.
 struct alignas(64) Live {
     float dt = Frame30;               ///< the frame's time: the game steps by it
-    float shortest = ShortestFrame;   ///< the pacer's frame time target
+    float shortest = ShortestFrame;   ///< the pacer's frame time target (0.0f = truly uncapped)
     float spin_margin = 0.00020f;     ///< pacer usleep spin margin (200 us vs PS4's 5.0 ms)
     float neg_spin_margin = -0.00020f;
     float decay95[4] = {0.95f, 0.95f, 0.95f, 0.95f}; ///< 0.95 per 30 FPS frame (read as four)
@@ -65,7 +66,7 @@ struct alignas(64) Live {
     float cloth = 1.0f;               ///< cloth constraints' stiffness
 };
 Live* live = nullptr;
-int base_rate = 0;               /// the launched mode's rate (with BB_FPS_LIMIT)
+int base_rate = 0;               /// the launched mode's rate (0 = truly uncapped)
 std::atomic<int> live_limit{0};
 
 /// The pacer at the main loop's step (rdi: it): this frame's values.
@@ -80,7 +81,8 @@ void PS4_SYSV_ABI FrameStep(u64 pacer) {
     }
 #endif
     const float measured = *reinterpret_cast<const float*>(pacer + 0x264);
-    float dt = std::clamp(std::isfinite(measured) ? measured : Frame30, live->shortest, Frame30);
+    const float min_dt = std::max(live->shortest, MinSimDt);
+    float dt = std::clamp(std::isfinite(measured) ? measured : Frame30, min_dt, Frame30);
     // BB_FRAME_DT_SMOOTH=a (diagnostics, 0 < a < 1): the step follows the measured frame time by
     // that fraction a frame, so frame-to-frame jitter of the measurement does not reach the
     // simulation (time stays right on average).
@@ -92,17 +94,18 @@ void PS4_SYSV_ABI FrameStep(u64 pacer) {
     if (smooth > 0.0f) {
         static float smoothed = 0.0f;
         smoothed = smoothed > 0.0f ? smoothed + smooth * (dt - smoothed) : dt;
-        dt = std::clamp(smoothed, live->shortest, Frame30);
+        dt = std::clamp(smoothed, min_dt, Frame30);
     }
     const float frames = dt * 30.0f; // the frame's length in 30 FPS frames
+    const double frames_d = double(dt) * 30.0;
     live->dt = dt;
-    const float decay95 = std::pow(0.95f, frames);
+    const float decay95 = static_cast<float>(std::pow(0.95, frames_d));
     for (float& d : live->decay95) d = decay95;
-    live->approach30 = 1.0f - std::pow(1.0f - Frame30, frames);
-    live->approach10 = 1.0f - std::pow(0.9f, frames);
+    live->approach30 = static_cast<float>(-std::expm1(frames_d * std::log(1.0 - (1.0 / 30.0))));
+    live->approach10 = static_cast<float>(-std::expm1(frames_d * std::log(0.9)));
     live->step_down = -0.1f * frames;
     live->step_up = 0.1f * frames;
-    live->decay08 = std::pow(0.8f, frames);
+    live->decay08 = static_cast<float>(std::pow(0.8, frames_d));
     // Cloth is stiffer the more often it is solved: the game's 1.0 at 30 FPS, 0.5 from 60 FPS up
     // (the value the community's 60 FPS patches settled on). It is the upper bound the cloth
     // setups clamp their Stiffness, Rigid Factor and Allowed Compression to when they load.
@@ -339,7 +342,8 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     // patches instead (scripts/patches.py; comparisons).
     const char* fps = std::getenv("BB_FPS");
     const char* hooks = std::getenv("BB_FRAME_HOOKS");
-    const int mode = !fps || std::strcmp(fps, "uncap") == 0 ? MaxRate : std::atoi(fps);
+    const bool is_uncapped = !fps || std::strcmp(fps, "uncap") == 0;
+    const int mode = is_uncapped ? MaxRate : std::atoi(fps);
     if (mode <= 30 || (hooks && hooks[0] == '0')) {
         return;
     }
@@ -353,15 +357,16 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     live = new (data) Live{};
     // The mode's rate and BB_FPS_LIMIT (the launcher's frame rate limit): the game's pacer waits for
     // it itself, before the frame's simulation (lower latency than holding finished frames back at
-    // the present).
-    int rate = std::clamp(mode, 30, MaxRate);
+    // the present). When uncapped (rate == 0), live->shortest is 0.0f (truly unlimited).
+    int rate = is_uncapped ? 0 : std::clamp(mode, 30, MaxRate);
     if (const char* limit = std::getenv("BB_FPS_LIMIT"); limit && std::atoi(limit) > 0) {
-        rate = std::min(rate, std::clamp(std::atoi(limit), 30, 1000));
+        const int lim = std::clamp(std::atoi(limit), 30, MaxRate);
+        rate = rate > 0 ? std::min(rate, lim) : lim;
     }
-    live->shortest = 1.0f / float(rate);
+    live->shortest = rate > 0 ? (1.0f / float(rate)) : ShortestFrame;
     base_rate = rate;
     if (const int saved = live_limit.load(std::memory_order_relaxed); saved > 0) {
-        live->shortest = 1.0f / float(std::clamp(saved, 30, 1000));
+        live->shortest = 1.0f / float(std::clamp(saved, 30, MaxRate));
     }
     // The core first: without all three the game keeps its own frame rate.
     if (!(HookPacerMode() && HookPacerLate() && HookStep())) {
@@ -395,9 +400,10 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     mprotect(stub_page, StubPageSize, PROT_READ | PROT_EXEC);
     std::printf("Frame rate: free (hooks, no patches): the game steps by each frame's time "
-                "(1/%.0f..1/30 s); %d fixed steps, %d of %zu per-frame values follow the frame's "
+                "(pacer=%s, sim=1/%d..1/30 s); %d fixed steps, %d of %zu per-frame values follow the frame's "
                 "time, pacer usleep spin=%d/3, the run's wall check %s\n",
-                1.0f / live->shortest, steps, redirected, std::size(Redirects), spin_redirected,
+                live->shortest > 0.0f ? "capped" : "truly uncapped (0.0 ms)", MaxRate,
+                steps, redirected, std::size(Redirects), spin_redirected,
                 run == 1 ? "by speed" : run == 2 ? "by speed (a Sprint Fix patch did it already)"
                                                  : "unchanged (not found)");
 }
@@ -418,9 +424,13 @@ void SetLimit(int fps) {
     if (!unlocked.load(std::memory_order_relaxed) || !live) {
         return;
     }
-    const int rate = fps > 0 ? std::clamp(fps, 30, 1000) : base_rate;
-    live->shortest = 1.0f / float(rate);
-    std::printf("Frame rate: limit %d FPS (live)\n", rate);
+    const int rate = fps > 0 ? std::clamp(fps, 30, MaxRate) : base_rate;
+    live->shortest = rate > 0 ? (1.0f / float(rate)) : ShortestFrame;
+    if (rate > 0) {
+        std::printf("Frame rate: limit %d FPS (live)\n", rate);
+    } else {
+        std::printf("Frame rate: truly uncapped (live, 0.0 ms pacer target)\n");
+    }
 }
 int Limit() {
     return live_limit.load(std::memory_order_relaxed);

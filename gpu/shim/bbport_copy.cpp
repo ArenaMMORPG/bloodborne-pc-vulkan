@@ -195,6 +195,7 @@ private:
 
     void Loop(unsigned index) {
         Common::SetCurrentThreadName(("bb:Copy" + std::to_string(index)).c_str());
+        BbThreads::PinToHelperDomain();
         u64 seen = 0;
         std::unique_lock lk{mutex};
         while (true) {

@@ -412,6 +412,35 @@ EN = {
     "Крестовина вправо (оружие правой руки)": "D-Pad Right (Switch Right-Hand Weapon)",
     "Options (меню; в меню игры Escape — «назад», Круг)":
         "Options (Main Menu; inside menus Escape acts as Back / Circle)",
+    "Разрешение экрана, интерфейса и рендера (G-Buffer меняется в игре на лету, постобработка Yebis2 — при запуске)":
+        "Display, UI, and render resolution (G-Buffer scales live in-game; Yebis2 post-FX rebuilds on startup)",
+    "Назначение кнопок; также настраивается прямо в игре в меню System → Controls":
+        "Button bindings; also configurable live in-game via the System → Controls menu",
+    "Сглаживание и апскейлер": "Anti-Aliasing & Upscaler",
+    "Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8":
+        "All settings below switch live in-game via the System → Display menu or the F8 overlay",
+    "Сглаживание": "Anti-Aliasing",
+    "FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении":
+        "FXAA: subpixel AA; TAA: native temporal AA; DLAA: native 100% DLSS",
+    "FXAA (Субпиксельное сглаживание)": "FXAA (Subpixel AA)",
+    "TAA (Темпоральное сглаживание)": "TAA (Temporal AA)",
+    "DLAA (Нативное DLSS 100%)": "DLAA (DLSS Native 100%)",
+    "Выкл.": "Off",
+    "Сглаживание TAA активно в разрешении вывода": "TAA anti-aliasing active at output resolution",
+    "Отражения SSR (меняются в игре на лету)": "SSR reflections (switches live in-game)",
+    "Без лимита (Анлимит)": "Uncapped (Unlimited)",
+    "30 FPS (PS4)": "30 FPS (PS4)",
+    "Своё значение": "Custom value",
+    "Пресет частоты кадров": "Frame rate preset",
+    "Переключается в игре на лету (System → Display или F8); потолок FixedBlockPool разблокирован":
+        "Switches live in-game (System → Display or F8); FixedBlockPool ceiling unlocked",
+    "Точное ограничение FPS": "Exact FPS cap",
+    "0 — без лимита (честный анлимит 0.0 мс); хранится в bbport.ini":
+        "0: true unlimited (0.0 ms frame pacer target); stored in bbport.ini",
+    "Производительность (C++20 Engine & DirectVk 1.3)":
+        "Performance (C++20 Engine & DirectVk 1.3)",
+    "Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)":
+        "Decompiled C++20 graphics engine (2,940 / 2,940 functions) and DirectVk 1.3 backend with Split PC VRAM (0 page-faults/s)",
 }
 
 PT_BR = {

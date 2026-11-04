@@ -76,7 +76,7 @@ void main() {
     uint buf4_dword_off = buf4_off >> 2u;
     uint buf5_off = bitfieldExtract(t142, int(8u), int(8u));
     uint buf5_dword_off = buf5_off >> 2u;
-    bool t153 = gl_FrontFacing;
+    bool t153 = true; // gl_FrontFacing: preserve canopy normal on double-sided surfaces
     uint t154 = t153 ? 1u : 0u;
     float t167 = in_attr0.x;
     float t179 = in_attr0.y;

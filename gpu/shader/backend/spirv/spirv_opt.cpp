@@ -1004,6 +1004,9 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
 
     u32 glsl_set_id = 0;
     u32 bool_type_id = 0;
+    size_t bool_type_pos = 0;
+    u32 existing_bool_true_id = 0;
+    u32 front_facing_var_id = 0;
     u32 f32_type_id = 0;
     size_t f32_type_pos = 0;
     u32 existing_f32_zero_id = 0;
@@ -1051,6 +1054,13 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
         case kOpTypeBool:
             if (wc == 2 && in[pos + 1] < bound) {
                 bool_type_id = in[pos + 1];
+                bool_type_pos = pos;
+            }
+            break;
+        case 41u: // OpConstantTrue
+            if (wc == 3 && bool_type_id != 0 && in[pos + 1] == bool_type_id &&
+                in[pos + 2] < bound && existing_bool_true_id == 0) {
+                existing_bool_true_id = in[pos + 2];
             }
             break;
         case kOpTypeInt:
@@ -1180,6 +1190,10 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
             break;
         case kOpName:
         case kOpDecorate:
+            if (op == kOpDecorate && wc == 4 && in[pos + 2] == kDecoBuiltIn &&
+                in[pos + 3] == 17u && in[pos + 1] < bound) {
+                front_facing_var_id = in[pos + 1];
+            }
             if (wc >= 2 && in[pos + 1] < bound) {
                 ++ptr_uses[in[pos + 1]];
             }
@@ -1264,12 +1278,19 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
 
     u32 next_id = bound;
     bool emit_bool_type = false;
+    bool emit_bool_true = false;
     bool emit_f32_zero = false;
     bool emit_f32_flt_min = false;
     bool emit_f32_flt_max = false;
+    u32 bool_true_id = existing_bool_true_id;
     u32 f32_zero_id = existing_f32_zero_id;
     u32 f32_flt_min_id = existing_f32_flt_min_id;
     u32 f32_flt_max_id = existing_f32_flt_max_id;
+
+    if (front_facing_var_id != 0 && bool_type_id != 0 && bool_true_id == 0) {
+        bool_true_id = next_id++;
+        emit_bool_true = true;
+    }
 
     if (any_safe_rsq && f32_type_id != 0 && glsl_set_id != 0) {
         if (bool_type_id == 0) {
@@ -1339,6 +1360,16 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
                 pos += wc;
                 continue;
             }
+        }
+        if (in_function && op == kOpLoad && wc == 4 && front_facing_var_id != 0 &&
+            bool_true_id != 0 && in[pos + 1] == bool_type_id &&
+            in[pos + 3] == front_facing_var_id) {
+            out.push_back((4u << 16) | kOpCopyObject);
+            out.push_back(bool_type_id);
+            out.push_back(in[pos + 2]);
+            out.push_back(bool_true_id);
+            pos += wc;
+            continue;
         }
         if (op == kOpSelect && wc == 6 && in[pos + 2] < bound) {
             const u32 res = in[pos + 2];
@@ -1514,6 +1545,13 @@ bool ApplyFastFpSpirvPass(const std::vector<u32>& in, std::vector<u32>& out) {
 
         out.insert(out.end(), in.begin() + static_cast<std::ptrdiff_t>(pos),
                    in.begin() + static_cast<std::ptrdiff_t>(pos + wc));
+
+        if (emit_bool_true && pos == bool_type_pos) {
+            out.push_back((3u << 16) | 41u); // OpConstantTrue
+            out.push_back(bool_type_id);
+            out.push_back(bool_true_id);
+            emit_bool_true = false;
+        }
 
         if (any_safe_rsq && pos == f32_type_pos) {
             if (emit_bool_type) {

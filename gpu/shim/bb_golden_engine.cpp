@@ -257,6 +257,403 @@ void bb_direct_vk_note_release_check(std::uint32_t hr) noexcept {
         BbHeapSites::NoteReleaseCheck(hr);
     }
 }
+
+// ============================================================================
+// Thread-Safe + Quarantine-Protected C++20 FixedBlockPool (0x0263b8b0..0x0263bc40)
+// Eliminates the >480 FPS (880-1000+ FPS) loading-screen race & late EoP fence
+// free-list head corruption at 0x0263b8e7 (`mov rcx, [r14]`).
+// ============================================================================
+namespace {
+
+struct FixedBlockPageHeader {
+    FixedBlockPageHeader* next; // +0x00
+    FixedBlockPageHeader* prev; // +0x08
+    void* free_head;            // +0x10
+    std::uint64_t free_count;   // +0x18
+};
+
+struct FixedBlockPool {
+    FixedBlockPageHeader* active_page;   // +0x00
+    std::uint64_t allocated_page_count;  // +0x08
+    FixedBlockPageHeader* partial_next;  // +0x10
+    FixedBlockPageHeader* partial_prev;  // +0x18
+    FixedBlockPageHeader* full_next;     // +0x20
+    FixedBlockPageHeader* full_prev;     // +0x28
+    std::uint64_t block_stride;          // +0x30
+    std::uint64_t block_align;           // +0x38
+    std::uint64_t header_offset;         // +0x40
+    std::uint64_t page_mask;             // +0x48 (-(page_size))
+    std::uint64_t blocks_per_page;       // +0x50
+    void* allocator;                     // +0x58
+};
+static_assert(offsetof(FixedBlockPool, active_page) == 0x00);
+static_assert(offsetof(FixedBlockPool, allocated_page_count) == 0x08);
+static_assert(offsetof(FixedBlockPool, partial_next) == 0x10);
+static_assert(offsetof(FixedBlockPool, partial_prev) == 0x18);
+static_assert(offsetof(FixedBlockPool, full_next) == 0x20);
+static_assert(offsetof(FixedBlockPool, full_prev) == 0x28);
+static_assert(offsetof(FixedBlockPool, block_stride) == 0x30);
+static_assert(offsetof(FixedBlockPool, block_align) == 0x38);
+static_assert(offsetof(FixedBlockPool, header_offset) == 0x40);
+static_assert(offsetof(FixedBlockPool, page_mask) == 0x48);
+static_assert(offsetof(FixedBlockPool, blocks_per_page) == 0x50);
+static_assert(offsetof(FixedBlockPool, allocator) == 0x58);
+static_assert(sizeof(FixedBlockPool) == 0x60);
+
+struct FixedPoolSpinLock {
+    std::atomic<std::uint64_t> owner{0};
+    std::uint32_t depth{0};
+
+    static std::uint64_t Self() noexcept {
+        static thread_local std::uint8_t tag = 0;
+        return reinterpret_cast<std::uint64_t>(&tag);
+    }
+    void lock() noexcept {
+        const std::uint64_t me = Self();
+        if (owner.load(std::memory_order_relaxed) == me) {
+            ++depth;
+            return;
+        }
+        std::uint64_t expected = 0;
+        while (!owner.compare_exchange_weak(
+            expected, me, std::memory_order_acquire, std::memory_order_relaxed)) {
+            expected = 0;
+#if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+#endif
+        }
+        depth = 1;
+    }
+    void unlock() noexcept {
+        if (--depth == 0) {
+            owner.store(0, std::memory_order_release);
+        }
+    }
+};
+
+struct FixedPoolLockGuard {
+    FixedPoolSpinLock& lk;
+    explicit FixedPoolLockGuard(FixedPoolSpinLock& l) noexcept : lk(l) { lk.lock(); }
+    ~FixedPoolLockGuard() noexcept { lk.unlock(); }
+};
+
+constexpr std::size_t kNumFixedPoolShards = 64;
+constexpr std::size_t kShardQuarantineCap = 32; // Power of two (& 31u)
+constexpr std::uintptr_t kQuarantineTag = 0x51554152414E5401ULL; // Bit 0 == 1
+
+struct QuarantineEntry {
+    FixedBlockPool* pool = nullptr;
+    void* node = nullptr;
+};
+
+struct alignas(64) FixedPoolShard {
+    FixedPoolSpinLock lock{};
+    std::uint32_t head = 0;
+    std::uint32_t count = 0;
+    QuarantineEntry ring[kShardQuarantineCap]{};
+};
+
+FixedPoolShard g_fixed_pool_shards[kNumFixedPoolShards]{};
+
+inline FixedPoolShard& ShardForPool(const void* pool) noexcept {
+    const auto v = reinterpret_cast<std::uintptr_t>(pool);
+    const std::size_t idx = ((v >> 6) ^ (v >> 13)) & (kNumFixedPoolShards - 1);
+    return g_fixed_pool_shards[idx];
+}
+
+// Fast O(1) bounds + alignment check (3 arithmetic ops, zero 64-bit DIV instructions).
+inline bool IsValidBlockOnPage(
+    const FixedBlockPool* pool, const FixedBlockPageHeader* hdr, const void* node) noexcept {
+    if (!pool || !hdr || !node) {
+        return false;
+    }
+    const auto hdr_addr = reinterpret_cast<std::uintptr_t>(hdr);
+    const std::uintptr_t hdr_off = pool->header_offset;
+    const std::uintptr_t page_base = hdr_addr - hdr_off;
+    const std::uintptr_t offset = reinterpret_cast<std::uintptr_t>(node) - page_base;
+    return offset < hdr_off && (offset & 7ULL) == 0ULL;
+}
+
+void FixedBlockPool_CommitFreeLocked(FixedBlockPool* pool, void* node) noexcept {
+    if (!pool || !node) {
+        return;
+    }
+    const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(node);
+    const std::uintptr_t page_base = addr & pool->page_mask;
+    const std::uintptr_t hdr_off = pool->header_offset;
+    if ((addr - page_base) >= hdr_off || (addr & 7ULL) != 0ULL) {
+        return;
+    }
+    auto* const hdr = reinterpret_cast<FixedBlockPageHeader*>(page_base + hdr_off);
+    void* old_head = hdr->free_head;
+    if (old_head == node || hdr->free_count >= pool->blocks_per_page) {
+        return;
+    }
+    if (old_head != nullptr && !IsValidBlockOnPage(pool, hdr, old_head)) {
+        // Sever corrupted free_head pointer written by a late asynchronous GPU fence label
+        old_head = nullptr;
+        hdr->free_count = 0;
+    }
+
+    *reinterpret_cast<void**>(node) = old_head;
+    hdr->free_head = node;
+    const std::uint64_t new_count = ++hdr->free_count;
+
+    if (old_head == nullptr) {
+        // Page was previously full (in full_sentinel list): unlink and append to partial_sentinel
+        FixedBlockPageHeader* const n = hdr->next;
+        FixedBlockPageHeader* const p = hdr->prev;
+        if (n && p) {
+            n->prev = p;
+            p->next = n;
+        }
+        auto* const sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+            reinterpret_cast<std::uint8_t*>(pool) + 0x10);
+        FixedBlockPageHeader* const old_prev = sentinel->prev;
+        sentinel->prev = hdr;
+        old_prev->next = hdr;
+        hdr->next = sentinel;
+        hdr->prev = old_prev;
+        return;
+    }
+
+    if (new_count == pool->blocks_per_page) {
+        if (pool->active_page == hdr) {
+            pool->active_page = nullptr;
+        } else {
+            FixedBlockPageHeader* const n = hdr->next;
+            FixedBlockPageHeader* const p = hdr->prev;
+            if (n && p) {
+                n->prev = p;
+                p->next = n;
+            }
+        }
+        --pool->allocated_page_count;
+        void* const alloc = pool->allocator;
+        if (alloc) {
+            auto* const vtable = *reinterpret_cast<void***>(alloc);
+            using FreeFn = void (*)(void*, void*);
+            reinterpret_cast<FreeFn>(vtable[0x70 / 8])(alloc, reinterpret_cast<void*>(page_base));
+        }
+    }
+}
+
+void* BbSafeFixedBlockPool_AllocateNode(void* pool_raw) {
+    if (!pool_raw) {
+        return nullptr;
+    }
+    auto* const pool = static_cast<FixedBlockPool*>(pool_raw);
+    FixedPoolShard& shard = ShardForPool(pool);
+    FixedPoolLockGuard guard(shard.lock);
+    auto* const partial_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x10);
+    auto* const full_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x20);
+
+    for (;;) {
+        FixedBlockPageHeader* hdr = pool->active_page;
+        if (!hdr) {
+            FixedBlockPageHeader* const cand = partial_sentinel->next;
+            if (cand != partial_sentinel) {
+                FixedBlockPageHeader* const n = cand->next;
+                FixedBlockPageHeader* const p = cand->prev;
+                n->prev = p;
+                p->next = n;
+                pool->active_page = cand;
+                hdr = cand;
+            }
+        }
+
+        if (hdr) {
+            void* const r14 = hdr->free_head;
+            if (!IsValidBlockOnPage(pool, hdr, r14)) {
+                // Corrupted free_head pointer: retire this page to full_sentinel and try next page
+                hdr->free_head = nullptr;
+                hdr->free_count = 0;
+                pool->active_page = nullptr;
+                FixedBlockPageHeader* const old_first = full_sentinel->next;
+                full_sentinel->next = hdr;
+                old_first->prev = hdr;
+                hdr->next = old_first;
+                hdr->prev = full_sentinel;
+                continue;
+            }
+
+            void* rcx = *reinterpret_cast<void**>(r14);
+            if (rcx != nullptr && !IsValidBlockOnPage(pool, hdr, rcx)) {
+                // Corrupted next pointer inside r14 (e.g. late 0x53 GPU label write): sever tail
+                rcx = nullptr;
+                hdr->free_count = 1;
+            }
+
+            hdr->free_head = rcx;
+            --hdr->free_count;
+            if (rcx == nullptr) {
+                pool->active_page = nullptr;
+                FixedBlockPageHeader* const old_first = full_sentinel->next;
+                full_sentinel->next = hdr;
+                old_first->prev = hdr;
+                hdr->next = old_first;
+                hdr->prev = full_sentinel;
+            }
+            *reinterpret_cast<std::uintptr_t*>(r14) = 0ULL;
+            return r14;
+        }
+
+        // Allocate a new page via pool->allocator vtable[+0x58]
+        const std::uint64_t hdr_off = pool->header_offset;
+        void* const alloc = pool->allocator;
+        if (!alloc) {
+            return nullptr;
+        }
+        const std::uint64_t align = 0ULL - pool->page_mask;
+        const std::uint64_t alloc_size = hdr_off + 0x20ULL;
+        auto* const vtable = *reinterpret_cast<void***>(alloc);
+        using AllocAlignedFn = void* (*)(void*, std::uint64_t, std::uint64_t);
+        auto* const page_base = static_cast<std::uint8_t*>(
+            reinterpret_cast<AllocAlignedFn>(vtable[0x58 / 8])(alloc, alloc_size, align));
+        if (!page_base) {
+            return nullptr;
+        }
+
+        auto* const new_hdr = reinterpret_cast<FixedBlockPageHeader*>(page_base + hdr_off);
+        pool->active_page = new_hdr;
+        new_hdr->free_count = pool->blocks_per_page - 1;
+        ++pool->allocated_page_count;
+
+        const std::uint64_t stride = pool->block_stride;
+        new_hdr->free_head = page_base + stride;
+        const std::uint64_t last_off = hdr_off - stride;
+        for (std::uint64_t off = stride; off < last_off; off += stride) {
+            *reinterpret_cast<void**>(page_base + off) = page_base + off + stride;
+        }
+        *reinterpret_cast<void**>(page_base + last_off) = nullptr;
+        *reinterpret_cast<std::uintptr_t*>(page_base) = 0ULL;
+        return page_base;
+    }
+}
+
+void BbSafeFixedBlockPool_FreeNode(void* pool_raw, void* node) {
+    if (!pool_raw || !node) {
+        return;
+    }
+    auto* const pool = static_cast<FixedBlockPool*>(pool_raw);
+    const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(node);
+    const std::uintptr_t page_base = addr & pool->page_mask;
+    const std::uintptr_t hdr_off = pool->header_offset;
+    if ((addr - page_base) >= hdr_off || (addr & 7ULL) != 0ULL) {
+        return;
+    }
+
+    FixedPoolShard& shard = ShardForPool(pool);
+    FixedPoolLockGuard guard(shard.lock);
+
+    // O(1) double-free guard: check in-place quarantine tag or active free_head match
+    const std::uintptr_t tag = kQuarantineTag ^ addr;
+    if (*reinterpret_cast<const std::uintptr_t*>(node) == tag) {
+        return;
+    }
+    auto* const hdr = reinterpret_cast<FixedBlockPageHeader*>(page_base + hdr_off);
+    if (hdr->free_head == node) {
+        return;
+    }
+    *reinterpret_cast<std::uintptr_t*>(node) = tag;
+
+    if (shard.count == kShardQuarantineCap) {
+        const QuarantineEntry oldest = shard.ring[shard.head];
+        shard.ring[shard.head] = {pool, node};
+        shard.head = (shard.head + 1u) & (kShardQuarantineCap - 1u);
+        if (oldest.pool && oldest.node) {
+            FixedBlockPool_CommitFreeLocked(oldest.pool, oldest.node);
+        }
+    } else {
+        const std::uint32_t tail = (shard.head + shard.count) & (kShardQuarantineCap - 1u);
+        shard.ring[tail] = {pool, node};
+        ++shard.count;
+    }
+}
+
+void BbSafeFixedBlockPool_Finalize(void* pool_raw) {
+    if (!pool_raw) {
+        return;
+    }
+    auto* const pool = static_cast<FixedBlockPool*>(pool_raw);
+    FixedPoolShard& shard = ShardForPool(pool);
+    FixedPoolLockGuard guard(shard.lock);
+
+    // Purge any quarantined blocks belonging to this pool before freeing its pages
+    for (std::uint32_t i = 0; i < shard.count; ++i) {
+        const std::uint32_t idx = (shard.head + i) & (kShardQuarantineCap - 1u);
+        if (shard.ring[idx].pool == pool) {
+            shard.ring[idx] = {nullptr, nullptr};
+        }
+    }
+
+    void* const alloc = pool->allocator;
+    const std::uint64_t hdr_off = pool->header_offset;
+    using FreeFn = void (*)(void*, void*);
+    FreeFn free_fn = nullptr;
+    if (alloc) {
+        auto* const vtable = *reinterpret_cast<void***>(alloc);
+        free_fn = reinterpret_cast<FreeFn>(vtable[0x70 / 8]);
+    }
+
+    auto* const partial_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x10);
+    for (FixedBlockPageHeader* cur = partial_sentinel->next; cur && cur != partial_sentinel;) {
+        FixedBlockPageHeader* const next = cur->next;
+        if (free_fn) {
+            free_fn(alloc, reinterpret_cast<std::uint8_t*>(cur) - hdr_off);
+        }
+        cur = next;
+    }
+
+    auto* const full_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x20);
+    for (FixedBlockPageHeader* cur = full_sentinel->next; cur && cur != full_sentinel;) {
+        FixedBlockPageHeader* const next = cur->next;
+        if (free_fn) {
+            free_fn(alloc, reinterpret_cast<std::uint8_t*>(cur) - hdr_off);
+        }
+        cur = next;
+    }
+
+    if (pool->active_page && free_fn) {
+        free_fn(alloc, reinterpret_cast<std::uint8_t*>(pool->active_page) - hdr_off);
+    }
+    pool->active_page = nullptr;
+    pool->allocated_page_count = 0;
+    partial_sentinel->next = partial_sentinel;
+    partial_sentinel->prev = partial_sentinel;
+    full_sentinel->next = full_sentinel;
+    full_sentinel->prev = full_sentinel;
+}
+
+std::uint64_t BbSafeFixedBlockPool_GetFreeBytes(void* pool_raw) {
+    if (!pool_raw) {
+        return 0;
+    }
+    auto* const pool = static_cast<FixedBlockPool*>(pool_raw);
+    FixedPoolShard& shard = ShardForPool(pool);
+    FixedPoolLockGuard guard(shard.lock);
+    std::uint64_t free_blocks = 0;
+    if (pool->active_page) {
+        free_blocks += pool->active_page->free_count;
+    }
+    auto* const partial_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x10);
+    for (FixedBlockPageHeader* cur = partial_sentinel->next; cur && cur != partial_sentinel; cur = cur->next) {
+        free_blocks += cur->free_count;
+    }
+    auto* const full_sentinel = reinterpret_cast<FixedBlockPageHeader*>(
+        reinterpret_cast<std::uint8_t*>(pool) + 0x20);
+    for (FixedBlockPageHeader* cur = full_sentinel->next; cur && cur != full_sentinel; cur = cur->next) {
+        free_blocks += cur->free_count;
+    }
+    return free_blocks * pool->block_stride;
+}
+
+} // namespace
 } // extern "C"
 
 namespace GXGraphicsFramework {
@@ -455,7 +852,7 @@ void PatchImage(unsigned char* image, u64 size) {
 
     constexpr std::size_t kSlotSize = 16;
     const std::size_t page = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-    const std::size_t alloc_bytes = ((kGXDecompiledFunctionCount + 1) * kSlotSize + page - 1) / page * page;
+    const std::size_t alloc_bytes = ((kGXDecompiledFunctionCount + 8) * kSlotSize + page - 1) / page * page;
 
     u8* stubs = MapNear(image, size, alloc_bytes);
     if (!stubs) {
@@ -519,6 +916,53 @@ void PatchImage(unsigned char* image, u64 size) {
         ::mprotect(reinterpret_cast<void*>(patch_begin), patch_end - patch_begin,
                    Core::GuestCodeProtection());
         ++installed;
+    }
+
+    // Install thread-safe + quarantine-protected C++20 FixedBlockPool hooks (0x263b8b0..0x263bc40)
+    // to eliminate >480 FPS (1000+ FPS) loading-screen races and late EoP fence free-list corruption.
+    {
+        struct PoolHook {
+            u64 vma;
+            void* fn;
+        };
+        const PoolHook pool_hooks[] = {
+            {0x0263b810ULL, reinterpret_cast<void*>(&BbSafeFixedBlockPool_AllocateNode)},
+            {0x0263b8b0ULL, reinterpret_cast<void*>(&BbSafeFixedBlockPool_AllocateNode)},
+            {0x0263b9b0ULL, reinterpret_cast<void*>(&BbSafeFixedBlockPool_FreeNode)},
+            {0x0263ba40ULL, reinterpret_cast<void*>(&BbSafeFixedBlockPool_GetFreeBytes)},
+            {0x0263bc40ULL, reinterpret_cast<void*>(&BbSafeFixedBlockPool_Finalize)},
+        };
+        for (const auto& ph : pool_hooks) {
+            if (ph.vma + 5 > size) continue;
+            u8* stub = stubs + installed * kSlotSize;
+            stub[0] = 0xff;
+            stub[1] = 0x25;
+            stub[2] = 0x00;
+            stub[3] = 0x00;
+            stub[4] = 0x00;
+            stub[5] = 0x00;
+            const u64 target_fn = reinterpret_cast<u64>(ph.fn);
+            std::memcpy(stub + 6, &target_fn, 8);
+            stub[14] = 0xcc;
+            stub[15] = 0xcc;
+
+            u8* guest_fn = image + ph.vma;
+            const auto rel = static_cast<std::int64_t>(reinterpret_cast<u64>(stub)) -
+                             static_cast<std::int64_t>(reinterpret_cast<u64>(guest_fn + 5));
+            if (rel < -(1ll << 31) || rel >= (1ll << 31)) continue;
+            const u64 patch_begin = reinterpret_cast<u64>(guest_fn) & ~(static_cast<u64>(page) - 1ULL);
+            const u64 patch_end   = (reinterpret_cast<u64>(guest_fn) + 5ULL + static_cast<u64>(page) - 1ULL) &
+                                    ~(static_cast<u64>(page) - 1ULL);
+            if (::mprotect(reinterpret_cast<void*>(patch_begin), patch_end - patch_begin,
+                           PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+                const auto rel32 = static_cast<std::int32_t>(rel);
+                guest_fn[0] = 0xe9;
+                std::memcpy(guest_fn + 1, &rel32, 4);
+                ::mprotect(reinterpret_cast<void*>(patch_begin), patch_end - patch_begin,
+                           Core::GuestCodeProtection());
+                ++installed;
+            }
+        }
     }
 
     ::mprotect(stubs, alloc_bytes, PROT_READ | PROT_EXEC);

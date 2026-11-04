@@ -62,7 +62,7 @@ jobs:
             - **`out/libbbport_dlss.so` & `out/libnvidia-ngx-dlss.so.310.9.1`**: Bundled NVIDIA NGX DLSS 4.5 (`v310.9.1`) bridge & runtime.
             - **`fsr4_shaders/`**: Precompiled SPIR-V shaders for AMD FSR 4.
 
-            > **Note:** These prebuilt binaries are also bundled directly inside the `main` git branch, so simply running `git clone https://github.com/ArenaMMORPG/bloodborne-pc-vulkan.git && cd bloodborne-pc-vulkan && ./play.sh` works out of the box!
+            > **Note:** These prebuilt binaries are also bundled directly inside the `main` git branch, so simply running `git clone https://github.com/lapothecary/bloodborne-pc-vulkan.git && cd bloodborne-pc-vulkan && ./play.sh` works out of the box!
           files: |
             bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz
             bloodborne-pc-vulkan-linux-x86_64-prebuilt.tar.gz.sha256
