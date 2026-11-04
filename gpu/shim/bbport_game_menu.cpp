@@ -1173,7 +1173,7 @@ void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
 
 // ---- Scrollable 9-item System -> Display Window ----
 constexpr int GameAaEffectIdx = 4; // "effect_game_aa" in BbSettings::Effects
-constexpr int FpsPresets[] = {0, 30, 60, 72, 90, 120, 144, 165, 170, 240, 360, 480, 1000, 2000, 5000};
+constexpr int FpsPresets[] = {0, 30, 60, 72, 90, 120, 144, 165, 170, 240, 360};
 constexpr int FpsPresetCount = int(sizeof(FpsPresets) / sizeof(FpsPresets[0]));
 constexpr int AnisoValues[] = {1, 4, 8, 16};
 constexpr int AnisoValueCount = 4;

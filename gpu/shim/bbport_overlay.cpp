@@ -809,9 +809,9 @@ void Menu() {
 
     ImGui::SeparatorText(BbSettings::MenuText("Frame rate limit", "Лимит кадров (FPS)"));
     {
-        static const int steps[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360, 480, 1000, 2000, 5000};
-        static const char* labels[] = {"Uncapped (Unlimited)", "30", "60", "90", "120", "144", "165", "170", "240", "360", "480", "1000", "2000", "5000"};
-        static const char* labels_ru[] = {"Без лимита (Анлимит)", "30", "60", "90", "120", "144", "165", "170", "240", "360", "480", "1000", "2000", "5000"};
+        static const int steps[] = {0, 30, 60, 90, 120, 144, 165, 170, 240, 360};
+        static const char* labels[] = {"Uncapped (Unlimited)", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
+        static const char* labels_ru[] = {"Без лимита (Анлимит)", "30", "60", "90", "120", "144", "165", "170", "240", "360"};
         constexpr int step_count = int(sizeof(steps) / sizeof(steps[0]));
         const int cur_limit = BbFrameRate::Limit();
         int index = -1;
