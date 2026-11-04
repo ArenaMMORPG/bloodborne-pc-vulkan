@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "bbport_button_prompts.h"
 #include "bbport_frame_rate.h"
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
@@ -1939,6 +1940,7 @@ ControlsContentFn controls_content_original = nullptr;
 void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
     active_controls_page = static_cast<u8*>(page);
     in_controls_page.store(true, std::memory_order_relaxed);
+    BbPrompts::SetControlsGuideActive(true);
     active_game_settings = game_settings;
     controls_scroll = 0;
     controls_wrapped_from_top = false;
@@ -2051,15 +2053,22 @@ void SyncAllDisplaySliders(int new_sel) {
 void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
     in_controls_page.store(page == active_controls_page, std::memory_order_relaxed);
     if (page == active_controls_page) {
+        const int sel = GetSelectedControlsRow();
+        const int item_idx = std::clamp(controls_scroll + std::max(0, sel), 0, TotalControlsItems - 1);
+        BbPrompts::SetControlsGuideActive(sel >= 0 && sel < ControlsSlotCount && ItemKeyAction(item_idx) >= 0);
         if (capturing_action.load(std::memory_order_relaxed) >= 0 || InCaptureCooldown()) {
             return;
         }
         HandleScrollablePageNavigate(page, input, frame_time, ControlsSlotCount, MaxControlsScroll,
                                      controls_scroll, controls_wrapped_from_top, slot_rows,
                                      &RefreshControlsPage, &SyncAllControlsSliders);
+        const int new_sel = GetSelectedControlsRow();
+        const int new_idx = std::clamp(controls_scroll + std::max(0, new_sel), 0, TotalControlsItems - 1);
+        BbPrompts::SetControlsGuideActive(new_sel >= 0 && new_sel < ControlsSlotCount && ItemKeyAction(new_idx) >= 0);
         Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageButtonGuide)(page);
         return;
     }
+    BbPrompts::SetControlsGuideActive(false);
     if (page == active_display_page) {
         HandleScrollablePageNavigate(page, input, frame_time, DisplaySlotCount, MaxDisplayScroll,
                                      display_scroll, display_wrapped_from_top, display_slot_rows,
@@ -2265,8 +2274,11 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
         if (sel >= 0 && sel < ControlsSlotCount) {
             const int item_idx = std::clamp(controls_scroll + sel, 0, TotalControlsItems - 1);
             if (ItemKeyAction(item_idx) >= 0) {
-                static const std::u16string edit_en = Utf16("Edit　→：Alt Edit　Del：Clear");
-                static const std::u16string edit_ru = Utf16("Изменить　→：2-я кл.　Del：Убрать");
+                BbPrompts::SetControlsGuideActive(true);
+                static const std::u16string edit_en = Utf16(
+                    "Edit　<img src='KG_R_L' vspace='-8'>：Alt Edit　<img src='KG_R_U' vspace='-8'>：Clear");
+                static const std::u16string edit_ru = Utf16(
+                    "Изменить　<img src='KG_R_L' vspace='-8'>：2-я кл.　<img src='KG_R_U' vspace='-8'>：Убрать");
                 return RussianTexts() ? edit_ru.c_str() : edit_en.c_str();
             }
         }

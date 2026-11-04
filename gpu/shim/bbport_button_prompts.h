@@ -58,4 +58,8 @@ struct Set {
 /// The set when it changed since `generation` (cheap otherwise: one atomic load).
 bool Update(std::uint32_t generation, Set& out);
 
+/// Keeps the Controls-menu button guide keycaps (KG_R_L -> [→], KG_R_U -> [Del]) active for the
+/// current frame while browsing keybind rows, or clears them immediately when leaving.
+void SetControlsGuideActive(bool active);
+
 } // namespace BbPrompts

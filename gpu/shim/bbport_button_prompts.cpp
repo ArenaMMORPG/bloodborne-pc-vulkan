@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -477,15 +478,34 @@ void Shoulder(Canvas& c, std::string_view label) {
     Text(c, label, 64, 64, hw * 1.4f, 42, Ink);
 }
 
+std::atomic<long long> controls_guide_until_ms{0};
+bool controls_guide_drawn = false;
+u32 controls_guide_gen = 0;
+
+long long NowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 /// One icon for the device in use; false: the game's own stays.
 bool Draw(const IconDef& icon, Canvas& c) {
+    const int device = runtime_pad_prompt_device();
+    if (controls_guide_drawn && device == 2) {
+        if (icon.name == std::string_view{"KG_R_L"}) {
+            Key(c, "\xe2\x86\x92", 64, 64, 56, 48);
+            return true;
+        }
+        if (icon.name == std::string_view{"KG_R_U"}) {
+            Key(c, "Del", 64, 64, 56, 48);
+            return true;
+        }
+    }
     char labels[4][32] = {};
     int kinds[4] = {};
     const bool single = icon.layout == Layout::Single;
     for (int i = 0; i < 4 && icon.inputs[i]; ++i) {
         kinds[i] = runtime_pad_prompt(icon.inputs[i], single ? 1 : 0, labels[i], sizeof(labels[i]));
     }
-    const int device = runtime_pad_prompt_device();
     if (icon.layout == Layout::Stick && device == 2) {
         if (icon.inputs[0] == std::string_view{"look_up"} && runtime_pad_mouse_look()) {
             Mouse(c, "Move");
@@ -608,11 +628,23 @@ std::span<const AtlasCell> AtlasCells(u32 atlas) {
     return atlas_cells[atlas - 1];
 }
 
+void SetControlsGuideActive(bool active) {
+    controls_guide_until_ms.store(active ? NowMs() + 250 : 0, std::memory_order_relaxed);
+}
+
 bool Update(u32 generation, Set& out) {
     if (!Switch()) {
         return false;
     }
-    const u32 now = runtime_pad_prompt_generation();
+    const bool want_guide = NowMs() < controls_guide_until_ms.load(std::memory_order_relaxed);
+    if (want_guide != controls_guide_drawn) {
+        controls_guide_drawn = want_guide;
+        ++controls_guide_gen;
+    }
+    u32 now = runtime_pad_prompt_generation() + controls_guide_gen * 0x10000u;
+    if (now == 0) {
+        now = 1;
+    }
     if (now == generation) {
         return false;
     }
