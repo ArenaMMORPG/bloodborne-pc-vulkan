@@ -518,11 +518,14 @@ vk::ImageView ButtonPrompts::UiView(Runtime& runtime, VideoCore::Image& image,
     const u32 dst_h = height * scale;
 
     auto it = ui_textures.find(image.image_uid);
-    if (it == ui_textures.end() && ui_textures.size() >= 96) {
-        // Evict the oldest GPU-retired UI texture so VRAM usage stays strictly bounded.
+    if (it == ui_textures.end() && ui_textures.size() >= 256) {
+        // Evict the oldest GPU-retired UI texture that has been idle for >60 ticks so VRAM stays
+        // bounded and active UI sheets never thrash within a frame.
+        const u64 cur_tick = scheduler.CurrentTick();
         auto victim = ui_textures.end();
         for (auto cand = ui_textures.begin(); cand != ui_textures.end(); ++cand) {
-            if (scheduler.IsFree(cand->second.last_used_tick)) {
+            if (cand->second.last_used_tick + 60 < cur_tick &&
+                scheduler.IsFree(cand->second.last_used_tick)) {
                 if (victim == ui_textures.end() ||
                     cand->second.last_used_tick < victim->second.last_used_tick) {
                     victim = cand;

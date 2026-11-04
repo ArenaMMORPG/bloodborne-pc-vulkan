@@ -128,7 +128,7 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         }
         if (image->binding.needs_rebind || !texture_cache.IsUpToDate(image_id) ||
             scene_targets->Tracks(image->image_uid) || ((image->prompt_icon || image->prompt_atlas) && prompts->Active()) ||
-            prompts->IsUiTexture(*image) ||
+            (ui_pass_started && prompts->IsUiTexture(*image)) ||
             (upscaler->Enabled() && upscaler->RedirectsSampled(image_id))) {
             return false;
         }

@@ -653,6 +653,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (camera_motion->Enabled() && regs.color_buffers[0] &&
         FrameCapture::IsDisplayBuffer(regs.color_buffers[0].Address())) {
         scene_started = false;
+        ui_pass_started = false;
         DumpTracedInputs();
         DumpPassImages('p');
         upscaler->OnDisplayPassStart(regs.color_buffers[0].Address());
@@ -1358,11 +1359,21 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
 
 void Rasterizer::NoteUpscalerDraw(const GraphicsPipeline* pipeline) {
     // Single-target passes: the upscaler looks for the scene's and the UI's (UiComposition).
-    if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
-        const auto& viewport = Regs().viewports[0];
-        upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
-                         cb_descs[0].first, db_desc.first,
-                         UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
+    if (std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
+        const u64 vs_hash = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+        if (UiComposition::MovieShader(vs_hash)) {
+            ui_pass_started = true;
+        }
+        if (upscaler->Enabled()) {
+            const auto& viewport = Regs().viewports[0];
+            upscaler->OnDraw(vs_hash, cb_descs[0].first, db_desc.first,
+                             UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
+            if (upscaler->InUiPhase()) {
+                ui_pass_started = true;
+            }
+        }
+    } else {
+        ui_pass_started = false;
     }
 }
 

@@ -521,7 +521,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     continue;
                 }
             }
-            if (prompts->IsUiTexture(image)) {
+            if (ui_pass_started && stage.sw_stage == Shader::SwStage::Fragment &&
+                prompts->IsUiTexture(image)) {
                 set_ok = false;
                 if (!on_helper && binding_norm_ok[binding_index] && !is_storage &&
                     !binding.force_general && !binding.is_target &&

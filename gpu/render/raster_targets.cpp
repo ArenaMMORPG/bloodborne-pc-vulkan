@@ -925,6 +925,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     if (std::popcount(key.mrt_mask & 0x7f) >= 5 && db_desc.first &&
         scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first))) {
         scene_started = true;
+        ui_pass_started = false;
     }
     std::optional<SceneResolution::Size> pass_size;
     const bool reduced = ReducedPass(pipeline, pass_size);
