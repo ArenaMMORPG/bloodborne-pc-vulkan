@@ -397,7 +397,11 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     const bool active = Active();
     const bool jitter_on = active && settings.jitter && !BbToggle::Disabled(1u << 25);
-    const int dlss_preset = settings.dlss_preset.load();
+    const int dlss_preset =
+        (settings.upscaler.load() == BbSettings::UpscalerOff &&
+         settings.aa_mode.load() == BbSettings::AaDlaa)
+            ? 11
+            : settings.dlss_preset.load();
     auto output_size = BbSettings::CurrentOutput();
     if (!Game::CameraAspect() && output_size.width * 9 != output_size.height * 16) {
         // A game whose camera keeps 16:9: its picture at that shape, as high (wide) as the output
@@ -2656,7 +2660,12 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
                                   const Dlss::Resource& depth, u32 w, u32 h, u32 ow, u32 oh,
                                   float frame_ms, bool hdr) {
     Dlss* dlss = Dlss::Get();
-    const int dlss_preset = std::max(0, BbSettings::Get().dlss_preset.load());
+    const auto& s_dlss = BbSettings::Get();
+    const int dlss_preset =
+        (s_dlss.upscaler.load() == BbSettings::UpscalerOff &&
+         s_dlss.aa_mode.load() == BbSettings::AaDlaa)
+            ? 11
+            : std::max(0, s_dlss.dlss_preset.load());
     const Dlss::FeatureDesc desc{w, h, ow, oh, Dlss::QualityForScale(float(ow) / float(w)), hdr,
                                  dlss_preset};
     bool ok = true;
