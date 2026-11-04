@@ -193,6 +193,14 @@ struct Values {
     std::atomic<int> fps_limit{0};
     /// AI / SDF UI & Icon Super-Resolution (2x/4x + disk cache) for 1-mip 2D UI textures.
     std::atomic<bool> ui_upscale{true};
+    /// Enhanced Multi-Scale GTAO / Low-Noise SSAO in ps_cbbca5dc.frag.
+    std::atomic<bool> ssao_quality{true};
+    /// Screen-Space Contact Micro-Shadows + 12-Tap Vogel Disk Soft PCF in ps_f55643de.frag.
+    std::atomic<bool> contact_shadows{true};
+    /// High-Precision Ultra SSR (2x raymarch step density + dynamic 6-face env cubemap fallback).
+    std::atomic<bool> ssr_quality{true};
+    /// True Black / OLED Contrast De-Haze & Vibrance in Yebis2 3D LUT pass (ps_ed4c7668_lut3d.frag).
+    std::atomic<bool> true_black_hdr{true};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

@@ -229,6 +229,14 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fps_limit = (i <= 0) ? 0 : std::clamp(i, 30, 5000);
     } else if (key == "ui_upscale") {
         v.ui_upscale = (value != "0" && value != "false" && value != "off");
+    } else if (key == "ssao_quality") {
+        v.ssao_quality = (value != "0" && value != "false" && value != "off");
+    } else if (key == "contact_shadows") {
+        v.contact_shadows = (value != "0" && value != "false" && value != "off");
+    } else if (key == "ssr_quality") {
+        v.ssr_quality = (value != "0" && value != "false" && value != "off");
+    } else if (key == "true_black_hdr") {
+        v.true_black_hdr = (value != "0" && value != "false" && value != "off");
     } else {
         for (int k = 0; k < KeyActionCount; ++k) {
             if (key == kKeyDefs[k].ini_key) {
@@ -505,6 +513,8 @@ void Load() {
         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_FRAME_GEN", "frame_generation"},       {"BB_UI_UPSCALE", "ui_upscale"},
+        {"BB_SSAO_QUALITY", "ssao_quality"},        {"BB_CONTACT_SHADOWS", "contact_shadows"},
+        {"BB_SSR_QUALITY", "ssr_quality"},          {"BB_TRUE_BLACK_HDR", "true_black_hdr"},
     };
     // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
     // it on, a saved setting does not.
@@ -663,6 +673,10 @@ void Save() {
     put("anisotropic", std::to_string(v.anisotropic.load()));
     put("fps_limit", std::to_string(v.fps_limit.load()));
     put("ui_upscale", flag(v.ui_upscale.load()));
+    put("ssao_quality", flag(v.ssao_quality.load()));
+    put("contact_shadows", flag(v.contact_shadows.load()));
+    put("ssr_quality", flag(v.ssr_quality.load()));
+    put("true_black_hdr", flag(v.true_black_hdr.load()));
     for (int k = 0; k < KeyActionCount; ++k) {
         put(kKeyDefs[k].ini_key, GetKeyBinding(k));
     }

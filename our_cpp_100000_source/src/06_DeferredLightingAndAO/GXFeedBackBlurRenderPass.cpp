@@ -874,10 +874,6 @@ void sub_22ae500(
         return;
     }
 
-    if (!gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectReflections)) {
-        return;
-    }
-
     // Throttle dynamic 6-face environment cubemap updates to 30 Hz (1 face per 33.3 ms, matching PS4 30 FPS)
     // after the initial 6 faces have been rendered at least once.
     {

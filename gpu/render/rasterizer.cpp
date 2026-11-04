@@ -8,6 +8,7 @@
 #include <filesystem>
 #include "render/raster_internal.h"
 #include "render/shader_hle.h"
+#include "shim/bbport_settings.h"
 #include "textures/direct_textures.h"
 #include <vk_mem_alloc.h>
 
@@ -1384,6 +1385,13 @@ void Rasterizer::ScaleToTarget(const GraphicsPipeline* pipeline) {
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
+    const auto& settings = BbSettings::Get();
+    u8 fx_mask = 0;
+    if (settings.ssao_quality.load(std::memory_order_relaxed))    fx_mask |= 0x01u;
+    if (settings.contact_shadows.load(std::memory_order_relaxed)) fx_mask |= 0x02u;
+    if (settings.ssr_quality.load(std::memory_order_relaxed))     fx_mask |= 0x04u;
+    if (settings.true_black_hdr.load(std::memory_order_relaxed))  fx_mask |= 0x08u;
+    push_data.buf_offsets[39] = fx_mask;
 }
 
 namespace {

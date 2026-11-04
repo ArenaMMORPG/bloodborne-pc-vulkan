@@ -768,6 +768,40 @@ void Menu() {
                 "Nexus #253 (шрифты в adhoc/font)."));
         }
     }
+    ImGui::SeparatorText(BbSettings::MenuText("Vulkan 1.3 Remaster Enhancements",
+                                              "Улучшения графики ремастера (Vulkan 1.3)"));
+    Checkbox(BbSettings::MenuText("Enhanced Multi-Scale GTAO / Low-Noise SSAO",
+                                  "Улучшенный двухмасштабный GTAO / SSAO без шума"),
+             s.ssao_quality);
+    Hint(BbSettings::MenuText(
+        "Replaces PS4 64x64 noise tiling with Interleaved Gradient Noise and adds 4 fine "
+        "micro-crevice horizon pairs (0.32x radius) for deep folds on hunter coats and cobblestones.",
+        "Убирает сетку шума 64x64 от PS4 через Interleaved Gradient Noise и добавляет 4 пары "
+        "микро-горизонтов (0.32x радиус) для складок плащей и швов брусчатки."));
+    Checkbox(BbSettings::MenuText("Contact Micro-Shadows & 12-Tap Soft Vogel PCF",
+                                  "Контактные микро-тени и мягкий 12-Tap Vogel PCF"),
+             s.contact_shadows);
+    Hint(BbSettings::MenuText(
+        "Upgrades directional shadows from 4-tap PS4 PCF to a 12-tap Golden-Angle Vogel disk and "
+        "raymarches 8 screen-space contact shadow steps along the exact sun/moon vector.",
+        "Обновляет фильтрацию теней с 4 точек PS4 до 12-точечного диска Вогеля и трассирует "
+        "8 шагов контактных микро-теней в экранном пространстве вдоль точного вектора солнца/луны."));
+    Checkbox(BbSettings::MenuText("High-Precision Ultra SSR (2x Ray Density & 30 Hz Cubemap)",
+                                  "Высокоточный Ultra SSR (2x плотность лучей и 30 Гц Cubemap)"),
+             s.ssr_quality);
+    Hint(BbSettings::MenuText(
+        "Doubles SSR raymarching step density (1.5 px/step vs 3.0 px/step) on wet streets and "
+        "puddles while keeping the 6-face dynamic environment cubemap updating at 30 Hz.",
+        "Удваивает плотность шагов трассировки лучей SSR (1.5 пикс/шаг вместо 3.0) на мокрой "
+        "брусчатке и лужах с динамическим обновлением 6-гранной карты окружения на 30 Гц."));
+    Checkbox(BbSettings::MenuText("True Black / OLED Contrast De-Haze & Vibrance",
+                                  "Глубокий чёрный (True Black / OLED), анти-дымка и сочность"),
+             s.true_black_hdr);
+    Hint(BbSettings::MenuText(
+        "Removes the 2015 PS4 LCD washed-out black floor (~1.1% grey haze) after 3D LUT color "
+        "grading with a smooth toe curve and subtle blood/gold vibrance boost.",
+        "Убирает серую пелену (~1.1% подъём чёрного под LCD 2015 года) после цветокоррекции "
+        "3D LUT с мягкой S-кривой контраста и подчёркиванием оттенков крови и огня."));
     BbGuestHooks::ApplyGameEffects();
     Hint(BbSettings::MenuText(
         "All visual effects (including SSR reflections, Bloom, DoF, Motion Blur, SSAO, and Model LOD) "

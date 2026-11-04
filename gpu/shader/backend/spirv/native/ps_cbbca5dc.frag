@@ -72,6 +72,15 @@ void main() {
                               uintBitsToFloat(ssbo_1.data[b0 + 19u]));
 
         vec2 noise = textureLod(sampler2D(fs_img2, fs_samp2), (uv * rot_scale) * 0.015625, 0.0).rg * 2.0 - 1.0;
+        const bool enhanced_gtao = ((push_data.buf_offsets2.y >> 24u) & 0x01u) != 0u;
+        if (enhanced_gtao) {
+            // Break the repeating 64x64 PS4 noise tile grid with Jimenez Interleaved Gradient Noise.
+            const float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+            const float ang = ign * 6.28318530718;
+            const vec2 ign_cs = vec2(cos(ang), sin(ang));
+            noise = normalize(vec2(noise.x * ign_cs.x - noise.y * ign_cs.y,
+                                   noise.x * ign_cs.y + noise.y * ign_cs.x));
+        }
 
         vec3 n_ws = gbuf_n * 2.0 - 1.0;
         float n_len2 = dot(n_ws, n_ws);
@@ -141,6 +150,57 @@ void main() {
             float o_sq4 = (o_sum * o_sum) * 0.25;
             float pair_ao = max(fall_a, fall_b) * (1.0 - o_sq4) + o_sq4;
             ao_acc += k_w * pair_ao;
+        }
+
+        if (enhanced_gtao) {
+            // Multi-scale fine micro-crevice GTAO pass (4 rotated inner horizon pairs at 0.32x radius).
+            const vec2 micro_noise = vec2(noise.x * 0.9238795 - noise.y * 0.3826834,
+                                          noise.x * 0.3826834 + noise.y * 0.9238795);
+            const vec2 micro_rad = uv_rad * 0.32;
+            float micro_acc = 0.0;
+            float micro_w_sum = 0.0;
+            for (uint i = 0u; i < 4u; ++i) {
+                uint k_base = b1 + (i * 2u) * 4u;
+                vec2 k_xy = vec2(uintBitsToFloat(ssbo_2.data[k_base + 0u]),
+                                 uintBitsToFloat(ssbo_2.data[k_base + 1u]));
+                float k_w = uintBitsToFloat(ssbo_2.data[k_base + 2u]);
+                vec2 rot_k = vec2(k_xy.x * micro_noise.y + k_xy.y * micro_noise.x,
+                                  k_xy.y * micro_noise.y - k_xy.x * micro_noise.x);
+                vec2 delta_uv = rot_k * micro_rad;
+                vec2 uv_a = uv + delta_uv;
+                vec2 uv_b = uv - delta_uv;
+                float d_a = textureLod(sampler2D(fs_img0, fs_samp0), uv_a, 0.0).r;
+                float d_b = textureLod(sampler2D(fs_img0, fs_samp0), uv_b, 0.0).r;
+                vec2 ndc_a = vec2(uv_a.x * 2.0 - 1.0, 1.0 - uv_a.y * 2.0);
+                vec2 ndc_b = vec2(uv_b.x * 2.0 - 1.0, 1.0 - uv_b.y * 2.0);
+                float wa_rcp = 1.0 / (p3.x * ndc_a.x + (p3.y * ndc_a.y + (p3.z * d_a + p3.w)));
+                float wb_rcp = 1.0 / (p3.x * ndc_b.x + (p3.y * ndc_b.y + (p3.z * d_b + p3.w)));
+                vec3 pos_a = vec3(p0.x * ndc_a.x + (p0.y * ndc_a.y + (p0.z * d_a + p0.w)),
+                                  p1.x * ndc_a.x + (p1.y * ndc_a.y + (p1.z * d_a + p1.w)),
+                                  p2.x * ndc_a.x + (p2.y * ndc_a.y + (p2.z * d_a + p2.w))) * wa_rcp;
+                vec3 pos_b = vec3(p0.x * ndc_b.x + (p0.y * ndc_b.y + (p0.z * d_b + p0.w)),
+                                  p1.x * ndc_b.x + (p1.y * ndc_b.y + (p1.z * d_b + p1.w)),
+                                  p2.x * ndc_b.x + (p2.y * ndc_b.y + (p2.z * d_b + p2.w))) * wb_rcp;
+                vec3 diff_a = pos_a - vec3(vx, vy, vz);
+                vec3 diff_b = pos_b - vec3(vx, vy, vz);
+                float len2_a = dot(diff_a, diff_a);
+                float len2_b = dot(diff_b, diff_b);
+                vec3 dir_a = (len2_a > 0.0) ? (diff_a * inversesqrt(len2_a)) : vec3(0.0);
+                vec3 dir_b = (len2_b > 0.0) ? (diff_b * inversesqrt(len2_b)) : vec3(0.0);
+                float o_a = clamp(1.0 - dot(dir_a, n_vs), 0.0, 1.0);
+                float o_b = clamp(1.0 - dot(dir_b, n_vs), 0.0, 1.0);
+                float fall_a = clamp(((vz * 0.965 - pos_a.z) * inv_vz) * 28.0, 0.0, 1.0);
+                float fall_b = clamp(((vz * 0.965 - pos_b.z) * inv_vz) * 28.0, 0.0, 1.0);
+                float o_sum = o_a + o_b;
+                float o_sq4 = (o_sum * o_sum) * 0.25;
+                float pair_ao = max(fall_a, fall_b) * (1.0 - o_sq4) + o_sq4;
+                micro_acc += k_w * pair_ao;
+                micro_w_sum += k_w;
+            }
+            if (micro_w_sum > 0.0) {
+                float micro_ao = micro_acc / micro_w_sum;
+                ao_acc = min(ao_acc, mix(ao_acc, ao_acc * micro_ao, 0.45));
+            }
         }
     }
 

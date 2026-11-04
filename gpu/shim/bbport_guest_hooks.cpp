@@ -403,6 +403,29 @@ void ApplyHotEffects(bool force, u64 fresh = 0) {
             }
         }
     }
+    // Live High-Precision Ultra SSR step scale (0.5f = 1.5 px/step vs 2.0f = 3.0 px/step):
+    {
+        const bool want_ultra_ssr = settings.ssr_quality.load(std::memory_order_relaxed);
+        const float target_step_scale = want_ultra_ssr ? 0.5f : 2.0f;
+        static float applied_step_scale = -1.0f;
+        if (force || applied_step_scale != target_step_scale) {
+            applied_step_scale = target_step_scale;
+            WriteHotCode(ImageBase + 0x00632f8,
+                         reinterpret_cast<const u8*>(&target_step_scale), sizeof(float), true);
+        }
+        if (runtime_memory_is_mapped(ImageBase + 0x5540dd8, 8)) {
+            const u64 dd8 = *reinterpret_cast<const u64*>(ImageBase + 0x5540dd8);
+            if (dd8 && runtime_memory_is_mapped(dd8 + 0x6080, 8)) {
+                const u64 ssr_obj = *reinterpret_cast<const u64*>(dd8 + 0x6080);
+                if (ssr_obj && runtime_memory_is_mapped(ssr_obj + 0x2c, 4)) {
+                    auto* step_ptr = reinterpret_cast<volatile float*>(ssr_obj + 0x2c);
+                    if (*step_ptr != target_step_scale) {
+                        *const_cast<float*>(step_ptr) = target_step_scale;
+                    }
+                }
+            }
+        }
+    }
     static const bool verbose_hooks = [] {
         const char* e = std::getenv("BB_VERBOSE_STATS");
         return e && e[0] == '1';

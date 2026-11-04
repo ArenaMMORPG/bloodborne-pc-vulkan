@@ -506,6 +506,26 @@ EN = {
         "Jumps straight to the title screen without startup logo videos",
     "Отвязывает камеру от персонажа для свободного полёта по локации":
         "Detaches the camera from the player for free fly-through inspection",
+    "Улучшения графики ремастера (Vulkan 1.3)":
+        "Vulkan 1.3 Remaster Enhancements",
+    "Эксклюзивные шейдерные улучшения нашего порта на Vulkan 1.3 GLSL (работают на лету, нагрузка на GPU менее 0.25 мс)":
+        "Exclusive Vulkan 1.3 GLSL shader upgrades in our port (switch live in-game, under 0.25 ms total GPU cost)",
+    "Улучшенный двухмасштабный GTAO / SSAO без шума":
+        "Enhanced Multi-Scale GTAO / Low-Noise SSAO",
+    "Убирает сетку шума 64x64 от PS4 через Interleaved Gradient Noise и добавляет микро-затенение складок одежды и швов брусчатки":
+        "Replaces PS4 64x64 noise tiling with Interleaved Gradient Noise and adds micro-crevice shading for cloth folds and cobblestones",
+    "Контактные микро-тени (Screen-Space) и мягкий 12-Tap Vogel PCF":
+        "Screen-Space Contact Micro-Shadows and 12-Tap Soft Vogel PCF",
+    "Обновляет фильтрацию теней с 4 точек PS4 до 12-точечного диска Вогеля и трассирует контактные микро-тени вдоль лучей солнца и луны":
+        "Upgrades directional shadows from 4-tap PS4 PCF to a 12-tap Golden-Angle Vogel disk and raymarches screen-space contact micro-shadows",
+    "Высокоточный Ultra SSR (2x плотность лучей и 30 Гц Cubemap)":
+        "High-Precision Ultra SSR (2x Ray Density and 30 Hz Cubemap)",
+    "Удваивает плотность шагов трассировки лучей SSR (1.5 пикс/шаг вместо 3.0) на мокрой брусчатке и лужах с обновлением карты окружения на 30 Гц":
+        "Doubles SSR raymarching step density (1.5 px/step vs 3.0 px/step) on wet streets and puddles with 30 Hz dynamic cubemap updates",
+    "Глубокий чёрный (True Black / OLED), анти-дымка и сочность":
+        "True Black / OLED Contrast De-Haze and Vibrance",
+    "Убирает серую пелену (подъём чёрного под старые LCD 2015 года) после 3D LUT с мягкой S-кривой контраста и подчёркиванием оттенков крови и огня":
+        "Removes the 2015 PS4 LCD washed-out grey black floor after 3D LUT grading with a smooth S-contrast curve and blood/fire vibrance boost",
 }
 
 PT_BR = {

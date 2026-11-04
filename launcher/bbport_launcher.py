@@ -156,6 +156,16 @@ EFFECTS = [
     ("debug_menu", "Debug menu (левый touchpad / Tab; нужны шрифты)", False,
      "Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в dvdroot_ps4 игры или модом; без неё патч не применяется"),
 ]
+REMASTER_ENHANCEMENTS = [
+    ("ssao_quality", "Улучшенный двухмасштабный GTAO / SSAO без шума", True,
+     "Убирает сетку шума 64x64 от PS4 через Interleaved Gradient Noise и добавляет микро-затенение складок одежды и швов брусчатки"),
+    ("contact_shadows", "Контактные микро-тени (Screen-Space) и мягкий 12-Tap Vogel PCF", True,
+     "Обновляет фильтрацию теней с 4 точек PS4 до 12-точечного диска Вогеля и трассирует контактные микро-тени вдоль лучей солнца и луны"),
+    ("ssr_quality", "Высокоточный Ultra SSR (2x плотность лучей и 30 Гц Cubemap)", True,
+     "Удваивает плотность шагов трассировки лучей SSR (1.5 пикс/шаг вместо 3.0) на мокрой брусчатке и лужах с обновлением карты окружения на 30 Гц"),
+    ("true_black_hdr", "Глубокий чёрный (True Black / OLED), анти-дымка и сочность", True,
+     "Убирает серую пелену (подъём чёрного под старые LCD 2015 года) после 3D LUT с мягкой S-кривой контраста и подчёркиванием оттенков крови и огня"),
+]
 MODEL_LOD = [("Как в игре", "0"), ("Максимальная (-2)", "-2"), ("Ниже (1)", "1"),
              ("Минимальная (2)", "2")]
 FPS_PRESET_CHOICES = [
@@ -259,7 +269,7 @@ INI_DEFAULTS = {
     "mouse_look": "1",
     "mouse_sensitivity": "1.00",
     "mouse_invert_y": "0",
-    **{key: "1" if default else "0" for key, _, default, *_ in EFFECTS},
+    **{key: "1" if default else "0" for key, _, default, *_ in EFFECTS + REMASTER_ENHANCEMENTS},
 }
 
 
@@ -944,6 +954,17 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.effect_rows[key] = row
             effects.add(row)
         page.add(effects)
+
+        remaster = Adw.PreferencesGroup(
+            title=tr("Улучшения графики ремастера (Vulkan 1.3)"),
+            description=tr("Эксклюзивные шейдерные улучшения нашего порта на Vulkan 1.3 GLSL (работают на лету, нагрузка на GPU менее 0.25 мс)"))
+        for key, title, default, subtitle in REMASTER_ENHANCEMENTS:
+            row = Adw.SwitchRow(title=tr(title),
+                                subtitle=tr(subtitle),
+                                active=self.ini.get(key, "1" if default else "0") == "1")
+            self.effect_rows[key] = row
+            remaster.add(row)
+        page.add(remaster)
         return page
 
     def build_engine_page(self):
@@ -1546,7 +1567,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.motion_row.set_active(self.ini.get("object_motion") == "1")
             self.show_fps_row.set_active(self.ini.get("show_fps") == "1")
             select_combo(self.lod_row, self.ini.get("model_lod", "0"))
-            for key, _title, default in EFFECTS:
+            for key, _title, default, *_ in EFFECTS + REMASTER_ENHANCEMENTS:
                 if key in self.effect_rows:
                     self.effect_rows[key].set_active(self.ini.get(key, "1" if default else "0") == "1")
 
