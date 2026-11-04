@@ -183,12 +183,13 @@ void TextureCache::RefreshImage(Image& image) {
             u8(BbPrompts::IconOf(std::bit_cast<const u8*>(info.guest_address), 1024));
     }
     // The HUD's atlases with key guide icons packed in: the port may sample a copy with its own.
+    // All 1-mip block-compressed 2D textures also track upload count for UI Super-Resolution cache.
     if (levels == 1 && layers == 1 && info.props.is_block) {
         static std::atomic<u32> uploads{0};
         image.prompt_atlas = u8(BbPrompts::AtlasOf(std::bit_cast<const u8*>(info.guest_address),
                                                    info.guest_size, info.size.width,
                                                    info.size.height));
-        image.prompt_upload = image.prompt_atlas ? ++uploads : 0;
+        image.prompt_upload = ++uploads;
     }
     TracePromptCandidate(image);
     NoteRefresh(image);

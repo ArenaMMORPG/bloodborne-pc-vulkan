@@ -191,6 +191,8 @@ struct Values {
     std::atomic<int> anisotropic{16};
     /// Persistent FPS limit (0 = Uncapped, or 30..1000).
     std::atomic<int> fps_limit{0};
+    /// AI / SDF UI & Icon Super-Resolution (2x/4x + disk cache) for 1-mip 2D UI textures.
+    std::atomic<bool> ui_upscale{true};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

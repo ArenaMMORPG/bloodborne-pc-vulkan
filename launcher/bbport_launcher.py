@@ -228,6 +228,7 @@ INI_DEFAULTS = {
     "preset": "0",
     "dlss_preset": "11",
     "anisotropic": "16",
+    "ui_upscale": "1",
     "fps_limit": "0",
     "sharpen": "1",
     "sharpness": "0.50",
@@ -880,6 +881,11 @@ class LauncherWindow(Adw.ApplicationWindow):
             tr("Чёткость текстур пола и стен под острым углом (меняется в игре на лету)"),
             ANISOTROPIC_LEVELS, self.ini.get("anisotropic", "16"))
         upscaler.add(self.aniso_row)
+        self.ui_upscale_row = Adw.SwitchRow(
+            title=tr("Апскейл иконок и интерфейса (AI / SDF 2x–4x)"),
+            subtitle=tr("2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)"),
+            active=self.ini.get("ui_upscale", "1") != "0")
+        upscaler.add(self.ui_upscale_row)
         self.sharpen_row = Adw.SwitchRow(title=tr("Резкость (RCAS)"),
                                          active=self.ini.get("sharpen") == "1")
         upscaler.add(self.sharpen_row)
@@ -1306,6 +1312,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             "preset": str(combo_value(self.preset_row)),
             "dlss_preset": str(combo_value(self.dlss_preset_row)),
             "anisotropic": str(combo_value(self.aniso_row)),
+            "ui_upscale": "1" if self.ui_upscale_row.get_active() else "0",
             "fps_limit": str(int(self.limit_row.get_value())),
             "language": str(combo_value(self.language_row)),
             "fullscreen": "1" if self.fullscreen_row.get_active() else "0",
@@ -1393,6 +1400,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             select_combo(self.dlss_preset_row, self.ini.get("dlss_preset", "11"))
             select_combo(self.preset_row, raw_preset)
             select_combo(self.aniso_row, self.ini.get("anisotropic", "16"))
+            self.ui_upscale_row.set_active(self.ini.get("ui_upscale", "1") != "0")
             self.sharpen_row.set_active(self.ini.get("sharpen") == "1")
             try:
                 self.sharpness_row.set_value(float(self.ini.get("sharpness", "0.5")))

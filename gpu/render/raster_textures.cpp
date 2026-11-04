@@ -190,6 +190,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     // SampleSceneProxies: bindings that may read a reduced scene proxy instead of the native
     // image (normalized sampling only; see Shader::ImageResource::needs_native).
     boost::container::small_vector<bool, 16> binding_proxy_ok;
+    boost::container::small_vector<bool, 16> binding_norm_ok;
     const bool sample_proxies = !BbToggle::Disabled(BbToggle::SampleSceneProxies) &&
                                 !on_helper && scene_targets->Reduced();
     // An invalid T# binds a null descriptor.
@@ -197,6 +198,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         image_bindings.emplace_back(VideoCore::ImageId{}, &image_desc_storage.emplace_back());
         image_binding_entries.push_back(nullptr);
         binding_proxy_ok.push_back(false);
+        binding_norm_ok.push_back(false);
         image_descriptor_array_sizes.push_back(1);
     };
 
@@ -259,9 +261,10 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex
                 ? static_cast<u32>(tsharp.last_level - tsharp.base_level + 1)
                 : 1u;
-        const bool proxy_candidate = sample_proxies && num_bindings == 1 &&
-                                     !image_desc.needs_native && !image_desc.is_written &&
-                                     mip_fallback_mode == Shader::MipStorageFallbackMode::None;
+        const bool norm_candidate = num_bindings == 1 && !image_desc.needs_native &&
+                                    !image_desc.is_written &&
+                                    mip_fallback_mode == Shader::MipStorageFallbackMode::None;
+        const bool proxy_candidate = sample_proxies && norm_candidate;
 
         auto& desc_entry = ResolveImageDescEntry(
             tsharp, srv_uid, srv_gen8, image_desc,
@@ -308,6 +311,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     image_bindings.emplace_back(desc_entry.found_id, &desc_entry.found_desc);
                 image_binding_entries.push_back(&desc_entry);
                 binding_proxy_ok.push_back(proxy_candidate);
+                binding_norm_ok.push_back(norm_candidate);
                 texture_cache.MarkFound(image_id);
                 mark_bound(image_id);
                 continue;
@@ -316,6 +320,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             auto& [image_id, _] = image_bindings.emplace_back(VideoCore::ImageId{}, &desc);
             image_binding_entries.push_back(nullptr);
             binding_proxy_ok.push_back(proxy_candidate);
+            binding_norm_ok.push_back(norm_candidate);
 
             if (mip_fallback_mode == Shader::MipStorageFallbackMode::ConstantIndex) {
                 ASSERT(num_bindings == 1);
@@ -514,6 +519,20 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     image_infos.emplace_back(VK_NULL_HANDLE, icon, vk::ImageLayout::eShaderReadOnlyOptimal);
                     set_ok = false;
                     continue;
+                }
+            }
+            if (prompts->IsUiTexture(image)) {
+                set_ok = false;
+                if (!on_helper && binding_norm_ok[binding_index] && !is_storage &&
+                    !binding.force_general && !binding.is_target &&
+                    BbSettings::Get().ui_upscale.load(std::memory_order_relaxed)) {
+                    if (const vk::ImageView ui_view =
+                            prompts->UiView(runtime, image, desc.view_info)) {
+                        image.usage.texture = 1u;
+                        image_infos.emplace_back(VK_NULL_HANDLE, ui_view,
+                                                 vk::ImageLayout::eShaderReadOnlyOptimal);
+                        continue;
+                    }
                 }
             }
 

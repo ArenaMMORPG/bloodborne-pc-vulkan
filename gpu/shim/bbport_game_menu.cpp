@@ -178,6 +178,8 @@ const char* TranslateForCurrentGameLang(const char* en) {
         {"Sharpness (RCAS)", "Netteté (RCAS)", "Nitidez (RCAS)", "Schärfe (RCAS)", "Nitidezza (RCAS)", "Nitidez (RCAS)", "Ostrość (RCAS)", "シャープネス (RCAS)", "선명도 (RCAS)", "锐化 (RCAS)"},
         {"Anisotropic Filtering", "Filtrage anisotrope", "Filtro anisotrópico", "Anisotrope Filterung", "Filtro anisotropico", "Filtro anisotrópico", "Filtrowanie anizotropowe", "異方性フィルタリング", "이방성 필터링", "各向异性过滤"},
         {"Model Detail (LOD)", "Détail des modèles (LOD)", "Detalle de modelos (LOD)", "Modelldetails (LOD)", "Dettaglio modelli (LOD)", "Detalhe dos modelos (LOD)", "Szczegółowość modeli (LOD)", "モデル詳細度 (LOD)", "모델 디테일 (LOD)", "模型细节 (LOD)"},
+        {"UI & Icons Upscale", "Upscaling UI & Icônes", "Escalado de UI e iconos", "UI- & Icon-Upscaling", "Upscaling UI e icone", "Upscale de UI e ícones", "Skalowanie UI i ikon", "UI・アイコン高解像度化", "UI 및 아이콘 업스케일", "UI 与图标超分辨率"},
+        {"On (AI / SDF 2x-4x)", "Activé (IA / SDF 2x-4x)", "Activado (IA / SDF 2x-4x)", "Ein (KI / SDF 2x-4x)", "Attivato (IA / SDF 2x-4x)", "Ativado (IA / SDF 2x-4x)", "Wł. (AI / SDF 2x-4x)", "オン (AI / SDF 2x-4x)", "켜짐 (AI / SDF 2x-4x)", "开启 (AI / SDF 2x-4x)"},
         {"Uncapped", "Illimité", "Sin límite", "Unbegrenzt", "Illimitato", "Ilimitado", "Bez limitu", "無制限", "제한 없음", "无限制"},
         {"Off", "Désactivé", "Desactivado", "Aus", "Disattivato", "Desativado", "Wył.", "オフ", "꺼짐", "关闭"},
         {"On", "Activé", "Activado", "Ein", "Attivato", "Ativado", "Wł.", "オン", "켜짐", "开启"},
@@ -262,8 +264,8 @@ constexpr int ItemAutoTarget = FirstControlSettingItem + 5;
 constexpr int ItemCameraAdjust = FirstControlSettingItem + 6;
 constexpr int TotalControlsItems = BbSettings::KeyActionCount + 7; ///< 26 keybinds + Mouse Speed + 6 native settings
 constexpr int MaxControlsScroll = TotalControlsItems - ControlsSlotCount;
-constexpr int DisplaySlotCount = 6; ///< all 6 visible rows in Display scroll across 9 items
-constexpr int TotalDisplayItems = 9;
+constexpr int DisplaySlotCount = 6; ///< all 6 visible rows in Display scroll across 10 items
+constexpr int TotalDisplayItems = 10;
 constexpr int MaxDisplayScroll = TotalDisplayItems - DisplaySlotCount;
 constexpr int MaxChoicesPerSlot = 16;
 constexpr int DefaultResetSentinel = -999;
@@ -1520,6 +1522,13 @@ void BuildDisplaySlotChoices(int slot, std::vector<u32>& out_choices, int& out_s
         add_choice("Lowest", "Минимальная");
         const int lod = s.model_lod.load();
         out_selected_idx = lod <= -2 ? 0 : lod == 0 ? 1 : lod == 1 ? 2 : 3;
+        return;
+    }
+
+    if (item_idx == 9) {
+        add_choice("Off (PS4 Default)", "Выкл (Как на PS4)");
+        add_choice("On (AI / SDF 2x-4x)", "Вкл (AI / SDF 2x-4x)");
+        out_selected_idx = s.ui_upscale.load() ? 1 : 0;
     }
 }
 
@@ -1655,6 +1664,19 @@ void RefreshDisplaySlotTexts(int slot) {
             SetDynamic(val_id, "Lower", "Ниже");
         } else {
             SetDynamic(val_id, "Lowest", "Минимальная");
+        }
+        return;
+    }
+
+    if (item_idx == 9) {
+        SetDynamic(name_id, "UI & Icons Upscale", "Апскейл иконок и UI");
+        SetDynamic(help_id,
+                   "2x/4x GPU Super-Resolution (SDF + De-Block + Edge Reconstruction) for logos, icons & HUD (applies live)",
+                   "2x/4x апскейл логотипа, иконок оружия/брони/предметов и HUD на видеокарте (применяется мгновенно)");
+        if (s.ui_upscale.load()) {
+            SetDynamic(val_id, "On (AI / SDF 2x-4x)", "Вкл (AI / SDF 2x-4x)");
+        } else {
+            SetDynamic(val_id, "Off (PS4 Default)", "Выкл (Как на PS4)");
         }
     }
 }
@@ -1832,6 +1854,17 @@ void ApplyDisplaySlotChoiceIndex(u8* row, int slot, int choice_idx) {
             values[ModelLod] = idx;
             applied[ModelLod] = idx;
             BbGuestHooks::ApplyGameEffects();
+            BbSettings::Save();
+        }
+        RefreshDisplaySlotTexts(slot);
+        UpdateDisplaySlotRowDisplay(row, slot);
+        return;
+    }
+
+    if (item_idx == 9) {
+        const bool new_ui_up = (choice_idx != 0);
+        if (new_ui_up != s.ui_upscale.load()) {
+            s.ui_upscale = new_ui_up;
             BbSettings::Save();
         }
         RefreshDisplaySlotTexts(slot);
@@ -2161,6 +2194,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             SetSharpnessStep(2);
             s.anisotropic = 16;
             s.model_lod = 0;
+            s.ui_upscale = true;
             BbSettings::Save();
             RefreshDisplayPage();
             return 0;

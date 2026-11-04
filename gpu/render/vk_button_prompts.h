@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: the port's button prompt icons on the GPU (gpu/shim/bbport_button_prompts.h). One image
-// array, a layer per game icon; a binding of one of the game's key guide icons samples its layer
-// instead while it is drawn for the device in use (Rasterizer::BindTextures). An atlas of the HUD
-// with icons packed in (BbPrompts::AtlasOf) samples an uncompressed copy with the port's icons in
-// its cells.
+// bbport: the port's button prompt icons on the GPU (gpu/shim/bbport_button_prompts.h) and
+// Hybrid GPU UI & Icon Super-Resolution (2x / 4x) for 1-mip 2D UI textures (title logo,
+// inventory icons, runes, HUD atlases).
 #pragma once
 
 #include <map>
@@ -50,24 +48,45 @@ public:
     vk::ImageView AtlasView(Runtime& runtime, VideoCore::Image& image,
                             const VideoCore::ImageViewInfo& info);
 
+    /// True if `image` is a 1-mip 2D block-compressed UI texture eligible for UI Super-Resolution.
+    bool IsUiTexture(const VideoCore::Image& image) const noexcept;
+
+    /// Returns the 2x/4x upscaled view of 1-mip 2D UI texture `image` (logos, item/weapon/armor
+    /// icons, HUD widgets), computed once per upload on the GPU via `ui_upscale.comp` and cached
+    /// in VRAM.
+    vk::ImageView UiView(Runtime& runtime, VideoCore::Image& image,
+                         const VideoCore::ImageViewInfo& info);
+
 private:
     struct Atlas {
         VideoCore::HostImage image;
+        vk::Image src_image{};
+        vk::UniqueImageView src_view;
+        vk::UniqueImageView storage_view;
         u32 upload = 0;
         u32 generation = 0;
+        u32 scale = 0;
+        u64 last_used_tick = 0;
         std::map<std::tuple<bool, bool, u32>, vk::UniqueImageView> views;
     };
+
+    bool EnsureUpscaleViews(Atlas& entry, VideoCore::Image& src_image, u32 dst_w, u32 dst_h);
 
     const Instance& instance;
     Scheduler& scheduler;
     VideoCore::BufferCache& buffer_cache;
     VideoCore::HostImage image;
+    vk::UniqueDescriptorSetLayout upscale_set_layout;
+    vk::UniquePipelineLayout upscale_pipeline_layout;
+    vk::UniquePipeline upscale_pipeline;
     u32 layers = 0;
     u32 generation = 0;
     bool active = false;
     std::vector<bool> drawn;
-    std::vector<u32> small; ///< the icons at the game's size (atlas cells), a layer after another
-    std::unordered_map<u64, Atlas> atlases; ///< by Image::image_uid
+    std::vector<u32> small;  ///< the icons at 1x game size (32x32), a layer after another
+    std::vector<u32> medium; ///< the icons at 2x size (64x64) for upscaled HUD atlases
+    std::unordered_map<u64, Atlas> atlases;     ///< HUD prompt atlases by Image::image_uid
+    std::unordered_map<u64, Atlas> ui_textures; ///< Upscaled 1-mip UI textures by Image::image_uid
     std::map<std::tuple<u32, bool, bool, u32>, vk::UniqueImageView> views;
 };
 

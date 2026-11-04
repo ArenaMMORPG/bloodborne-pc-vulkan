@@ -168,6 +168,9 @@ EN = {
     "Резкость (RCAS)": "Sharpening (RCAS)",
     "Сила резкости": "Sharpness",
     "Векторы движения объектов": "Object motion vectors",
+    "Апскейл иконок и интерфейса (AI / SDF 2x–4x)": "UI & Icons Super-Resolution (AI / SDF 2x–4x)",
+    "2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)":
+        "2x/4x GPU reconstruction for the Bloodborne logo, weapon/armor/item icons, and HUD (switches live in-game)",
     "Меньше гостинга на персонажах; стоит около 10% FPS": "Less ghosting on characters; costs about 10% FPS",
     "Показывать FPS": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
     "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",

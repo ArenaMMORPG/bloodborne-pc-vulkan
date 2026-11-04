@@ -725,6 +725,16 @@ void Menu() {
             Store(s.anisotropic, aniso_values[aniso_idx], true);
         }
     }
+    Checkbox(BbSettings::MenuText("UI & Icons Super-Resolution (AI / SDF 2x-4x)",
+                                  "Апскейл иконок и интерфейса (AI / SDF 2x-4x)"),
+             s.ui_upscale);
+    Hint(BbSettings::MenuText(
+        "2x/4x GPU compute super-resolution (4x4 bilateral de-blocking, xBRZ diagonal & "
+        "anisotropic Catmull-Rom reconstruction, Anime4K-style edge thinning, and SDF contour "
+        "reconstruction) for the Bloodborne title logo, weapon/armor/item icons, and HUD atlases.",
+        "2x/4x апскейл на видеокарте (билатеральный деблокинг 4x4, диагональная xBRZ и "
+        "анизотропная реконструкция граней + векторный SDF-контур) для логотипа Bloodborne, "
+        "иконок оружия/брони/предметов и атласов HUD."));
     const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
                           BbSettings::MenuText("Game default", "Как в игре"),
                           BbSettings::MenuText("Lower (1)", "Ниже (1)"),

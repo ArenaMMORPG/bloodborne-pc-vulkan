@@ -227,6 +227,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.anisotropic = (i >= 16) ? 16 : (i >= 8) ? 8 : (i >= 4) ? 4 : 0;
     } else if (key == "fps_limit") {
         v.fps_limit = (i <= 0) ? 0 : std::clamp(i, 30, 5000);
+    } else if (key == "ui_upscale") {
+        v.ui_upscale = (value != "0" && value != "false" && value != "off");
     } else {
         for (int k = 0; k < KeyActionCount; ++k) {
             if (key == kKeyDefs[k].ini_key) {
@@ -502,7 +504,7 @@ void Load() {
         {"BB_REACTIVE", "reactive"},              {"BB_REACTIVE_SCALE", "reactive_scale"},
         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
-        {"BB_FRAME_GEN", "frame_generation"},
+        {"BB_FRAME_GEN", "frame_generation"},       {"BB_UI_UPSCALE", "ui_upscale"},
     };
     // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
     // it on, a saved setting does not.
@@ -660,6 +662,7 @@ void Save() {
     put("dlss_preset", std::to_string(v.dlss_preset.load()));
     put("anisotropic", std::to_string(v.anisotropic.load()));
     put("fps_limit", std::to_string(v.fps_limit.load()));
+    put("ui_upscale", flag(v.ui_upscale.load()));
     for (int k = 0; k < KeyActionCount; ++k) {
         put(kKeyDefs[k].ini_key, GetKeyBinding(k));
     }
