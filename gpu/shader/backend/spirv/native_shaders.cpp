@@ -106,6 +106,12 @@
 #include "bbgpu/shaders/ps_e21e283a_frag.h"
 #include "bbgpu/shaders/ps_e54449c7_frag.h"
 #include "bbgpu/shaders/ps_fbe7c4b6_frag.h"
+#include "bbgpu/shaders/ps_6c2323c2_frag.h"
+#include "bbgpu/shaders/ps_6320bb24_frag.h"
+#include "bbgpu/shaders/ps_e820ee9d_frag.h"
+#include "bbgpu/shaders/ps_998b035e_frag.h"
+#include "bbgpu/shaders/ps_a0e88f56_noclip_frag.h"
+#include "bbgpu/shaders/ps_a0e88f56_cldist_frag.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -114,6 +120,7 @@ namespace {
 constexpr u32 kSpirvMagic = 0x07230203u;
 
 // SPIR-V opcodes
+constexpr u32 kOpExtInst = 12u;
 constexpr u32 kOpEntryPoint = 15u;
 constexpr u32 kOpTypeInt = 21u;
 constexpr u32 kOpTypeFloat = 22u;
@@ -166,7 +173,7 @@ struct NativeShaderCandidate {
     const char* label;
 };
 
-constexpr std::array<NativeShaderCandidate, 96> kNativeRegistry{{
+constexpr std::array<NativeShaderCandidate, 102> kNativeRegistry{{
     {0x000000000f61fd27ull, PS_0F61FD27_VSM_BLUR_FRAG, "ps_0f61fd27_vsm_blur"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_CLDIST_FRAG, "ps_1ae03d75_vsm_moment_cldist"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_NOCLIP_FRAG, "ps_1ae03d75_vsm_moment_noclip"},
@@ -263,6 +270,12 @@ constexpr std::array<NativeShaderCandidate, 96> kNativeRegistry{{
     {0x00000000e21e283aull, PS_E21E283A_FRAG, "ps_e21e283a_gbuf6"},
     {0x00000000e54449c7ull, PS_E54449C7_FRAG, "ps_e54449c7_gbuf6"},
     {0x00000000fbe7c4b6ull, PS_FBE7C4B6_FRAG, "ps_fbe7c4b6_bloom"},
+    {0x000000006c2323c2ull, PS_6C2323C2_FRAG, "ps_6c2323c2_ssr_raymarch"},
+    {0x000000006320bb24ull, PS_6320BB24_FRAG, "ps_6320bb24_ssr_mip_blur"},
+    {0x00000000e820ee9dull, PS_E820EE9D_FRAG, "ps_e820ee9d_ssr_hiz_depth"},
+    {0x00000000998b035eull, PS_998B035E_FRAG, "ps_998b035e_gbuf6_alpha"},
+    {0x00000000a0e88f56ull, PS_A0E88F56_NOCLIP_FRAG, "ps_a0e88f56_csm_depth_noclip"},
+    {0x00000000a0e88f56ull, PS_A0E88F56_CLDIST_FRAG, "ps_a0e88f56_vsm_depth_cldist"},
 }};
 
 struct DescSlot {
@@ -341,6 +354,11 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
             case kOpStore:
                 if (wc >= 3 && w[1] < bound) {
                     var_used[w[1]] = 1u;
+                }
+                break;
+            case kOpExtInst:
+                if (wc >= 6 && w[5] < bound) {
+                    var_used[w[5]] = 1u;
                 }
                 break;
             case kOpFunctionCall:
@@ -455,7 +473,7 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
     for (const auto& v : global_vars) {
         const u32 pointee = ptr_pointee[v.ptr_type];
         if (v.sc == kStorageClassInput) {
-            if (var_has_builtin[v.id] ||
+            if (!var_used[v.id] || var_has_builtin[v.id] ||
                 (pointee < bound && struct_deco[pointee] != 0 && !var_has_loc[v.id])) {
                 continue;
             }
@@ -546,7 +564,7 @@ u32 NativeShadersMinIdx() noexcept {
 }
 
 u32 NativeShadersMaxIdx() noexcept {
-    static const u32 max_idx = ParseEnvU32("BB_NATIVE_SHADER_MAX", 95u);
+    static const u32 max_idx = ParseEnvU32("BB_NATIVE_SHADER_MAX", 101u);
     return max_idx;
 }
 
