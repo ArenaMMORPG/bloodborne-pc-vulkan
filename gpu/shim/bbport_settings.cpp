@@ -106,6 +106,13 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                 v.upscaler = u;
             }
         }
+    } else if (key == "aa_mode") {
+        for (int a = 0; a < AaCount; ++a) {
+            if (value == AaModeName(a)) {
+                v.aa_mode = a;
+                v.aa_mode_chosen = true;
+            }
+        }
     } else if (key == "preset") {
         v.preset = std::clamp(i, 0, PresetCount - 1);
     } else if (key == "sharpen") {
@@ -167,7 +174,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "anisotropic") {
         v.anisotropic = (i >= 16) ? 16 : (i >= 8) ? 8 : (i >= 4) ? 4 : 0;
     } else if (key == "fps_limit") {
-        v.fps_limit = (i <= 0) ? 0 : std::clamp(i, 30, 1000);
+        v.fps_limit = (i <= 0) ? 0 : std::clamp(i, 30, 5000);
     } else {
         for (int k = 0; k < KeyActionCount; ++k) {
             if (key == kKeyDefs[k].ini_key) {
@@ -447,6 +454,19 @@ void Load() {
             Set(v, "fps_limit", env);
         }
     }
+    if (!v.aa_mode_chosen.load()) {
+        if (v.upscaler.load() == UpscalerTaa) {
+            v.aa_mode = AaTaa;
+            v.upscaler = UpscalerOff;
+        } else {
+            v.aa_mode = v.effects[4].load() ? AaFxaa : AaOff;
+        }
+    } else {
+        if (v.upscaler.load() == UpscalerTaa) {
+            v.upscaler = UpscalerOff;
+        }
+        v.effects[4] = (v.aa_mode.load() == AaFxaa);
+    }
     BbFrameRate::SetLimit(v.fps_limit.load());
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
@@ -495,9 +515,29 @@ bool FixedRenderSession() {
     return size && size[0];
 }
 
+int EffectiveUpscaler() {
+    const auto& v = Get();
+    const int up = v.upscaler.load(std::memory_order_relaxed);
+    if (up != UpscalerOff && up != UpscalerTaa) {
+        return up;
+    }
+    const int aa = v.aa_mode.load(std::memory_order_relaxed);
+    if (aa == AaTaa) {
+        return UpscalerTaa;
+    }
+    if (aa == AaDlaa) {
+        return v.dlss_supported.load(std::memory_order_relaxed) ? UpscalerDlss : UpscalerTaa;
+    }
+    return UpscalerOff;
+}
+
 int RenderPreset() {
     const auto& v = Get();
-    return v.upscaler == UpscalerTaa ? NativeAA : v.preset.load();
+    const int up = v.upscaler.load(std::memory_order_relaxed);
+    if (up == UpscalerOff || up == UpscalerTaa) {
+        return NativeAA;
+    }
+    return v.preset.load(std::memory_order_relaxed);
 }
 
 bool ResolutionNeedsRestart() {
@@ -520,7 +560,8 @@ void Save() {
     if (v.menu_language_chosen) {
         put("menu_language", v.menu_language == MenuLanguage::Russian ? "ru" : "en");
     }
-    put("upscaler", UpscalerName(v.upscaler));
+    put("aa_mode", AaModeName(v.aa_mode));
+    put("upscaler", UpscalerName(v.upscaler == UpscalerTaa ? UpscalerOff : v.upscaler.load()));
     put("preset", std::to_string(v.preset.load()));
     put("sharpen", flag(v.sharpen));
     put("sharpness", fixed(v.sharpness, 2));
@@ -617,6 +658,11 @@ const char* PresetName(int preset) {
 const char* UpscalerName(int upscaler) {
     static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
+}
+
+const char* AaModeName(int aa) {
+    static constexpr const char* names[AaCount] = {"off", "fxaa", "taa", "dlaa"};
+    return names[std::clamp(aa, 0, AaCount - 1)];
 }
 
 } // namespace BbSettings

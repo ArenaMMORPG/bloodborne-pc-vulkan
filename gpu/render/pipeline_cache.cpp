@@ -866,7 +866,7 @@ u32 BuildFastSelectSig(const Gcn::Regs& regs, const DrawIndirectParams& params,
     std::memcpy(&out[4], &regs.reg_array[0x2C48], 4 * sizeof(u32)); // VS address + settings
 
     const bool obj_motion = BbSettings::Get().object_motion.load(std::memory_order_relaxed);
-    const int upscaler = BbSettings::Get().upscaler.load(std::memory_order_relaxed);
+    const int upscaler = BbSettings::EffectiveUpscaler();
     const bool has_pos = (Shader::MotionVectors::positions_address != 0);
 
     out[8] = u32(params.vertex_sgpr_offset) | (u32(params.instance_sgpr_offset) << 16);
@@ -1628,7 +1628,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     const bool motion_possible =
         Shader::MotionVectors::positions_address != 0 &&
         BbSettings::Get().object_motion &&
-        BbSettings::Get().upscaler != BbSettings::UpscalerOff &&
+        BbSettings::EffectiveUpscaler() != BbSettings::UpscalerOff &&
         num_bound >= 5 &&
         !regs.color_buffers[Shader::MotionVectors::Output] && db.DepthValid() &&
         db.NumSamples() == 1 && !regs.IsClipDisabled() &&

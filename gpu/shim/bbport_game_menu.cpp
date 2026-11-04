@@ -1221,32 +1221,22 @@ void SyncDisplayStateFromSettings() {
     const int up = std::clamp(s.upscaler.load(), 0, BbSettings::UpscalerCount - 1);
     const int dlss_p = s.dlss_preset.load();
     const int preset = std::clamp(s.preset.load(), 0, BbSettings::PresetCount - 1);
-    const bool fxaa = s.effects[GameAaEffectIdx].load();
 
+    disp_aa_mode = std::clamp(s.aa_mode.load(), 0, BbSettings::AaCount - 1);
     disp_upscale_preset = preset;
     if (up == BbSettings::UpscalerOff || up == BbSettings::UpscalerTaa) {
         disp_upscaler_choice = DispUpOff;
-        if (up == BbSettings::UpscalerTaa) {
-            disp_aa_mode = AaTaa;
-        } else {
-            disp_aa_mode = fxaa ? AaFxaa : AaOff;
-        }
+    } else if (up == BbSettings::UpscalerDlss) {
+        disp_upscaler_choice = dlss_p == 13   ? DispUpDlss45M
+                               : dlss_p == 12 ? DispUpDlss45L
+                               : dlss_p == 0  ? DispUpDlss3
+                                              : DispUpDlss4;
+    } else if (up == BbSettings::UpscalerFsr4) {
+        disp_upscaler_choice = DispUpFsr4;
+    } else if (up == BbSettings::UpscalerFsr411) {
+        disp_upscaler_choice = DispUpFsr411;
     } else {
-        if (up == BbSettings::UpscalerDlss) {
-            disp_upscaler_choice = dlss_p == 13   ? DispUpDlss45M
-                                   : dlss_p == 12 ? DispUpDlss45L
-                                   : dlss_p == 0  ? DispUpDlss3
-                                                  : DispUpDlss4;
-            if (preset == BbSettings::NativeAA) {
-                disp_aa_mode = AaDlaa;
-            }
-        } else if (up == BbSettings::UpscalerFsr4) {
-            disp_upscaler_choice = DispUpFsr4;
-        } else if (up == BbSettings::UpscalerFsr411) {
-            disp_upscaler_choice = DispUpFsr411;
-        } else {
-            disp_upscaler_choice = DispUpFsr31;
-        }
+        disp_upscaler_choice = DispUpFsr31;
     }
 }
 
@@ -2450,27 +2440,13 @@ void Poll() {
         s.aspect = aspect;
 
         int target_upscaler = BbSettings::UpscalerOff;
-        int target_dlss_preset = 11;
-        int target_preset = BbSettings::NativeAA;
-        bool target_fxaa = false;
+        int target_dlss_preset = s.dlss_preset.load();
+        const int target_preset = std::clamp(disp_upscale_preset, int(BbSettings::NativeAA), int(BbSettings::UltraPerformance));
+        const bool target_fxaa = (disp_aa_mode == AaFxaa);
 
         if (disp_upscaler_choice == DispUpOff) {
-            target_preset = BbSettings::NativeAA;
-            if (disp_aa_mode == AaOff) {
-                target_upscaler = BbSettings::UpscalerOff;
-                target_fxaa = false;
-            } else if (disp_aa_mode == AaFxaa) {
-                target_upscaler = BbSettings::UpscalerOff;
-                target_fxaa = true;
-            } else if (disp_aa_mode == AaTaa) {
-                target_upscaler = BbSettings::UpscalerTaa;
-            } else {
-                target_upscaler = s.dlss_supported.load() ? BbSettings::UpscalerDlss : BbSettings::UpscalerTaa;
-                target_dlss_preset = 11;
-            }
+            target_upscaler = BbSettings::UpscalerOff;
         } else {
-            target_preset = std::clamp(disp_upscale_preset, int(BbSettings::NativeAA), int(BbSettings::UltraPerformance));
-            target_fxaa = (disp_aa_mode == AaFxaa);
             switch (disp_upscaler_choice) {
             case DispUpDlss4:
                 target_upscaler = BbSettings::UpscalerDlss;
@@ -2501,6 +2477,8 @@ void Poll() {
             }
         }
 
+        s.aa_mode = disp_aa_mode;
+        s.aa_mode_chosen = true;
         s.upscaler = UpscalerAvailable(target_upscaler) ? target_upscaler : int(BbSettings::UpscalerFsr3);
         s.dlss_preset = target_dlss_preset;
         s.preset = target_preset;

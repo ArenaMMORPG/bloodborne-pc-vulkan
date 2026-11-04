@@ -428,33 +428,15 @@ void Menu() {
             BbSettings::MenuText("FXAA (Subpixel AA)", "FXAA (Субпиксельное сглаживание)"),
             BbSettings::MenuText("TAA (Temporal AA)", "TAA (Темпоральное сглаживание)"),
             BbSettings::MenuText("DLAA (DLSS Native 100%)", "DLAA (Нативное DLSS 100%)")};
-        const int cur_up = s.upscaler.load();
-        int aa_mode = cur_up == BbSettings::UpscalerTaa
-                          ? 2
-                          : (cur_up == BbSettings::UpscalerDlss && s.preset.load() == 0)
-                                ? 3
-                                : s.effects[4].load() ? 1 : 0;
+        const int aa_mode = std::clamp(s.aa_mode.load(), 0, BbSettings::AaCount - 1);
         if (ImGui::BeginCombo(BbSettings::MenuText("Anti-Aliasing", "Сглаживание"), aa_labels[aa_mode])) {
-            for (int i = 0; i < 4; ++i) {
-                const bool supported = i == 3 ? s.dlss_supported.load() : true;
+            for (int i = 0; i < BbSettings::AaCount; ++i) {
+                const bool supported = i == BbSettings::AaDlaa ? s.dlss_supported.load() : true;
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Selectable(aa_labels[i], i == aa_mode)) {
-                    if (i == 0) {
-                        Store(s.effects[4], false, true);
-                        if (s.upscaler.load() == BbSettings::UpscalerTaa) {
-                            Store(s.upscaler, int(BbSettings::UpscalerOff), true);
-                        }
-                    } else if (i == 1) {
-                        Store(s.effects[4], true, true);
-                        if (s.upscaler.load() == BbSettings::UpscalerTaa) {
-                            Store(s.upscaler, int(BbSettings::UpscalerOff), true);
-                        }
-                    } else if (i == 2) {
-                        Store(s.upscaler, int(BbSettings::UpscalerTaa), true);
-                    } else if (i == 3) {
-                        Store(s.upscaler, int(BbSettings::UpscalerDlss), true);
-                        Store(s.preset, int(BbSettings::NativeAA), true);
-                    }
+                    s.aa_mode_chosen = true;
+                    Store(s.aa_mode, i, true);
+                    Store(s.effects[4], i == BbSettings::AaFxaa, true);
                     BbGuestHooks::ApplyGameEffects();
                 }
                 ImGui::EndDisabled();
@@ -566,11 +548,11 @@ void Menu() {
             "Проверка при гостинге: сеть FSR 4 нормирует цвет по экспозиции и по ней решает, "
             "когда отбросить прошлые кадры. Меняются сразу, без перезапуска."));
     }
-    const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff;
-    const bool taa = s.upscaler == BbSettings::UpscalerTaa;
+    const int eff_up = BbSettings::EffectiveUpscaler();
+    const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff && s.upscaler != BbSettings::UpscalerTaa;
+    const bool taa = eff_up == BbSettings::UpscalerTaa;
     ImGui::BeginDisabled(!upscaler_on);
-    ImGui::BeginDisabled(taa);
-    int preset = taa ? BbSettings::NativeAA : s.preset.load();
+    int preset = s.preset.load();
     char preset_label[64];
     std::snprintf(preset_label, sizeof(preset_label), "%s (x%.1f)", BbSettings::PresetName(preset),
                   BbSettings::PresetScale(preset));
@@ -589,14 +571,6 @@ void Menu() {
             }
         }
         ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (taa) {
-        ImGui::TextWrapped("%s", BbSettings::MenuText(
-            "TAA anti-aliases the scene at output resolution, without an FSR model or upscaling. "
-            "Your saved FSR preset is restored when you select FSR.",
-            "TAA сглаживает сцену в разрешении вывода, без модели FSR и апскейлинга. "
-            "Сохранённый пресет FSR восстановится при выборе FSR."));
     }
     ImGui::Text(
         BbSettings::MenuText("Active scene render: %d x %d", "Активный рендер сцены: %d x %d"),
@@ -1735,12 +1709,13 @@ void FpsCounter() {
     const auto out = BbSettings::CurrentOutput();
     const int rw = s.active_render_width.load(std::memory_order_relaxed);
     const int rh = s.active_render_height.load(std::memory_order_relaxed);
+    const int eff_up = BbSettings::EffectiveUpscaler();
     const char* upscaler_str =
-        s.upscaler == BbSettings::UpscalerFsr3     ? "FSR 3.1"
-        : s.upscaler == BbSettings::UpscalerFsr4   ? "FSR 4"
-        : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
-        : s.upscaler == BbSettings::UpscalerTaa    ? "TAA"
-        : s.upscaler == BbSettings::UpscalerDlss
+        eff_up == BbSettings::UpscalerFsr3     ? "FSR 3.1"
+        : eff_up == BbSettings::UpscalerFsr4   ? "FSR 4"
+        : eff_up == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
+        : eff_up == BbSettings::UpscalerTaa    ? "TAA"
+        : eff_up == BbSettings::UpscalerDlss
             ? (BbSettings::RenderPreset() == BbSettings::NativeAA
                    ? "DLAA 4"
                    : (s.dlss_preset.load(std::memory_order_relaxed) == 13   ? "DLSS 4.5 M"

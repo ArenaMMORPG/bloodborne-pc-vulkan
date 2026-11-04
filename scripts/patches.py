@@ -214,7 +214,7 @@ def scaled_sizes(settings):
     the game renders at output / preset scale (or at the output size without upscaler) and the
     upscaler fills the output. None at 1080p and for TAA (native, live host targets only)."""
     out=output_size(settings)
-    if out==OUTPUT_SIZE or settings.get('upscaler')=='taa': return None
+    if out==OUTPUT_SIZE: return None
     scale=1.0
     if os.environ.get('BB_FIXED_PRESET_RES','1')!='0' and settings.get('upscaler','fsr3')!='off':
         preset=int(settings.get('preset','0') or 0)

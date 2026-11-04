@@ -819,16 +819,16 @@ class LauncherWindow(Adw.ApplicationWindow):
             description=tr("Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8"))
         raw_up = self.ini.get("upscaler", "off")
         raw_preset = int(self.ini.get("preset", "0") or 0)
-        if raw_up == "taa":
-            init_aa, init_up = "taa", "off"
-        elif raw_up == "dlss" and raw_preset == 0:
-            init_aa, init_up = "dlaa", "dlss"
+        raw_aa = self.ini.get("aa_mode", "")
+        if raw_aa in ("off", "fxaa", "taa", "dlaa"):
+            init_aa = raw_aa
+        elif raw_up == "taa":
+            init_aa = "taa"
         elif self.ini.get("effect_game_aa", "1") == "1":
             init_aa = "fxaa"
-            init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
         else:
             init_aa = "off"
-            init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
+        init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
         self.aa_row = combo_row(
             tr("Сглаживание"),
             tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении"),
@@ -1051,12 +1051,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.store()
 
     def on_aa_changed(self):
-        aa = combo_value(self.aa_row)
-        if aa == "dlaa":
-            self.upscaler_row.set_selected(self.upscaler_row.values.index("dlss"))
-            self.preset_row.set_selected(self.preset_row.values.index(0))
-        elif aa == "taa":
-            self.upscaler_row.set_selected(self.upscaler_row.values.index("off"))
         self.update_upscaler_status()
 
     def update_upscaler_status(self):
@@ -1080,8 +1074,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             hint = tr("DLSS найден (нужна видеокарта NVIDIA RTX)") if found else tr(
                 "DLSS не найден: выберите библиотеку NVIDIA ниже (и нужна сборка с мостом DLSS). Игра включит FSR 3.1")
         else:
-            hint = tr("Сглаживание TAA активно в разрешении вывода") if aa == "taa" else None
-        is_active = value != "off" or aa == "taa"
+            hint = None
+        is_active = value != "off" or aa in ("taa", "dlaa")
         self.preset_row.set_sensitive(value != "off")
         if hasattr(self, "dlss_preset_row"):
             self.dlss_preset_row.set_sensitive(value == "dlss" or aa == "dlaa")
@@ -1295,11 +1289,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         save_settings(s)
         aa_val = combo_value(self.aa_row)
         up_val = combo_value(self.upscaler_row)
-        saved_upscaler = "taa" if (aa_val == "taa" and up_val == "off") else ("dlss" if aa_val == "dlaa" else up_val)
-        saved_preset = "0" if aa_val == "dlaa" else str(combo_value(self.preset_row))
         self.ini.update({
-            "upscaler": saved_upscaler,
-            "preset": saved_preset,
+            "aa_mode": aa_val,
+            "upscaler": up_val,
+            "preset": str(combo_value(self.preset_row)),
             "dlss_preset": str(combo_value(self.dlss_preset_row)),
             "anisotropic": str(combo_value(self.aniso_row)),
             "fps_limit": str(int(self.limit_row.get_value())),

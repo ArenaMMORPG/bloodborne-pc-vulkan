@@ -279,11 +279,12 @@ TemporalUpscaler::~TemporalUpscaler() {
 
 bool TemporalUpscaler::Active() const {
     // Toggle 1 << 24 switches it off at run time (A/B); history restarts after.
+    const int up = BbSettings::EffectiveUpscaler();
     return enabled && !failed &&
-           (BbSettings::Get().upscaler == BbSettings::UpscalerFsr3 ||
-            BbSettings::IsFsr4(BbSettings::Get().upscaler) ||
-            BbSettings::Get().upscaler == BbSettings::UpscalerTaa ||
-            BbSettings::Get().upscaler == BbSettings::UpscalerDlss) &&
+           (up == BbSettings::UpscalerFsr3 ||
+            BbSettings::IsFsr4(up) ||
+            up == BbSettings::UpscalerTaa ||
+            up == BbSettings::UpscalerDlss) &&
            !BbToggle::Disabled(1u << 24);
 }
 
@@ -292,7 +293,7 @@ bool TemporalUpscaler::ReactiveOn() const {
     // (RecordFsr4Reactive).
     // DLSS takes no reactive mask.
     return BbSettings::Get().reactive && !BbToggle::Disabled(1u << 27) && !UseDlss() &&
-           BbSettings::Get().upscaler != BbSettings::UpscalerTaa;
+           BbSettings::EffectiveUpscaler() != BbSettings::UpscalerTaa;
 }
 
 void TemporalUpscaler::RecordFsr4Reactive(vk::CommandBuffer cmdbuf, vk::ImageView color, u32 w,
@@ -389,13 +390,13 @@ bool TemporalUpscaler::OnFrameStart() {
     // The guest's startup resolution patch remains in effect until restart. Keep the FSR
     // model at the applied preset while the menu saves the requested one for run.sh.
     const int preset = BbSettings::RenderPreset();
-    if (applied_preset != preset || settings.upscaler == BbSettings::UpscalerOff) failed = false;
+    const int upscaler = BbSettings::EffectiveUpscaler();
+    if (applied_preset != preset || upscaler == BbSettings::UpscalerOff) failed = false;
     if (dispatch_failed.exchange(false, std::memory_order_relaxed)) {
         failed = true;
     }
     const bool active = Active();
     const bool jitter_on = active && settings.jitter && !BbToggle::Disabled(1u << 25);
-    const int upscaler = settings.upscaler.load();
     const int dlss_preset = settings.dlss_preset.load();
     auto output_size = BbSettings::CurrentOutput();
     if (!Game::CameraAspect() && output_size.width * 9 != output_size.height * 16) {
@@ -516,7 +517,7 @@ void TemporalUpscaler::OnDispatch(u64 cs_hash) {
 bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     // DLSS, like FSR 4, has its own context: no portable FSR 3 context is made.
     const bool use_fsr4 = UseFsr4() || UseDlss();
-    const bool use_taa = BbSettings::Get().upscaler == BbSettings::UpscalerTaa;
+    const bool use_taa = BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa;
     if (use_taa && (w != ow || h != oh)) {
         std::printf("TAA: remove BB_RENDER_RES to use native-resolution TAA\n");
         return false;
@@ -1211,7 +1212,7 @@ bool TemporalUpscaler::RecordReactive(vk::ImageView color_view) {
 
 void TemporalUpscaler::Run() {
     if (auto* profiler = GpuProfiler::Get()) {
-        const char* label = BbSettings::Get().upscaler == BbSettings::UpscalerTaa
+        const char* label = BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa
             ? "upscaler Run (TAA)" : "upscaler Run (FSR)";
         profiler->Mark(0xF5A0'0000ull ^ std::hash<std::string_view>{}(label),
                        [label] { return std::string{label}; });
@@ -1299,7 +1300,7 @@ void TemporalUpscaler::Run() {
     last_frame = now;
 
     bool dispatched = false;
-    if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
+    if (BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa) {
         RecordTaa(cmdbuf, input_color_view, input_depth_view);
         dispatched = true;
     } else if (UseFsr4()) {
@@ -1386,7 +1387,7 @@ void TemporalUpscaler::Run() {
     if (dispatched) {
         reset = false;
         dispatched_last_frame = true;
-        if (BbSettings::Get().upscaler != BbSettings::UpscalerTaa) {
+        if (BbSettings::EffectiveUpscaler() != BbSettings::UpscalerTaa) {
             ExtraSharpen(vk::Image(output_image), false, ow, oh);
         }
         // bbport: BB_DUMP_TRIGGER on this (HDR scene color) path too: the upscaler's inputs and
@@ -1519,7 +1520,7 @@ std::array<u32, 2> TemporalUpscaler::SceneSize(u32 w, u32 h) const {
 }
 
 float TemporalUpscaler::SceneMipBias() const {
-    if (!Active() || BbSettings::Get().upscaler == BbSettings::UpscalerTaa) return 0.0f;
+    if (!Active() || BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa) return 0.0f;
     const float render = float(BbSettings::Get().active_render_width.load());
     const float output = float(Scaled() ? target_width : 1920u);
     return render > 0.0f && render < output ? std::log2(render / output) : 0.0f;
@@ -1884,7 +1885,7 @@ void TemporalUpscaler::EnsureLiveInputResources(u32 w, u32 h, vk::Format color_f
 
 void TemporalUpscaler::RunScaled() {
     if (auto* profiler = GpuProfiler::Get()) {
-        const char* label = BbSettings::Get().upscaler == BbSettings::UpscalerTaa
+        const char* label = BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa
             ? "upscaler RunScaled (TAA)" : "upscaler RunScaled (FSR)";
         profiler->Mark(0xF5A0'0000ull ^ std::hash<std::string_view>{}(label),
                        [label] { return std::string{label}; });
@@ -2076,13 +2077,13 @@ void TemporalUpscaler::RunScaled() {
     const bool frame_reset = reset; // the branches below clear it
 
     // bbport: FSR 4 writes its HDR-format output, copied into the output-size UI image.
-    if (UseFsr4() || UseDlss() || BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
+    if (UseFsr4() || UseDlss() || BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa) {
         const auto cmdbuf = scheduler.CommandBuffer(); // after the commands recorded above
         barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
                 vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 vk::ImageLayout::eGeneral, all, rw);
         bool ok4 = true;
-        if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
+        if (BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa) {
             RecordTaa(cmdbuf, color_view, depth_view);
         } else if (UseDlss()) {
             fsr4_linear_frame = false;
@@ -2191,7 +2192,7 @@ void TemporalUpscaler::RunScaled() {
             }
         }
         if (ok4) {
-            if (BbSettings::Get().upscaler != BbSettings::UpscalerTaa) {
+            if (BbSettings::EffectiveUpscaler() != BbSettings::UpscalerTaa) {
                 ExtraSharpen(vk::Image(output_image), false, ow, oh);
             }
             barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
@@ -2226,7 +2227,7 @@ void TemporalUpscaler::RunScaled() {
                 DumpImages(instance, scheduler, cmdbuf, dump,
                            {{depth_image, source_width, source_height, 4, "depth", "f32",
                              vk::ImageAspectFlagBits::eDepth}});
-                if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa &&
+                if (BbSettings::EffectiveUpscaler() == BbSettings::UpscalerTaa &&
                     std::getenv("BB_TAA_DIAGNOSTICS")) {
                     DumpImages(instance, scheduler, cmdbuf, dump,
                                {{vk::Image(taa_history[taa_next]),ow,oh,16,
@@ -2586,7 +2587,7 @@ void TemporalUpscaler::DumpPresented(vk::Image image, u32 width, u32 height, vk:
 namespace Vulkan {
 
 bool TemporalUpscaler::UseFsr4() const {
-    const int selected = BbSettings::Get().upscaler;
+    const int selected = BbSettings::EffectiveUpscaler();
     const bool supported = selected == BbSettings::UpscalerFsr411
                                ? instance.IsFsr411Supported()
                                : instance.IsFsr4Int8Supported();
@@ -2643,7 +2644,7 @@ bool TemporalUpscaler::RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image 
 
 bool TemporalUpscaler::UseDlss() const {
     const Dlss* dlss = Dlss::Get();
-    return BbSettings::Get().upscaler == BbSettings::UpscalerDlss && dlss && dlss->Available() &&
+    return BbSettings::EffectiveUpscaler() == BbSettings::UpscalerDlss && dlss && dlss->Available() &&
            !dlss_failed;
 }
 
