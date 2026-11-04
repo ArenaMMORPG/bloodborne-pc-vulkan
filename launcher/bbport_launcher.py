@@ -133,18 +133,28 @@ def parse_size(text, default=(1920, 1080)):
         return (w, h) if w > 0 and h > 0 else default
     except ValueError:
         return default
-# Game effects: bbport.ini key, title, default.
+# Game effects: bbport.ini key, title, default, subtitle.
 EFFECTS = [
-    ("effect_chromatic_aberration", "Хроматическая аберрация", True),
-    ("effect_dof", "Глубина резкости (DoF)", True),
-    ("effect_motion_blur", "Размытие в движении", True),
-    ("effect_ssao", "Затенение SSAO", True),
-    ("effect_dynamic_shadows", "Тени от динамических источников", True),
-    ("effect_ssr", "Отражения SSR (меняются в игре на лету)", False),
-    ("effect_bloom", "Свечение (Bloom)", True),
-    ("skip_intro", "Пропуск заставок при запуске", True),
-    ("debug_camera", "Свободная камера (Cross + L3 / F + Ctrl)", False),
-    ("debug_menu", "Debug menu (левый touchpad / Tab; нужны шрифты)", False),
+    ("effect_chromatic_aberration", "Хроматическая аберрация", True,
+     "Цветная красно-синяя окантовка по краям экрана (отключение делает картинку заметно чище)"),
+    ("effect_dof", "Глубина резкости (DoF)", True,
+     "Кинематографическое размытие дальнего фона и объектов вне фокуса камеры"),
+    ("effect_motion_blur", "Размытие в движении", True,
+     "Смазывание картинки при резких поворотах камеры и перекатах персонажа"),
+    ("effect_ssao", "Затенение SSAO", True,
+     "Мягкие контактные тени в углах, щелях брусчатки и складках одежды (придаёт объём)"),
+    ("effect_dynamic_shadows", "Тени от динамических источников", True,
+     "Отбрасывание теней от фонарей, факелов, костров и вспышек выстрелов"),
+    ("effect_ssr", "Отражения SSR (меняются в игре на лету)", False,
+     "Скрытая на PS4 трассировка экранных отражений в лужах, крови и мокром камне (включается на лету)"),
+    ("effect_bloom", "Свечение (Bloom)", True,
+     "Мягкий ореол свечения вокруг фонарей, огня, луны и магии"),
+    ("skip_intro", "Пропуск заставок при запуске", True,
+     "Мгновенный переход к титульному экрану без логотипов при старте игры"),
+    ("debug_camera", "Свободная камера (Cross + L3 / F + Ctrl)", False,
+     "Отвязывает камеру от персонажа для свободного полёта по локации"),
+    ("debug_menu", "Debug menu (левый touchpad / Tab; нужны шрифты)", False,
+     "Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в dvdroot_ps4 игры или модом; без неё патч не применяется"),
 ]
 MODEL_LOD = [("Как в игре", "0"), ("Максимальная (-2)", "-2"), ("Ниже (1)", "1"),
              ("Минимальная (2)", "2")]
@@ -249,7 +259,7 @@ INI_DEFAULTS = {
     "mouse_look": "1",
     "mouse_sensitivity": "1.00",
     "mouse_invert_y": "0",
-    **{key: "1" if default else "0" for key, _, default in EFFECTS},
+    **{key: "1" if default else "0" for key, _, default, *_ in EFFECTS},
 }
 
 
@@ -920,13 +930,16 @@ class LauncherWindow(Adw.ApplicationWindow):
         effects = Adw.PreferencesGroup(
             title=tr("Геометрия и визуальные эффекты"),
             description=tr("Все графические эффекты работают нативно в C++20 / DirectVk и переключаются прямо во время игры"))
-        self.lod_row = combo_row(tr("Детализация моделей"), None, MODEL_LOD,
-                                 self.ini.get("model_lod", "0"))
+        self.lod_row = combo_row(
+            tr("Детализация моделей"),
+            tr("Дальность прорисовки максимальной геометрии (Highest -2 убирает подгрузку упрощённых LOD-моделей вдали)"),
+            MODEL_LOD, self.ini.get("model_lod", "0"))
         effects.add(self.lod_row)
-        for key, title, default in EFFECTS:
+        for key, title, default, subtitle in EFFECTS:
             if key in ("skip_intro", "debug_camera", "debug_menu"):
                 continue
             row = Adw.SwitchRow(title=tr(title),
+                                subtitle=tr(subtitle),
                                 active=self.ini.get(key, "1" if default else "0") == "1")
             self.effect_rows[key] = row
             effects.add(row)
@@ -959,14 +972,12 @@ class LauncherWindow(Adw.ApplicationWindow):
         dev = Adw.PreferencesGroup(
             title=tr("Для разработчика и диагностики"),
             description=tr("Логирование, профилирование GPU, отладочное меню игры и переменные окружения"))
-        for key, title, default in EFFECTS:
+        for key, title, default, subtitle in EFFECTS:
             if key in ("debug_camera", "debug_menu"):
                 row = Adw.SwitchRow(
                     title=tr(title),
+                    subtitle=tr(subtitle),
                     active=self.ini.get(key, "1" if default else "0") == "1")
-                if key == "debug_menu":
-                    row.set_subtitle(tr("Нужна папка adhoc из мода Nexus #253 (шрифты adhoc/font) — в "
-                                        "dvdroot_ps4 игры или модом; без неё патч не применяется"))
                 self.effect_rows[key] = row
                 dev.add(row)
         self.mangohud_row = Adw.SwitchRow(title="MangoHud", active=self.settings["mangohud"])
@@ -1080,9 +1091,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.language_row = combo_row(tr("Язык системы"), None, LANGUAGES, self.settings["language"])
         game.add(self.language_row)
 
-        for key, title, default in EFFECTS:
+        for key, title, default, subtitle in EFFECTS:
             if key == "skip_intro":
                 row = Adw.SwitchRow(title=tr(title),
+                                    subtitle=tr(subtitle),
                                     active=self.ini.get(key, "1" if default else "0") == "1")
                 self.effect_rows[key] = row
                 game.add(row)

@@ -486,6 +486,26 @@ EN = {
     "VSync Выкл. (Immediate)": "VSync Off (Immediate)",
     "Вывод кадров напрямую без ожидания: минимальная задержка ввода, но возможны разрывы (tearing)":
         "Direct frame presentation: lowest input lag, but may cause screen tearing",
+    "Дальность прорисовки максимальной геометрии (Highest -2 убирает подгрузку упрощённых LOD-моделей вдали)":
+        "Maximum geometry draw distance (Highest -2 prevents low-poly LOD pop-in at a distance)",
+    "Цветная красно-синяя окантовка по краям экрана (отключение делает картинку заметно чище)":
+        "Red-blue color fringing near screen edges (turning it off makes the image much cleaner)",
+    "Кинематографическое размытие дальнего фона и объектов вне фокуса камеры":
+        "Cinematic background blur for objects outside the camera focus plane",
+    "Смазывание картинки при резких поворотах камеры и перекатах персонажа":
+        "Camera and per-object blur during fast turns and dodges",
+    "Мягкие контактные тени в углах, щелях брусчатки и складках одежды (придаёт объём)":
+        "Soft contact shadows in corners, cobblestones, and cloth folds (adds depth)",
+    "Отбрасывание теней от фонарей, факелов, костров и вспышек выстрелов":
+        "Real-time shadows cast by lanterns, torches, bonfires, and gunfire",
+    "Скрытая на PS4 трассировка экранных отражений в лужах, крови и мокром камне (включается на лету)":
+        "Hidden PS4 screen-space raymarched reflections on puddles, blood, and wet stone (switches live)",
+    "Мягкий ореол свечения вокруг фонарей, огня, луны и магии":
+        "Soft glow halo around lanterns, fire, moonlight, and arcane effects",
+    "Мгновенный переход к титульному экрану без логотипов при старте игры":
+        "Jumps straight to the title screen without startup logo videos",
+    "Отвязывает камеру от персонажа для свободного полёта по локации":
+        "Detaches the camera from the player for free fly-through inspection",
 }
 
 PT_BR = {
