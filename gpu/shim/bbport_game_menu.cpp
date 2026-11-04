@@ -808,6 +808,20 @@ void PlayMenuClickSound() {
     }
 }
 
+void PlayMenuSliderSound() {
+    if (*reinterpret_cast<int*>(image_base + 0x557fc64) <= 0) {
+        *reinterpret_cast<u64*>(image_base + 0x557fc60) = 0x190;
+        *reinterpret_cast<u64*>(image_base + 0x557fc68) = image_base + 0x493387b;
+    }
+}
+
+void PlayMenuStepSound() {
+    if (*reinterpret_cast<int*>(image_base + 0x557fc64) <= 0) {
+        *reinterpret_cast<u64*>(image_base + 0x557fc60) = 0x0;
+        *reinterpret_cast<u64*>(image_base + 0x557fc68) = image_base + 0x49344e4;
+    }
+}
+
 /// Returns keybind action index (0..12) for item_idx (0..19), or -1 if it's a slider/toggle setting.
 int ItemKeyAction(int item_idx) {
     return (item_idx >= 0 && item_idx < BbSettings::KeyActionCount) ? item_idx : -1;
@@ -969,8 +983,8 @@ void SyncPageSlotSliderWidget(u8* page, u8* row, int slot, int slider_val, bool 
         alignas(16) u8 right_mc[0x60] = {};
         get_sub(left_mc, slider_mc, "LeftArrow");
         get_sub(right_mc, slider_mc, "RightArrow");
-        SetMovieClipVisible(left_mc, is_focused ? 1 : 0);
-        SetMovieClipVisible(right_mc, is_focused ? 1 : 0);
+        SetMovieClipVisible(left_mc, (is_focused && slider_val > 0) ? 1 : 0);
+        SetMovieClipVisible(right_mc, (is_focused && slider_val < 10) ? 1 : 0);
         DestroyMovieClip(right_mc);
         DestroyMovieClip(left_mc);
 
@@ -1146,28 +1160,55 @@ void ApplyControlsSlotChoiceIndex(u8* row, int slot, int choice_idx) {
 
 void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
     const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
+    bool is_slider = false;
+    bool changed = false;
     if (item_idx == ItemMouseSpeed) {
-        int step = CurrentMouseSpeedStep() + delta;
+        is_slider = true;
+        const int cur = CurrentMouseSpeedStep();
+        int step = cur + delta;
         step = wrap ? (step + MouseSensSteps) % MouseSensSteps : std::clamp(step, 0, MouseSensSteps - 1);
-        SetMouseSpeedStep(step);
+        if (step != cur) {
+            SetMouseSpeedStep(step);
+            changed = true;
+        }
     } else if (item_idx == ItemVibration && active_game_settings) {
-        int vib = int(active_game_settings[0x1]) + delta;
+        is_slider = true;
+        const int cur = std::clamp(int(active_game_settings[0x1]), 0, 10);
+        int vib = cur + delta;
         vib = wrap ? (vib + 11) % 11 : std::clamp(vib, 0, 10);
-        active_game_settings[0x1] = u8(vib);
+        if (vib != cur) {
+            active_game_settings[0x1] = u8(vib);
+            changed = true;
+        }
     } else if (item_idx == ItemCameraSens && active_game_settings) {
-        int sens = int(active_game_settings[0x0]) + delta;
+        is_slider = true;
+        const int cur = std::clamp(int(active_game_settings[0x0]), 0, 10);
+        int sens = cur + delta;
         sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
-        active_game_settings[0x0] = u8(sens);
+        if (sens != cur) {
+            active_game_settings[0x0] = u8(sens);
+            changed = true;
+        }
     } else if (item_idx == ItemCameraX && active_game_settings) {
         active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
+        changed = true;
     } else if (item_idx == ItemCameraY && active_game_settings) {
         active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
+        changed = true;
     } else if (item_idx == ItemAutoTarget && active_game_settings) {
         active_game_settings[0xb] = active_game_settings[0xb] ? 0 : 1;
+        changed = true;
     } else if (item_idx == ItemCameraAdjust && active_game_settings) {
         active_game_settings[0xc] = active_game_settings[0xc] ? 0 : 1;
+        changed = true;
     }
-    PlayMenuClickSound();
+    if (changed) {
+        if (is_slider) {
+            PlayMenuSliderSound();
+        } else {
+            PlayMenuStepSound();
+        }
+    }
     RefreshSlotTexts(slot);
     UpdateSlotRowDisplay(row, slot);
 }
@@ -1801,10 +1842,13 @@ void ApplyDisplaySlotChoiceIndex(u8* row, int slot, int choice_idx) {
 void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
     const int item_idx = std::clamp(display_scroll + slot, 0, TotalDisplayItems - 1);
     if (item_idx == 6) {
-        int step = CurrentSharpnessStep() + delta;
+        const int cur = CurrentSharpnessStep();
+        int step = cur + delta;
         step = wrap ? (step + SharpnessSteps) % SharpnessSteps : std::clamp(step, 0, SharpnessSteps - 1);
-        SetSharpnessStep(step);
-        PlayMenuClickSound();
+        if (step != cur) {
+            SetSharpnessStep(step);
+            PlayMenuSliderSound();
+        }
         RefreshDisplaySlotTexts(slot);
         UpdateDisplaySlotRowDisplay(row, slot);
         return;
@@ -1814,8 +1858,10 @@ void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
     BuildDisplaySlotChoices(slot, choice_ids, cur_idx);
     const int n = std::max(1, int(choice_ids.size()));
     const int next_idx = (cur_idx + delta + n) % n;
-    PlayMenuClickSound();
-    ApplyDisplaySlotChoiceIndex(row, slot, next_idx);
+    if (next_idx != cur_idx) {
+        PlayMenuStepSound();
+        ApplyDisplaySlotChoiceIndex(row, slot, next_idx);
+    }
 }
 
 void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_text) {
@@ -2086,7 +2132,7 @@ int HorizontalMenuStep(u8 in) {
     if (in == 0) return 0;
     if (Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in)) return -1;
     if (Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in)) return 1;
-    const std::int64_t step = Game<std::int64_t (PS4_SYSV_ABI*)(const u8*)>(GetHorizontalStep)(&in);
+    const std::int32_t step = Game<std::int32_t (PS4_SYSV_ABI*)(const u8*)>(GetHorizontalStep)(&in);
     return step < 0 ? -1 : (step > 0 ? 1 : 0);
 }
 
@@ -2121,14 +2167,13 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         }
         const int item_idx = std::clamp(display_scroll + slot, 0, TotalDisplayItems - 1);
         if (item_idx == 6) {
-            // Sharpness slider row: Left/Right/Confirm step the slider.
+            // Sharpness slider row: Left/Right step the slider.
             const u8 in = u8(a1);
             SyncDisplaySlotSliderWidget(row, slot, in != 0);
             if (in != 0) {
                 const int step = HorizontalMenuStep(in);
-                const bool confirm = (step == 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
-                if (step != 0 || confirm) {
-                    StepDisplaySlotSetting(row, slot, step < 0 ? -1 : 1, confirm);
+                if (step != 0) {
+                    StepDisplaySlotSetting(row, slot, step < 0 ? -1 : 1, false);
                 }
             }
             return 0;
@@ -2215,9 +2260,8 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             SyncSlotSliderWidget(row, slot, in != 0);
             if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0 && !InCaptureCooldown()) {
                 const int step = HorizontalMenuStep(in);
-                const bool confirm = (step == 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
-                if (step != 0 || confirm) {
-                    StepSlotSetting(row, slot, step < 0 ? -1 : 1, confirm);
+                if (step != 0) {
+                    StepSlotSetting(row, slot, step < 0 ? -1 : 1, false);
                 }
             }
             return 0;
