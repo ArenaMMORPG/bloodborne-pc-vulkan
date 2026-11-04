@@ -418,7 +418,7 @@ static void load_bindings(void) {
         for (char *name=strtok(eq+1,",\r\n"); name; name=strtok(NULL,",\r\n")) {
             while (*name==' ') ++name;
             for (char *end=name+strlen(name); end>name && end[-1]==' ';) *--end=0;
-            if (!*name) continue;
+            if (!*name || !SDL_strcasecmp(name,"None") || !SDL_strcasecmp(name,"Unbound")) continue;
             if (keyboard) {
                 /* A chord: "<mod>+<key>" or "<mod1>+<mod2>+<key>" ("Keypad +" is one key: nothing after its '+'). */
                 int mod=-1, mod2=-1;

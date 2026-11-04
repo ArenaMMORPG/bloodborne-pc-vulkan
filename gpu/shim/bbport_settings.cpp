@@ -246,7 +246,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                 else if (trimmed == "4, Down, Wheel Down" || trimmed == "Wheel Down, 4, Down") trimmed = "Wheel Down, 4";
                 else if (trimmed == "1, Left") trimmed = "1";
                 else if (trimmed == "2, Right") trimmed = "2";
-                if (!trimmed.empty()) {
+                if (trimmed == "None" || trimmed == "none" || trimmed == "Unbound" || trimmed == "Delete") {
+                    trimmed.clear();
+                }
+                {
                     std::scoped_lock lock{key_mutex};
                     key_bindings[k] = trimmed;
                 }
@@ -275,11 +278,14 @@ std::string GetKeyBinding(int action) {
 void SetKeyBinding(int action, const std::string& value) {
     const int idx = std::clamp(action, 0, KeyActionCount - 1);
     std::scoped_lock lock{key_mutex};
-    key_bindings[idx] = value.empty() ? kKeyDefs[idx].default_val : value;
+    if (value == "None" || value == "none" || value == "Unbound" || value == "Delete") {
+        key_bindings[idx].clear();
+    } else {
+        key_bindings[idx] = value;
+    }
 }
 
 std::string FormatKeyBinding(const std::string& raw, bool russian) {
-    (void)russian;
     auto trim = [](std::string s) {
         const auto a = s.find_first_not_of(" \t");
         if (a == std::string::npos) return std::string{};
@@ -297,7 +303,7 @@ std::string FormatKeyBinding(const std::string& raw, bool russian) {
         const std::size_t comma = raw.find(',', pos);
         std::string alt = trim(raw.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos));
         pos = comma == std::string::npos ? raw.size() : comma + 1;
-        if (alt.empty()) continue;
+        if (alt.empty() || alt == "None" || alt == "none" || alt == "Unbound") continue;
         std::string chord_out;
         std::size_t p2 = 0;
         while (p2 < alt.size()) {
@@ -319,7 +325,10 @@ std::string FormatKeyBinding(const std::string& raw, bool russian) {
         if (!out.empty()) out += " / ";
         out += chord_out;
     }
-    return out.empty() ? raw : out;
+    if (out.empty()) {
+        return russian ? "Нет" : "None";
+    }
+    return out;
 }
 
 void ResetKeyBindingsToDefault() {

@@ -912,7 +912,11 @@ void Menu() {
                         if (i > 0) bound += "+";
                         bound += rebind_tokens[i];
                     }
-                    BbSettings::SetKeyBinding(rebinding_action, bound);
+                    if (bound == "Delete") {
+                        BbSettings::SetKeyBinding(rebinding_action, "");
+                    } else {
+                        BbSettings::SetKeyBinding(rebinding_action, bound);
+                    }
                     dirty = true;
                     BbSettings::Save();
                     rebind_tokens.clear();
@@ -921,10 +925,11 @@ void Menu() {
             }
         }
 
+        const bool is_ru = s.menu_language == BbSettings::MenuLanguage::Russian;
         for (int k = 0; k < BbSettings::KeyActionCount; ++k) {
             ImGui::PushID(k);
             const auto& def = BbSettings::GetKeyActionDef(k);
-            const std::string cur = BbSettings::FormatKeyBinding(BbSettings::GetKeyBinding(k));
+            const std::string cur = BbSettings::FormatKeyBinding(BbSettings::GetKeyBinding(k), is_ru);
             const bool waiting = (rebinding_action == k);
             std::string waiting_label;
             if (waiting) {
@@ -936,8 +941,8 @@ void Menu() {
                     }
                     waiting_label += " ... ]";
                 } else {
-                    waiting_label = BbSettings::MenuText("[ Press key(s)... (Esc: cancel) ]",
-                                                         "[ Нажмите клавишу... (Esc: отмена) ]");
+                    waiting_label = BbSettings::MenuText("[ Press key (Del: clear, Esc: cancel) ]",
+                                                         "[ Нажмите кл. (Del: убрать, Esc: отмена) ]");
                 }
             }
             const char* btn_label = waiting ? waiting_label.c_str() : cur.c_str();

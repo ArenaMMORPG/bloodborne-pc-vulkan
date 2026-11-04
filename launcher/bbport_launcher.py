@@ -1160,7 +1160,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                 out = ""
             words = (out or "").strip().split(" ", 1)
             if len(words) == 2 and words[0] == kind:
-                self.set_control(kind, name, words[1])
+                self.set_control(kind, name, "" if words[1] == "Delete" else words[1])
             else:
                 self.show_control(kind, name)
         process.communicate_utf8_async(None, None, done)

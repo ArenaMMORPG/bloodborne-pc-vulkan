@@ -847,8 +847,10 @@ void RefreshSlotTexts(int slot) {
     if (k >= 0) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
-        const std::string help_en = std::string(def.help_en) + "  [Click / Enter: Rebind | Right Arrow: +Alt Key]";
-        const std::string help_ru = std::string(def.help_ru) + "  [Клик / Enter: Назначить | Вправо: +Альт. кл.]";
+        const std::string help_en =
+            std::string(def.help_en) + "  [Click / Enter: Rebind (Del=Clear) | Right: +Alt Key]";
+        const std::string help_ru =
+            std::string(def.help_ru) + "  [Клик / Enter: Назначить (Del=Убрать) | Вправо: +Альт. кл.]";
         SetDynamic(help_id, help_en.c_str(), help_ru.c_str());
         const std::string raw = BbSettings::GetKeyBinding(k);
         const std::string en = BbSettings::FormatKeyBinding(raw, false);
@@ -1831,13 +1833,13 @@ void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_tex
     SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
     std::string en, ru;
     if (!capturing_alt) {
-        en = captured_text.empty() ? "[ Press key(s)... ]" : ("[ " + captured_text + " ... ]");
-        ru = captured_text.empty() ? "[ Нажмите клавишу... ]" : ("[ " + captured_text + " ... ]");
+        en = captured_text.empty() ? "[ Press key (Del=Clear)... ]" : ("[ " + captured_text + " ... ]");
+        ru = captured_text.empty() ? "[ Нажмите кл. (Del=Убрать)... ]" : ("[ " + captured_text + " ... ]");
     } else {
         const std::string a_en =
-            captured_text.empty() ? "[ +Alt Key (Bksp=Clear) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +Alt Key (Del=Clear) ]" : ("[ " + captured_text + " ... ]");
         const std::string a_ru =
-            captured_text.empty() ? "[ +Альт. кл. (Bksp=Сброс) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +Альт. кл. (Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
         en = BbSettings::FormatKeyBinding(primary, false) + " / " + a_en;
         ru = BbSettings::FormatKeyBinding(primary, true) + " / " + a_ru;
     }
@@ -1914,12 +1916,14 @@ void StepKeyCapture(u8* row, int slot, int k) {
         std::string primary, alt;
         SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
         if (capturing_alt) {
-            if (new_binding == "Backspace" || new_binding == "Delete") {
+            if (new_binding == "Delete") {
                 alt.clear();
             } else {
                 alt = new_binding;
             }
             BbSettings::SetKeyBinding(k, JoinBinding(primary, alt));
+        } else if (new_binding == "Delete") {
+            BbSettings::SetKeyBinding(k, "");
         } else {
             BbSettings::SetKeyBinding(k, new_binding);
         }
