@@ -2954,10 +2954,11 @@ void gx_decomp_sym_28d0650() __asm__("sub_28d0650");
 void gx_decomp_sym_28d0db0() __asm__("sub_28d0db0");
 void gx_decomp_sym_28d17d0() __asm__("sub_28d17d0");
 void gx_decomp_sym_28d21c0() __asm__("sub_28d21c0");
+void gx_decomp_sym_0e5b220() __asm__("sub_e5b220");
 } // extern "C"
 
 // ----------------------------------------------------------------------------
-// 2. Registry Entry Structure & Master Table kGXDecompiledFunctions[2940]
+// 2. Registry Entry Structure & Master Table kGXDecompiledFunctions[2941]
 // ----------------------------------------------------------------------------
 struct GXDecompiledFunctionEntry {
     uint64_t    vma;         // Relative VMA in eboot.bin (add 0x400000 for Orbis runtime VA)
@@ -2967,9 +2968,9 @@ struct GXDecompiledFunctionEntry {
     const char* module_name; // Engine subsystem module name
 };
 
-inline constexpr size_t kGXDecompiledFunctionCount = 2940;
+inline constexpr size_t kGXDecompiledFunctionCount = 2941;
 inline constexpr uint64_t kGXEbootDefaultImageBase = 0x400000ULL;
-inline constexpr uint64_t kGXDecompiledTotalCodeBytes = 1040700ULL;
+inline constexpr uint64_t kGXDecompiledTotalCodeBytes = 1040876ULL;
 
 static const GXDecompiledFunctionEntry kGXDecompiledFunctions[kGXDecompiledFunctionCount] = {
     { 0x0bb2600ULL,     12u, reinterpret_cast<void*>(&gx_decomp_sym_0bb2600), "sub_0bb2600", "12_Yebis2_PostFX_And_FD4" },
@@ -5912,6 +5913,7 @@ static const GXDecompiledFunctionEntry kGXDecompiledFunctions[kGXDecompiledFunct
     { 0x28d0db0ULL,   2581u, reinterpret_cast<void*>(&gx_decomp_sym_28d0db0), "GXFfx_EmitVelocityQuadBillboardVerticesSimd", "10_SFX_Particle_Engine" },
     { 0x28d17d0ULL,   2540u, reinterpret_cast<void*>(&gx_decomp_sym_28d17d0), "GXFfx_EmitVelocityTriangleBillboardVerticesSimd", "10_SFX_Particle_Engine" },
     { 0x28d21c0ULL,   1011u, reinterpret_cast<void*>(&gx_decomp_sym_28d21c0), "GXFfx_EmitPointSpriteVerticesSimd", "10_SFX_Particle_Engine" },
+    { 0x0e5b220ULL,    176u, reinterpret_cast<void*>(&gx_decomp_sym_0e5b220), "GXDepthPyramid_EnqueueDownsamplePass", "12_Yebis2_PostFX_And_FD4" },
 };
 
 // ----------------------------------------------------------------------------

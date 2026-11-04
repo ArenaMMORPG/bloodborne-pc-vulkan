@@ -1423,15 +1423,64 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
     };
 
     void* cur_src = dst_tex;
-    if (mip_levels >= 2U) {
+    // When src_tex == nullptr (SSR glossy mip-pyramid in sub_22b1530), Deferred Light PBR PS
+    // (ps_3fe9e964) clamps the SSR reflection mip LOD to min(6.0, 6.5 - gloss * 6.5), so mips 7..11
+    // (10x5 down to 1x1) are never sampled. Capping at 7 levels (mips 0..6) eliminates 10 redundant
+    // RenderPasses per frame, and rendering mip 6 directly from mip 5's temp_rt into mip_surfs[6]
+    // eliminates 1 more RenderPass (22 -> 11 RenderPasses/frame).
+    const std::uint32_t loop_mip_levels =
+        (src_tex == nullptr && mip_levels > 7U) ? 7U : mip_levels;
+    if (loop_mip_levels >= 2U) {
         void* rt_state = static_cast<std::uint8_t*>(render_ctx) + 0x1728;
         void* temp_rt = nullptr;
+        const std::uint32_t dst_mip_cap =
+            (src_tex == nullptr && MemRef<void*>(dst_tex, 0x60) != nullptr)
+                ? VCall<std::uint32_t(*)(void*)>(dst_tex, 0x40)(dst_tex)
+                : 0U;
 
-        for (std::uint32_t mip = 1U; mip != mip_levels; ++mip) {
+        for (std::uint32_t mip = 1U; mip != loop_mip_levels; ++mip) {
             width >>= 1;
             if (width == 0) width = 1U;
             height >>= 1;
             if (height == 0) height = 1U;
+
+            if (src_tex == nullptr && mip > 1U && (mip + 1U) == loop_mip_levels &&
+                dst_mip_cap > mip && cur_src != dst_tex) {
+                void** mip_surfs = MemRef<void**>(dst_tex, 0x60);
+                sub_e46f40(rt_state, mip_surfs[mip], 0, 1);
+                MemRef<void*>(render_ctx, 0x1ec0) = sub_e47840(rt_state);
+                sub_21a1c50(render_ctx);
+
+                void* srv_obj = MemRef<void*>(cur_src, 0x48);
+                MemRef<void*>(render_ctx, 0x788) = srv_obj;
+                MemRef<std::uint32_t>(render_ctx, 0x960) = 0;
+                if (MemRef<std::uint32_t>(render_ctx, 0x964) <= 1U) {
+                    MemRef<std::uint32_t>(render_ctx, 0x964) = 1U;
+                }
+                void* cb = MemRef<void*>(render_ctx, 0x08);
+                MemRef<std::uint64_t>(cb, 0x1968) |= 1ULL;
+                MemRef<void*>(cb, 0xd128) = srv_obj;
+
+                alignas(16) float quad_verts[48];
+                std::memcpy(quad_verts, kQuadVertices, sizeof(quad_verts));
+                VCall<void(*)(void*, std::uint32_t, std::uint32_t, const void*, std::uint32_t)>(&draw_helper, 0x00)(
+                    &draw_helper, 5, 4, quad_verts, 0x30);
+
+                MemRef<void*>(render_ctx, 0x788) = nullptr;
+                MemRef<std::uint32_t>(render_ctx, 0x960) = 0;
+                if (MemRef<std::uint32_t>(render_ctx, 0x964) <= 1U) {
+                    MemRef<std::uint32_t>(render_ctx, 0x964) = 1U;
+                }
+                cb = MemRef<void*>(render_ctx, 0x08);
+                MemRef<std::uint64_t>(cb, 0x1968) |= 1ULL;
+                MemRef<void*>(cb, 0xd128) = nullptr;
+
+                sub_219fcf0(render_ctx);
+                sub_e47290(rt_state, 1);
+                MemRef<void*>(render_ctx, 0x1ec0) = sub_e47840(rt_state);
+                MemRef<std::uint8_t>(render_ctx, 0x1670) &= 0xfeU;
+                break;
+            }
 
             void* new_rt = sub_e31ed0(rt_pool, width, height, format, 0);
             if (temp_rt != new_rt) {
@@ -1489,8 +1538,7 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
                 void* tmp_res = VCall<void*(*)(void*)>(temp_rt, 0x28)(temp_rt);
                 std::uint32_t target_mip = (mip_levels != 0) ? mip : 0U;
                 sub_2168880(MemRef<void*>(render_ctx, 0x08), nullptr, dst_res, target_mip, 0, 0, 0, tmp_res, 0, 0);
-            } else if (MemRef<void*>(dst_tex, 0x60) != nullptr &&
-                       VCall<std::uint32_t(*)(void*)>(dst_tex, 0x40)(dst_tex) > mip) {
+            } else if (dst_mip_cap > mip) {
                 void** mip_surfs = MemRef<void**>(dst_tex, 0x60);
                 sub_e46f40(rt_state, mip_surfs[mip], 0, 1);
                 MemRef<void*>(render_ctx, 0x1ec0) = sub_e47840(rt_state);
@@ -1540,6 +1588,37 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
 
     ReleaseRefCounted(cur_src);
     return true;
+}
+
+// ============================================================================
+// 31b. 0xe5b220 (176 B) - sub_e5b220
+// Enqueues half/quarter-res depth pyramid downsample pass (ps_e820ee9d).
+// When SSR is enabled (owning GXSceneRenderer flag +0x2974, i.e. self + 0x47c != 0),
+// stage 0x0c (0x22a3808) has already downsampled scene depth into self (+0x24f8),
+// so the duplicate call at stage 0x1b (0x22ab09c) is skipped, saving 2 RenderPasses/frame.
+// ============================================================================
+extern "C" void sub_e5b220(void* self, void* cmd_list, std::uint32_t stage_id,
+                           std::uint32_t sub_id, void* src_depth) {
+    if (MemRef<std::uint8_t>(self, 0xb8) == 0) {
+        return;
+    }
+    if (stage_id == 0x1bU && MemRef<std::uint8_t>(self, 0x47c) != 0) {
+        return;
+    }
+    auto fn_alloc = reinterpret_cast<void*(*)(void*, std::uint32_t, std::uint32_t)>(GX_VMA(0x2289db0ULL));
+    auto fn_begin = reinterpret_cast<void(*)(void*, std::uint32_t, std::uint32_t)>(GX_VMA(0x228e430ULL));
+    auto fn_push  = reinterpret_cast<void(*)(void*, void*, const void*)>(GX_VMA(0x228e6a0ULL));
+    auto fn_end   = reinterpret_cast<void(*)(void*)>(GX_VMA(0x228e3c0ULL));
+
+    void** slot = static_cast<void**>(fn_alloc(MemRef<void*>(cmd_list, 0x450), 8U, 8U));
+    *slot = src_depth;
+    fn_begin(cmd_list, stage_id, sub_id);
+    struct {
+        void* ptr;
+        std::uint64_t zero;
+    } pkt{slot, 0ULL};
+    fn_push(cmd_list, self, &pkt);
+    fn_end(cmd_list);
 }
 
 // ============================================================================

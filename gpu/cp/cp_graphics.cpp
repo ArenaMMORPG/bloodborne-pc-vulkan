@@ -1287,16 +1287,22 @@ bool CommandProcessor::WaitRegMemGraphics(Work& work, const u32* body, bool retr
     // thread sleeps until then instead of spinning.
     if (wait.Memory() && vo_port && vo_port->IsVoLabel(reinterpret_cast<const u64*>(wait.Address())) &&
         num_submits == QueueSize(GfxQueueId)) {
-        // The recording thread catches up here once a frame, whether the buffer is free already
-        // or not: decoding frames ahead of it (no drain when the label was free) was followed by
-        // GPU hangs in another game (indirect draws with garbage arguments).
-        if (rasterizer) {
-            rasterizer->DrainDrawPipe(u32(Op::WaitRegMem));
+        if (!wait.Test(regs.reg_array.data())) {
+            if (rasterizer) {
+                rasterizer->DrainDrawPipe(u32(Op::WaitRegMem));
+            }
+            if (stats) {
+                Diagnostics::NoteWait(0);
+            }
+            BbSections::PauseADecodeScope pause_decode;
+            const auto wait_start = std::chrono::steady_clock::now();
+            vo_port->WaitVoLabel([&] { return wait.Test(regs.reg_array.data()); });
+            BbStats::gpu_idle_ns.fetch_add(
+                u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - wait_start)
+                        .count()),
+                std::memory_order_relaxed);
         }
-        if (stats) {
-            Diagnostics::NoteWait(0);
-        }
-        vo_port->WaitVoLabel([&] { return wait.Test(regs.reg_array.data()); });
         return true;
     }
     // A fence handed to the draw recording thread counts as written: that thread runs everything

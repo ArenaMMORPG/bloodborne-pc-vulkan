@@ -1038,7 +1038,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         if (const char* env = std::getenv("BB_MID_FLUSH_DRAWS")) {
             return static_cast<u32>(std::max(0, std::atoi(env)));
         }
-        return 900u;
+        return 1150u;
     }();
     if (!HonestLabels() && mid_flush_draws != 0 && !tls_mid_frame_flushed &&
         tls_draws_in_frame >= mid_flush_draws && scheduler.WillBeginRendering(state)) {

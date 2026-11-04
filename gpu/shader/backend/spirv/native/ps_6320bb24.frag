@@ -34,7 +34,7 @@ void main() {
     const uint b0 = bitfieldExtract(push_data.buf_offsets0.x, 0, 8) >> 2u;
     const uint b1 = bitfieldExtract(push_data.buf_offsets0.x, 8, 8) >> 2u;
 
-    vec4 tex = texture(sampler2D(fs_img0, fs_samp0), fs_in_attr1_p.xy);
+    vec4 tex = textureLod(sampler2D(fs_img0, fs_samp0), fs_in_attr1_p.xy, 0.0);
     if (ssbo_1.data[b0] != 0u) {
         tex.rgb = exp2(log2(tex.rgb) * 0.454545438);
     }

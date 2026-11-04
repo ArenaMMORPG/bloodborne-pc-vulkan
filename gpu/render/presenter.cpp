@@ -98,14 +98,15 @@ Presenter::Presenter(Frontend::WindowSDL& window_, BbCp::CommandProcessor* cp_)
       encode_pass{instance.GetDevice(), swapchain.GetSurfaceFormat().format} {
     const vk::Device device = instance.GetDevice();
     const u32 count = swapchain.GetImageCount();
-    frames.resize(count);
-    for (u32 i = 0; i < count; ++i) {
+    const u32 frame_count = std::max(count + 2u, 5u);
+    frames.resize(frame_count);
+    for (u32 i = 0; i < frame_count; ++i) {
         frames[i].id = u8(i);
         frames[i].present_done = Check<"create a frame fence">(
             device.createFence({.flags = vk::FenceCreateFlagBits::eSignaled}));
         free_frames.push_back(&frames[i]);
     }
-    BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, count);
+    BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, frame_count);
 }
 
 Presenter::~Presenter() {

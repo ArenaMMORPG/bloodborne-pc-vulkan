@@ -107,13 +107,42 @@ inline bool Enabled() {
 /// is counted.
 inline thread_local bool recording_thread = false;
 inline thread_local bool command_thread = false;
+inline std::uint32_t a_decode_depth = 0;
+inline std::uint64_t a_decode_excluded_cycles = 0;
+
+inline void ExcludeFromADecode(std::uint64_t cycles) noexcept {
+    if (command_thread && a_decode_depth > 0) {
+        a_decode_excluded_cycles += cycles;
+    }
+}
+
+struct PauseADecodeScope {
+    std::uint64_t start;
+    PauseADecodeScope() noexcept
+        : start{Enabled() && command_thread && a_decode_depth > 0 ? __rdtsc() : 0} {}
+    ~PauseADecodeScope() noexcept {
+        if (start) {
+            a_decode_excluded_cycles += (__rdtsc() - start);
+        }
+    }
+};
 
 struct Scope {
     explicit Scope(Id id_)
-        : id{id_}, start{Enabled() && (recording_thread || command_thread) ? __rdtsc() : 0} {}
+        : id{id_}, start{Enabled() && (recording_thread || command_thread) ? __rdtsc() : 0} {
+        if (start && id == ADecode && command_thread) {
+            if (a_decode_depth++ == 0) {
+                a_decode_excluded_cycles = 0;
+            }
+        }
+    }
     ~Scope() {
         if (start) {
-            const std::uint64_t delta = __rdtsc() - start;
+            std::uint64_t delta = __rdtsc() - start;
+            if (id == ADecode && command_thread && --a_decode_depth == 0) {
+                delta = delta > a_decode_excluded_cycles ? (delta - a_decode_excluded_cycles) : 0;
+                a_decode_excluded_cycles = 0;
+            }
             auto& counters = recording_thread ? cycles_b : cycles_a;
             counters[id].store(counters[id].load(std::memory_order_relaxed) + delta,
                                std::memory_order_relaxed);

@@ -198,6 +198,7 @@ public:
         cycles_by_reason[slot] += waited;
         BbSections::pipe_drains.store(drains, std::memory_order_relaxed);
         BbSections::pipe_drain_cycles.store(drain_cycles, std::memory_order_relaxed);
+        BbSections::ExcludeFromADecode(waited);
     }
 
     /// Stage A: the number the next committed packet gets (packets are numbered from 1), and
@@ -237,6 +238,7 @@ public:
         cycles_by_reason[slot] += waited;
         BbSections::pipe_drains.store(drains, std::memory_order_relaxed);
         BbSections::pipe_drain_cycles.store(drain_cycles, std::memory_order_relaxed);
+        BbSections::ExcludeFromADecode(waited);
     }
 
     /// Stage A: position after the last committed packet; Reached(position) once B ran it.

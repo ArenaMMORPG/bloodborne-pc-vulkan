@@ -238,8 +238,7 @@ void Display::QueueFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
     bool ahead;
     {
         std::scoped_lock lock{request_mutex};
-        ahead = index >= 0 && at_eop && Vulkan::Rasterizer::HonestLabels() &&
-                requests.size() < ahead_frames;
+        ahead = index >= 0 && at_eop && requests.size() < ahead_frames;
         requests.push({frame, port, flip_arg, index, at_eop});
     }
     request_cv.notify_one();
