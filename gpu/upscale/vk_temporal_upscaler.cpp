@@ -448,9 +448,13 @@ bool TemporalUpscaler::OnFrameStart() {
         BbSettings::Get().active_render_width = render_width;
         BbSettings::Get().active_render_height = render_height;
     } else {
-        const auto active_size = depth_blit
+        const auto base = scene_targets.BaseSize();
+        auto active_size = depth_blit
             ? SceneResolution::ForPreset(active ? preset : 0, {target_width, target_height})
-            : scene_targets.BaseSize();
+            : base;
+        if (active_size.width > base.width || active_size.height > base.height) {
+            active_size = base;
+        }
         scene_targets.SetSize(active_size);
         BbSettings::Get().active_render_width = active_size.width;
         BbSettings::Get().active_render_height = active_size.height;
@@ -1902,7 +1906,7 @@ void TemporalUpscaler::RunScaled() {
     u32 w = guest_w, h = guest_h;
     if (scaled_session && depth_blit) {
         const auto req = SceneResolution::ForPreset(applied_preset, {ow, oh});
-        if (req.width > 0 && req.height > 0 && req.width <= ow && req.height <= oh) {
+        if (req.width > 0 && req.height > 0 && req.width <= guest_w && req.height <= guest_h) {
             w = req.width;
             h = req.height;
         }

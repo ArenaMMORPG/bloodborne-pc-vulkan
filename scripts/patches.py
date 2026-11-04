@@ -191,7 +191,7 @@ def render_size(settings,override=''):
     if override:
         w,h=(int(v) for v in override.lower().split('x'))
         return (w,h)
-    if settings.get('upscaler','fsr3')=='off': return None
+    if settings.get('upscaler','fsr3') in ('off','taa'): return None
     preset=int(settings.get('preset','0') or 0)
     scale=PRESET_SCALES[max(0,min(preset,len(PRESET_SCALES)-1))]
     if scale==1.0: return None
@@ -212,11 +212,11 @@ def output_size(settings):
 def scaled_sizes(settings):
     """(render, output) for an output other than 1080p (above it, or 720p for the Steam Deck):
     the game renders at output / preset scale (or at the output size without upscaler) and the
-    upscaler fills the output. None at 1080p and for TAA (native, live host targets only)."""
+    upscaler fills the output. None at 1080p."""
     out=output_size(settings)
     if out==OUTPUT_SIZE: return None
     scale=1.0
-    if os.environ.get('BB_FIXED_PRESET_RES','1')!='0' and settings.get('upscaler','fsr3')!='off':
+    if os.environ.get('BB_FIXED_PRESET_RES','1')!='0' and settings.get('upscaler','fsr3') not in ('off','taa'):
         preset=int(settings.get('preset','0') or 0)
         scale=PRESET_SCALES[max(0,min(preset,len(PRESET_SCALES)-1))]
     render=tuple(max(2,round(v/scale/2)*2) for v in out)
