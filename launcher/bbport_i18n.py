@@ -171,7 +171,8 @@ EN = {
     "Апскейл иконок и интерфейса (AI / SDF 2x–4x)": "UI and Icons Super-Resolution (AI / SDF 2x–4x)",
     "2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)":
         "2x/4x GPU reconstruction for the Bloodborne logo, weapon/armor/item icons, and HUD (switches live in-game)",
-    "Меньше гостинга на персонажах; стоит около 10% FPS": "Less ghosting on characters; costs about 10% FPS",
+    "Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS":
+        "Useful with an upscaler (DLSS / FSR / TAA): reduces ghosting on characters and cloaks; costs ~10% FPS",
     "Показывать FPS": "Debug and Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
     "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Debug and Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
     "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
@@ -564,7 +565,8 @@ PT_BR = {
     "Резкость (RCAS)": "Nitidez (RCAS)",
     "Сила резкости": "Intensidade da nitidez",
     "Векторы движения объектов": "Vetores de movimento dos objetos",
-    "Меньше гостинга на персонажах; стоит около 10% FPS": "Menos ghosting nos personagens; custa cerca de 10% de FPS",
+    "Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS":
+        "Útil com upscaler (DLSS / FSR / TAA): reduz ghosting em personagens e capas; custa ~10% de FPS",
     "Показывать FPS": "Overlay de telemetria e depuração (FPS / DirectVk)",
     "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Overlay de telemetria e depuração (FPS / DirectVk)",
     "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
@@ -869,7 +871,8 @@ ZH_CN = {
     "Резкость (RCAS)": "锐化（RCAS）",
     "Сила резкости": "锐化强度",
     "Векторы движения объектов": "物体运动矢量",
-    "Меньше гостинга на персонажах; стоит около 10% FPS": "减少角色拖影；大约损失 10% 帧率",
+    "Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS":
+        "配合超分辨率 (DLSS / FSR / TAA) 使用：减少角色与披风拖影；约消耗 10% 帧率",
     "Показывать FPS": "调试与管线遥测叠加层（FPS / DirectVk 统计）",
     "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "调试与管线遥测叠加层（FPS / DirectVk 统计）",
     "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":

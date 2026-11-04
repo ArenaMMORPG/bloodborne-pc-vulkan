@@ -896,7 +896,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         upscaler.add(self.sharpness_row)
         self.motion_row = Adw.SwitchRow(
             title=tr("Векторы движения объектов"),
-            subtitle=tr("Меньше гостинга на персонажах; стоит около 10% FPS"),
+            subtitle=tr("Убирает шлейфы на персонажах и плащах при включённом апскейлере (DLSS / FSR / TAA); стоит ~10% FPS"),
             active=self.ini.get("object_motion") == "1")
         upscaler.add(self.motion_row)
         self.show_fps_row = Adw.SwitchRow(
