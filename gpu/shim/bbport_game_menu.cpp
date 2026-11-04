@@ -58,6 +58,8 @@ constexpr u64 RowInput = 0x1b26b00;
 constexpr u64 ListDraw = 0x1ad06e0;
 /// (page): updates the bottom StatusBar help text for the page's currently selected row.
 constexpr u64 UpdatePageHelpBar = 0x1b1ab20;
+/// (page): updates the bottom StatusBar button guide bar for the page's currently selected row.
+constexpr u64 UpdatePageButtonGuide = 0x1ad6450;
 /// (page, input, frame_time): processes Up/Down row navigation on an options page.
 constexpr u64 OptionsPageNavigate = 0x1b1b520;
 /// (page, game_settings): Bloodborne's native System -> Controls page content builder.
@@ -715,6 +717,7 @@ std::atomic<long long> capture_cooldown_ms{0};
 std::atomic<long long> last_capture_step_ms{0};
 
 u8* active_controls_page = nullptr;
+std::atomic<bool> in_controls_page{false};
 u8* active_game_settings = nullptr;
 u8* slot_rows[ControlsSlotCount] = {};
 int controls_scroll = 0;
@@ -835,11 +838,7 @@ void RefreshSlotTexts(int slot) {
     if (k >= 0) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
-        const std::string help_en =
-            std::string(def.help_en) + "  [Click / F / Enter: Rebind | Right Arrow: +Alt Key | Del: Clear]";
-        const std::string help_ru =
-            std::string(def.help_ru) + "  [Клик / F / Enter: Назначить | Стрелка Вправо: +2-я кл. | Del: Убрать]";
-        SetDynamic(help_id, help_en.c_str(), help_ru.c_str());
+        SetDynamic(help_id, def.help_en, def.help_ru);
         const std::string raw = BbSettings::GetKeyBinding(k);
         const std::string en = BbSettings::FormatKeyBinding(raw, false);
         const std::string ru = BbSettings::FormatKeyBinding(raw, true);
@@ -1120,6 +1119,7 @@ void RefreshControlsPage() {
         }
         Game<void (PS4_SYSV_ABI*)(void*)>(ListDraw)(active_controls_page + 0xa70);
         Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageHelpBar)(active_controls_page);
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageButtonGuide)(active_controls_page);
     }
     for (int slot = 0; slot < ControlsSlotCount; ++slot) {
         UpdateSlotRowDisplay(slot_rows[slot], slot);
@@ -1821,13 +1821,13 @@ void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_tex
     SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
     std::string en, ru;
     if (!capturing_alt) {
-        en = captured_text.empty() ? "[ Press key (Right=+Alt, Del=Clear) ]" : ("[ " + captured_text + " ... ]");
-        ru = captured_text.empty() ? "[ Нажмите кл. (Вправо=+2-я, Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
+        en = captured_text.empty() ? "[ Press Key... ]" : ("[ " + captured_text + " ... ]");
+        ru = captured_text.empty() ? "[ Нажмите клавишу... ]" : ("[ " + captured_text + " ... ]");
     } else {
         const std::string a_en =
-            captured_text.empty() ? "[ +Alt Key (Del=Clear) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +Alt Key... ]" : ("[ " + captured_text + " ... ]");
         const std::string a_ru =
-            captured_text.empty() ? "[ +2-я кл. (Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +2-я кл.... ]" : ("[ " + captured_text + " ... ]");
         en = BbSettings::FormatKeyBinding(primary, false) + " / " + a_en;
         ru = BbSettings::FormatKeyBinding(primary, true) + " / " + a_ru;
     }
@@ -1938,6 +1938,7 @@ ControlsContentFn controls_content_original = nullptr;
 
 void PS4_SYSV_ABI ControlsContentHook(void* page, u8* game_settings) {
     active_controls_page = static_cast<u8*>(page);
+    in_controls_page.store(true, std::memory_order_relaxed);
     active_game_settings = game_settings;
     controls_scroll = 0;
     controls_wrapped_from_top = false;
@@ -2048,6 +2049,7 @@ void SyncAllDisplaySliders(int new_sel) {
 }
 
 void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
+    in_controls_page.store(page == active_controls_page, std::memory_order_relaxed);
     if (page == active_controls_page) {
         if (capturing_action.load(std::memory_order_relaxed) >= 0 || InCaptureCooldown()) {
             return;
@@ -2055,6 +2057,7 @@ void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time)
         HandleScrollablePageNavigate(page, input, frame_time, ControlsSlotCount, MaxControlsScroll,
                                      controls_scroll, controls_wrapped_from_top, slot_rows,
                                      &RefreshControlsPage, &SyncAllControlsSliders);
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageButtonGuide)(page);
         return;
     }
     if (page == active_display_page) {
@@ -2255,6 +2258,18 @@ const char16_t* PS4_SYSV_ABI LookupHook(void* repository, u32 table, u32 categor
     if (const int p = building_page.load(); p >= 0 && category == TextName) {
         if (id == pages[p].layout->title) return TextOf(pages[p].name);
         if (pages[p].layout->subtitle && id == pages[p].layout->subtitle) return TextOf(pages[p].help);
+    }
+    if (category == 0xca && id == 100003 && in_controls_page.load(std::memory_order_relaxed) &&
+        active_controls_page != nullptr) {
+        const int sel = GetSelectedControlsRow();
+        if (sel >= 0 && sel < ControlsSlotCount) {
+            const int item_idx = std::clamp(controls_scroll + sel, 0, TotalControlsItems - 1);
+            if (ItemKeyAction(item_idx) >= 0) {
+                static const std::u16string edit_en = Utf16("Edit　→：Alt Edit　Del：Clear");
+                static const std::u16string edit_ru = Utf16("Изменить　→：2-я кл.　Del：Убрать");
+                return RussianTexts() ? edit_ru.c_str() : edit_en.c_str();
+            }
+        }
     }
     const char16_t* text = lookup_original(repository, table, category, id);
     // BB_MSG_TRACE=1 (diagnostics): the game's text lookups per 2 s by category, with an example
