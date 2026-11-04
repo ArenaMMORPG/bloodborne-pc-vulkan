@@ -272,6 +272,13 @@ def ini_path():
     return Path(os.environ.get("BB_CONFIG", DATA_DIR / "bbport.ini"))
 
 
+def ini_mtime_ns():
+    try:
+        return ini_path().stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
 def load_ini():
     values = dict(INI_DEFAULTS)
     lines = []
@@ -369,6 +376,7 @@ def online_module(pool="seamless"):
 def game_environment(s):
     """Environment for run.sh from the launcher settings."""
     env = dict(os.environ)
+    env["BB_CONFIG"] = str(ini_path())
     env["BB_GAME_DIR"] = str(Path(s["game_dir"]).expanduser())
     if s["user_dir"]:
         env["BB_USER_DIR"] = s["user_dir"]
@@ -503,25 +511,25 @@ def combo_value(row):
 # bbport.ini key.<input>= / pad.<input>= replace a default; no line keeps it. Mouse buttons and the
 # wheel are keys ("Mouse Left", "Wheel Down"); they act while the game holds the mouse.
 CONTROLS = [
-    ("cross", "Крест (взаимодействие)", "F, Return", "a"),
+    ("cross", "Крест (взаимодействие)", "F, Enter", "a"),
     ("circle", "Круг (уклонение, бег; на клавиатуре — Space и Shift ниже)", "", "b"),
     ("dodge", "Кувырок (короткое нажатие Круга; Shift+Space — прыжок)", "Space", None),
     ("sprint", "Бег (удержание Круга)", "Left Shift", None),
-    ("square", "Квадрат (быстрый предмет)", "Tab, R", "x"),
+    ("square", "Квадрат (быстрый предмет)", "R, Tab", "x"),
     ("triangle", "Треугольник (флакон крови)", "Q", "y"),
-    ("l1", "L1 (трансформация оружия)", "E, Mouse X2", "leftshoulder"),
+    ("l1", "L1 (трансформация оружия)", "E, Mouse 5", "leftshoulder"),
     ("r1", "R1 (атака)", "Mouse Left", "rightshoulder"),
     ("l2", "L2 (выстрел)", "Mouse Right", "lefttrigger"),
-    ("r2", "R2 (сильная атака)", "Left Shift+Mouse Left, Mouse X1", "righttrigger"),
+    ("r2", "R2 (сильная атака)", "Left Shift+Mouse Left, Mouse 4", "righttrigger"),
     ("l3", "L3 (прыжок / шаг / сортировка)", "Left Ctrl", "leftstick"),
     ("r3", "R3 (захват цели)", "C, Mouse Middle", "rightstick"),
     ("options", "Options (меню; в меню игры Escape — «назад», Круг)", "Escape", "start"),
     ("touchpad", "Тачпад, левая половина (жесты)", "G", "back, touchpad"),
     ("touchpad_right", "Тачпад, правая половина (личные вещи)", "Backspace", ""),
-    ("up", "Крестовина вверх (кровавые пули / колесо вверх)", "Wheel Up, 3, Up", "dpup"),
-    ("down", "Крестовина вниз (смена предмета / колесо вниз)", "Wheel Down, 4, Down", "dpdown"),
-    ("left", "Крестовина влево (оружие левой руки)", "1, Left", "dpleft"),
-    ("right", "Крестовина вправо (оружие правой руки)", "2, Right", "dpright"),
+    ("up", "Крестовина вверх (кровавые пули / колесо вверх)", "Wheel Up, 3", "dpup"),
+    ("down", "Крестовина вниз (смена предмета / колесо вниз)", "Wheel Down, 4", "dpdown"),
+    ("left", "Крестовина влево (оружие левой руки)", "1", "dpleft"),
+    ("right", "Крестовина вправо (оружие правой руки)", "2", "dpright"),
     ("move_up", "Движение вперёд", "W", None),
     ("move_down", "Движение назад", "S", None),
     ("move_left", "Движение влево", "A", None),
@@ -600,11 +608,14 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.settings = load_settings()
         set_language(self.settings.get("ui_language", ""))
         self.ini, self.ini_lines = load_ini()
+        self._ini_mtime_ns = ini_mtime_ns()
+        self._reloading_ini = False
         self.process = None
         self.stream = None
         self.fsr411_build = None  # tools/fsr4cap/build_assets.sh while it runs
         self.build()
         self.connect("close-request", self.on_close)
+        GLib.timeout_add_seconds(1, self.check_ini_reload)
 
     def build(self):
         """(Re)creates the window's content in the current launcher language."""
@@ -1316,6 +1327,102 @@ class LauncherWindow(Adw.ApplicationWindow):
         })
         save_ini(self.ini, self.ini_lines)
         self.ini, self.ini_lines = load_ini()
+        self._ini_mtime_ns = ini_mtime_ns()
+
+    def check_ini_reload(self):
+        self.reload_from_ini()
+        return True
+
+    def reload_from_ini(self, force=False):
+        if getattr(self, "_reloading_ini", False):
+            return
+        mtime = ini_mtime_ns()
+        if not force and mtime == getattr(self, "_ini_mtime_ns", 0):
+            return
+        self._reloading_ini = True
+        try:
+            self.ini, self.ini_lines = load_ini()
+            self._ini_mtime_ns = mtime
+            s = self.settings
+            if "language" in self.ini:
+                s["language"] = self.ini["language"]
+            if "fullscreen" in self.ini:
+                s["fullscreen"] = self.ini["fullscreen"] == "1"
+            if "present_mode" in self.ini:
+                s["present_mode"] = self.ini["present_mode"]
+            if "skip_network_choice" in self.ini:
+                s["skip_network_choice"] = self.ini["skip_network_choice"] != "0"
+            if "fps_limit" in self.ini:
+                try:
+                    s["fps_limit"] = int(self.ini.get("fps_limit", "0") or 0)
+                except ValueError:
+                    pass
+            save_settings(s)
+
+            def select_combo(row, val):
+                if hasattr(row, "values") and val in row.values:
+                    idx = row.values.index(val)
+                    if row.get_selected() != idx:
+                        row.set_selected(idx)
+
+            aspect = self.ini.get("aspect_ratio", "auto")
+            self.fill_aspects(aspect if aspect in ASPECTS else "auto")
+            self.fill_outputs(parse_size(self.ini.get("output_res", "1920x1080")))
+            self.fullscreen_row.set_active(bool(s["fullscreen"]))
+            select_combo(self.present_row, s["present_mode"])
+            select_combo(self.language_row, s["language"])
+            self.skip_network_row.set_active(bool(s.get("skip_network_choice", True)))
+
+            raw_up = self.ini.get("upscaler", "off")
+            try:
+                raw_preset = int(self.ini.get("preset", "0") or 0)
+            except ValueError:
+                raw_preset = 0
+            raw_aa = self.ini.get("aa_mode", "")
+            if raw_aa in ("off", "fxaa", "taa", "dlaa"):
+                init_aa = raw_aa
+            elif raw_up == "taa":
+                init_aa = "taa"
+            elif self.ini.get("effect_game_aa", "1") == "1":
+                init_aa = "fxaa"
+            else:
+                init_aa = "off"
+            init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
+            select_combo(self.aa_row, init_aa)
+            select_combo(self.upscaler_row, init_up)
+            select_combo(self.dlss_preset_row, self.ini.get("dlss_preset", "11"))
+            select_combo(self.preset_row, raw_preset)
+            select_combo(self.aniso_row, self.ini.get("anisotropic", "16"))
+            self.sharpen_row.set_active(self.ini.get("sharpen") == "1")
+            try:
+                self.sharpness_row.set_value(float(self.ini.get("sharpness", "0.5")))
+            except ValueError:
+                pass
+            self.motion_row.set_active(self.ini.get("object_motion") == "1")
+            self.show_fps_row.set_active(self.ini.get("show_fps") == "1")
+            select_combo(self.lod_row, self.ini.get("model_lod", "0"))
+            for key, _title, default in EFFECTS:
+                if key in self.effect_rows:
+                    self.effect_rows[key].set_active(self.ini.get(key, "1" if default else "0") == "1")
+
+            cur_fps = int(s.get("fps_limit", 0) or 0)
+            preset_vals = [v for _, v in FPS_PRESET_CHOICES if v >= 0]
+            self._syncing_fps = True
+            select_combo(self.fps_row, cur_fps if cur_fps in preset_vals else -1)
+            self.limit_row.set_value(cur_fps)
+            self._syncing_fps = False
+
+            self.mouse_look_row.set_active(self.ini.get("mouse_look", "1") == "1")
+            try:
+                self.mouse_sensitivity_row.set_value(float(self.ini.get("mouse_sensitivity", "1.0")))
+            except ValueError:
+                pass
+            self.mouse_invert_row.set_active(self.ini.get("mouse_invert_y") == "1")
+            for kind, name in self.control_rows:
+                self.show_control(kind, name)
+            self.update_upscaler_status()
+        finally:
+            self._reloading_ini = False
 
     def environment(self):
         return game_environment(self.settings)
@@ -1831,11 +1938,13 @@ class LauncherWindow(Adw.ApplicationWindow):
             pass
         status = process.get_exit_status() if process.get_if_exited() else -1
         self.process = None
+        self.reload_from_ini()
         self.update_launch_button()
         self.update_game_status()
         self.append_log(tr("\n— игра завершилась (код {}) —\n").format(status))
 
     def on_close(self, _window):
+        self.reload_from_ini()
         self.store()
         if self.process:
             self.stop_game()

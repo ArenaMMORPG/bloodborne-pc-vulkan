@@ -65,10 +65,11 @@ constexpr u64 UpdatePageButtonGuide = 0x1ad6450;
 constexpr u64 OptionsPageNavigate = 0x1b1b520;
 /// (page, game_settings): Bloodborne's native System -> Controls page content builder.
 constexpr u64 ControlsContent = 0x1b211a0;
-/// Menu input button check helpers (const u8* input -> bool).
+/// Menu input button check helpers (const u8* input -> bool / step).
 constexpr u64 IsConfirmPressed = 0x1adfec0;
 constexpr u64 IsLeftPressed = 0x1ae0890;
 constexpr u64 IsRightPressed = 0x1ae0970;
+constexpr u64 GetHorizontalStep = 0x1adfdd0;
 /// (row): the row shows its value's text (looked up again).
 constexpr u64 RowShowValue = 0x1b2b7c0;
 /// (out_mc 0x60 bytes, parent_mc 0x60 bytes, fmt, ...): looks up a Scaleform child MovieClip.
@@ -968,8 +969,8 @@ void SyncPageSlotSliderWidget(u8* page, u8* row, int slot, int slider_val, bool 
         alignas(16) u8 right_mc[0x60] = {};
         get_sub(left_mc, slider_mc, "LeftArrow");
         get_sub(right_mc, slider_mc, "RightArrow");
-        SetMovieClipVisible(left_mc, (is_focused && slider_val > 0) ? 1 : 0);
-        SetMovieClipVisible(right_mc, (is_focused && slider_val < 10) ? 1 : 0);
+        SetMovieClipVisible(left_mc, is_focused ? 1 : 0);
+        SetMovieClipVisible(right_mc, is_focused ? 1 : 0);
         DestroyMovieClip(right_mc);
         DestroyMovieClip(left_mc);
 
@@ -2081,6 +2082,14 @@ void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time)
 using RowInputFn = u64 (PS4_SYSV_ABI*)(u8*, u64, u64, u64, u64, u64, double);
 RowInputFn row_input_original = nullptr;
 
+int HorizontalMenuStep(u8 in) {
+    if (in == 0) return 0;
+    if (Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in)) return -1;
+    if (Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in)) return 1;
+    const std::int64_t step = Game<std::int64_t (PS4_SYSV_ABI*)(const u8*)>(GetHorizontalStep)(&in);
+    return step < 0 ? -1 : (step > 0 ? 1 : 0);
+}
+
 u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, double frame_time) {
     int* const val_ptr = *reinterpret_cast<int**>(row + RowValue);
     // The game asks the open page's rows: the resolution row is alive while it does.
@@ -2114,12 +2123,12 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         if (item_idx == 6) {
             // Sharpness slider row: Left/Right/Confirm step the slider.
             const u8 in = u8(a1);
+            SyncDisplaySlotSliderWidget(row, slot, in != 0);
             if (in != 0) {
-                const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-                const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
-                const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
-                if (left || right || confirm) {
-                    StepDisplaySlotSetting(row, slot, left ? -1 : 1, confirm);
+                const int step = HorizontalMenuStep(in);
+                const bool confirm = (step == 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
+                if (step != 0 || confirm) {
+                    StepDisplaySlotSetting(row, slot, step < 0 ? -1 : 1, confirm);
                 }
             }
             return 0;
@@ -2134,10 +2143,9 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         }
         const u8 in = u8(a1);
         if (in != 0) {
-            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
-            if (left || right) {
-                StepDisplaySlotSetting(row, slot, left ? -1 : 1, false);
+            const int step = HorizontalMenuStep(in);
+            if (step != 0) {
+                StepDisplaySlotSetting(row, slot, step, false);
                 return 0;
             }
         }
@@ -2175,7 +2183,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
                 const u8 in = u8(a1);
                 const bool is_focused = (in != 0) || (slot == GetSelectedControlsRow());
                 if (is_focused) {
-                    bool right = (in != 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+                    bool right = (in != 0) && (HorizontalMenuStep(in) > 0);
                     if (!right && SDL_WasInit(SDL_INIT_VIDEO)) {
                         int num_keys = 0;
                         const bool* keys = SDL_GetKeyboardState(&num_keys);
@@ -2204,12 +2212,12 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         if (item_idx >= ItemMouseSpeed && item_idx <= ItemCameraSens) {
             // Slider row (Mouse Speed, Camera Sensitivity, Controller Vibration)
             const u8 in = u8(a1);
+            SyncSlotSliderWidget(row, slot, in != 0);
             if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0 && !InCaptureCooldown()) {
-                const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-                const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
-                const bool confirm = !left && !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
-                if (left || right || confirm) {
-                    StepSlotSetting(row, slot, left ? -1 : 1, confirm);
+                const int step = HorizontalMenuStep(in);
+                const bool confirm = (step == 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
+                if (step != 0 || confirm) {
+                    StepSlotSetting(row, slot, step < 0 ? -1 : 1, confirm);
                 }
             }
             return 0;
@@ -2224,10 +2232,9 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
         }
         const u8 in = u8(a1);
         if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0 && !InCaptureCooldown()) {
-            const bool left = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsLeftPressed)(&in);
-            const bool right = !left && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
-            if (left || right) {
-                StepSlotSetting(row, slot, left ? -1 : 1, false);
+            const int step = HorizontalMenuStep(in);
+            if (step != 0) {
+                StepSlotSetting(row, slot, step, false);
                 return 0;
             }
         }
