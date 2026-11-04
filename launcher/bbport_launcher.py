@@ -965,7 +965,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         page.add(frames)
 
         perf = Adw.PreferencesGroup(
-            title=tr("Производительность (C++20 Engine & DirectVk 1.3)"),
+            title=tr("Производительность (C++20 Engine и DirectVk 1.3)"),
             description=tr("Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)"))
         self.pipe_row = combo_row(
             tr("Двухстадийный конвейер GPU"),

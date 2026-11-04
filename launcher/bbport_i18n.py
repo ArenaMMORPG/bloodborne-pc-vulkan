@@ -168,12 +168,12 @@ EN = {
     "Резкость (RCAS)": "Sharpening (RCAS)",
     "Сила резкости": "Sharpness",
     "Векторы движения объектов": "Object motion vectors",
-    "Апскейл иконок и интерфейса (AI / SDF 2x–4x)": "UI & Icons Super-Resolution (AI / SDF 2x–4x)",
+    "Апскейл иконок и интерфейса (AI / SDF 2x–4x)": "UI and Icons Super-Resolution (AI / SDF 2x–4x)",
     "2x/4x реконструкция логотипа Bloodborne, иконок оружия/брони/предметов и HUD на видеокарте (меняется в игре на лету)":
         "2x/4x GPU reconstruction for the Bloodborne logo, weapon/armor/item icons, and HUD (switches live in-game)",
     "Меньше гостинга на персонажах; стоит около 10% FPS": "Less ghosting on characters; costs about 10% FPS",
-    "Показывать FPS": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
-    "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Debug & Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
+    "Показывать FPS": "Debug and Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
+    "Оверлей телеметрии и отладки (FPS / Статистика DirectVk)": "Debug and Pipeline Telemetry Overlay (FPS / DirectVk Stats)",
     "Показывает FPS, время стадий конвейера C++20 / DirectVk, Draw Calls и статистику VRAM":
         "Displays FPS, C++20 / DirectVk pipeline stage timings, Draw Calls, and VRAM telemetry",
     "Ассеты найдены": "Assets found",
@@ -340,7 +340,7 @@ EN = {
     "Двухстадийный конвейер GPU": "Two-stage GPU pipeline",
     "Быстрее на 20–30%; при нестабильности выключите": "20–30% faster; turn off if unstable",
     "Аппаратное 3D-отсечение невидимых объектов (Occlusion Culler)":
-        "3D Hardware Occlusion & Micro-Shadow Culling",
+        "3D Hardware Occlusion and Micro-Shadow Culling",
     "Отсекает закрытые стенами меши и микро-тени на GPU (−35..45% лишних Draw Calls)":
         "Culls wall-occluded meshes and micro-shadow casters on the GPU (−35..45% redundant Draw Calls)",
     "Нативные шейдеры Vulkan 1.3 GLSL (96 шейдеров)":
@@ -422,7 +422,7 @@ EN = {
         "Display, UI, and render resolution (G-Buffer scales live in-game; Yebis2 post-FX rebuilds on startup)",
     "Назначение кнопок; также настраивается прямо в игре в меню System → Controls":
         "Button bindings; also configurable live in-game via the System → Controls menu",
-    "Сглаживание и апскейлер": "Anti-Aliasing & Upscaler",
+    "Сглаживание и апскейлер": "Anti-Aliasing and Upscaler",
     "Все настройки ниже переключаются прямо во время игры через меню System → Display или оверлей F8":
         "All settings below switch live in-game via the System → Display menu or the F8 overlay",
     "Сглаживание": "Anti-Aliasing",
@@ -443,8 +443,8 @@ EN = {
     "Точное ограничение FPS": "Exact FPS cap",
     "0 — без лимита (честный анлимит 0.0 мс); хранится в bbport.ini":
         "0: true unlimited (0.0 ms frame pacer target); stored in bbport.ini",
-    "Производительность (C++20 Engine & DirectVk 1.3)":
-        "Performance (C++20 Engine & DirectVk 1.3)",
+    "Производительность (C++20 Engine и DirectVk 1.3)":
+        "Performance (C++20 Engine and DirectVk 1.3)",
     "Декомпилированный графический движок C++20 (2 940 / 2 940 функций) и прямой бэкенд DirectVk 1.3 со Split PC VRAM (0 page-faults/s)":
         "Decompiled C++20 graphics engine (2,940 / 2,940 functions) and DirectVk 1.3 backend with Split PC VRAM (0 page-faults/s)",
 }
