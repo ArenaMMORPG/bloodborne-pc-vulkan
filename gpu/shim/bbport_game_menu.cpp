@@ -205,6 +205,17 @@ const char* TranslateForCurrentGameLang(const char* en) {
         {"Firearm Shot / Parry", "Tir d'arme à feu / Parade", "Disparo / Parry", "Schusswaffe / Parieren", "Colpo arma da fuoco / Parry", "Disparo / Parry", "Strzał z broni palnej", "銃撃 / パリィ (L2)", "총격 / 패리 (L2)", "枪击 / 枪反 (L2)"},
         {"Transform Weapon", "Transformer l'arme", "Transformar arma", "Waffe transformieren", "Trasforma arma", "Transformar arma", "Przekształć broń", "武器変形 (L1)", "무기 변형 (L1)", "武器变形 (L1)"},
         {"Lock-On / Reset Camera", "Verrouiller / Réinit. caméra", "Fijar objetivo / Cámara", "Anvisieren / Kamera", "Aggancia / Resetta visuale", "Travar mira / Câmera", "Namierzanie / Kamera", "ターゲット固定 / カメラリセット", "타겟 고정 / 카메라 리셋", "锁定目标 / 重置视角"},
+        {"Chromatic Aberration", "Aberration chromatique", "Aberración cromática", "Chromatische Aberration", "Aberrazione cromatica", "Aberração cromática", "Aberracja chromatyczna", "色収差", "색수차", "色差"},
+        {"Depth of Field (DoF)", "Profondeur de champ (DoF)", "Profundidad de campo (DoF)", "Tärfenschärfe (DoF)", "Profondità di campo (DoF)", "Profundidade de campo (DoF)", "Głębia ostrości (DoF)", "被写界深度 (DoF)", "피사계 심도 (DoF)", "景深 (DoF)"},
+        {"Motion Blur", "Flou de mouvement", "Desenfoque de movimiento", "Bewegungsunschärfe", "Motion Blur", "Desfoque de movimento", "Rozmycie w ruchu", "モーションブラー", "모션 블러", "动态模糊"},
+        {"Ambient Occlusion (SSAO)", "Occlusion ambiante (SSAO)", "Oclusión ambiental (SSAO)", "Umgebungsverdeckung (SSAO)", "Occlusione ambientale (SSAO)", "Oclusão ambiental (SSAO)", "Okluzja otoczenia (SSAO)", "アンビエントオクルージョン (SSAO)", "앰비언트 오클루전 (SSAO)", "环境光遮蔽 (SSAO)"},
+        {"Dynamic Shadows", "Ombres dynamiques", "Sombras dinámicas", "Dynamische Schatten", "Ombre dinamiche", "Sombras dinâmicas", "Dynamiczne cienie", "ダイナミックシャドウ", "동적 그림자", "动态光源阴影"},
+        {"SSR Reflections", "Reflets SSR", "Reflejos SSR", "SSR-Reflexionen", "Riflessi SSR", "Reflexos SSR", "Odbicia SSR", "スクリーンスペース反射 (SSR)", "화면 공간 반사 (SSR)", "屏幕空间反射 (SSR)"},
+        {"Bloom", "Bloom (Lueur)", "Bloom (Resplandor)", "Bloom (Überstrahlen)", "Bloom (Bagliore)", "Bloom (Brilho)", "Poświata (Bloom)", "ブルーム (光彩)", "블룸 (광채)", "泛光 (Bloom)"},
+        {"Enhanced GTAO / SSAO", "GTAO / SSAO amélioré", "GTAO / SSAO mejorado", "Verbessertes GTAO / SSAO", "GTAO / SSAO migliorato", "GTAO / SSAO aprimorado", "Ulepszone GTAO / SSAO", "高精度 GTAO / SSAO", "향상된 GTAO / SSAO", "增强型双尺度 GTAO / SSAO"},
+        {"Contact Micro-Shadows", "Micro-ombres de contact", "Micro-sombras de contacto", "Kontakt-Mikroschatten", "Micro-ombre di contatto", "Micro-sombras de contato", "Kontaktowe mikro-cienie", "コンタクトマイクロシャドウ", "접촉 마이크로 그림자", "屏幕空间接触微阴影"},
+        {"High-Precision Ultra SSR", "Ultra SSR haute précision", "Ultra SSR de alta precisión", "Hochpräzises Ultra-SSR", "Ultra SSR ad alta precisione", "Ultra SSR de alta precisão", "Wysokoprecyzyjne Ultra SSR", "高精度ウルトラ SSR", "고정밀 울트라 SSR", "高精度 Ultra SSR (2x 步进)"},
+        {"True Black & Vibrance", "Noir profond (OLED) & Vibrance", "Negro puro (OLED) y viveza", "Tiefschwarz (OLED) & Brillanz", "Nero puro (OLED) e vividezza", "Preto puro (OLED) e vivacidade", "Głęboka czerń (OLED) i nasycenie", "トゥルーブラック (OLED) & 彩度", "트루 블랙 (OLED) 및 채도", "纯黑去雾 (OLED) 与色彩鲜艳度"},
     };
     for (const auto& e : Table) {
         if (std::strcmp(en, e.en) == 0) {
@@ -267,10 +278,13 @@ constexpr int MaxControlsScroll = TotalControlsItems - ControlsSlotCount;
 constexpr int DisplaySlotCount = 6; ///< all 6 visible rows in Display scroll across 10 items
 constexpr int TotalDisplayItems = 10;
 constexpr int MaxDisplayScroll = TotalDisplayItems - DisplaySlotCount;
+constexpr int EffectsSlotCount = 6; ///< all 6 visible rows in Effects scroll across 11 items
+constexpr int TotalEffectsItems = 11;
+constexpr int MaxEffectsScroll = TotalEffectsItems - EffectsSlotCount;
 constexpr int MaxChoicesPerSlot = 16;
 constexpr int DefaultResetSentinel = -999;
-std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount + 3 * DisplaySlotCount +
-                        ControlsSlotCount * 4 + DisplaySlotCount * MaxChoicesPerSlot>
+std::array<DynamicText, 1 + OutputSlots + 3 * ControlsSlotCount + 3 * DisplaySlotCount + 3 * EffectsSlotCount +
+                        ControlsSlotCount * 4 + DisplaySlotCount * MaxChoicesPerSlot + EffectsSlotCount * 4>
     dynamic_texts{};
 constexpr u32 AutoText = DynamicBase;                                       ///< "Auto (21:9)"
 constexpr u32 OutputTexts = DynamicBase + 1;                                ///< the resolutions (OutputSlots)
@@ -282,6 +296,10 @@ constexpr u32 DisplaySlotHelp = DisplaySlotName + DisplaySlotCount;         ///<
 constexpr u32 DisplaySlotVal = DisplaySlotHelp + DisplaySlotCount;          ///< 6 dynamic row values in Display
 constexpr u32 ControlsSlotChoices = DisplaySlotVal + DisplaySlotCount;      ///< 6 * 4 choice texts in Controls
 constexpr u32 DisplaySlotChoices = ControlsSlotChoices + ControlsSlotCount * 4; ///< 6 * 16 choice texts in Display
+constexpr u32 EffectsSlotName = DisplaySlotChoices + DisplaySlotCount * MaxChoicesPerSlot; ///< 6 dynamic row labels in Effects
+constexpr u32 EffectsSlotHelp = EffectsSlotName + EffectsSlotCount;         ///< 6 dynamic row helps in Effects
+constexpr u32 EffectsSlotVal = EffectsSlotHelp + EffectsSlotCount;          ///< 6 dynamic row values in Effects
+constexpr u32 EffectsSlotChoices = EffectsSlotVal + EffectsSlotCount;       ///< 6 * 4 choice texts in Effects
 
 void Store16(char16_t (&out)[DynamicLength], const char* utf8) {
     const std::u16string text = Utf16(utf8);
@@ -317,7 +335,8 @@ enum Field : int {
     FirstEffect,
     FirstSlot = FirstEffect + BbSettings::EffectCount,
     FirstDisplaySlot = FirstSlot + ControlsSlotCount,
-    FieldCount = int(FirstDisplaySlot) + DisplaySlotCount
+    FirstEffectsSlot = FirstDisplaySlot + DisplaySlotCount,
+    FieldCount = int(FirstEffectsSlot) + EffectsSlotCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -385,6 +404,9 @@ void Fill(const BbSettings::Values& s, int* values) {
     }
     for (int slot = 0; slot < DisplaySlotCount; ++slot) {
         values[FirstDisplaySlot + slot] = 0;
+    }
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        values[FirstEffectsSlot + slot] = 0;
     }
 }
 
@@ -454,53 +476,17 @@ void DefineTexts() {
              Kind::Select});
     }
 
-    page("Effects", "Эффекты", "The game's effects (bbport; the first seven at once)",
-         "Эффекты игры (bbport; первые семь сразу)", ControlsLayout);
-
-    // Short names for the game's narrow name column (BbSettings::Effects order); the help line
-    // has the details.
-    struct Short {
-        const char *key, *en, *ru, *help_en, *help_ru;
-        bool graphics = true;
-    };
-    static const Short shorts[] = {
-        {"effect_chromatic_aberration", "Chromatic aberration", "Хром. аберрация",
-         "Colour fringes at the frame edges", "Цветные каймы по краям кадра"},
-        {"effect_dof", "Depth of field", "Глубина резкости", "Blur of distant and near objects (DoF)",
-         "Размытие дальних и близких объектов (DoF)"},
-        {"effect_motion_blur", "Motion blur", "Размытие в движении", "Blur when the camera turns",
-         "Размытие при повороте камеры"},
-        {"effect_ssao", "Ambient occlusion", "Затенение SSAO", "Shading in corners and contacts (SSAO)",
-         "Затенение в углах и местах касания (SSAO)"},
-        {"effect_game_aa", "Game's own AA", "Сглаживание игры", "The game's own anti-aliasing",
-         "Собственное сглаживание игры", false},
-        {"effect_dynamic_shadows", "Dynamic shadows", "Динамические тени", "Shadows from dynamic lights",
-         "Тени от динамических источников света"},
-        {"effect_ssr", "SSR reflections", "Отражения SSR", "Screen-space reflections (not in the original)",
-         "Экранные отражения (не было в оригинале)"},
-        {"skip_intro", "Skip intros", "Пропуск заставок", "Skip the startup logos and intro",
-         "Пропуск логотипов и заставки при запуске", false},
-        {"debug_camera", "Free camera", "Свободная камера", "Toggled with Cross + L3",
-         "Включается Cross + L3", false},
-        {"debug_menu", "Debug menu", "Debug menu", "The game's debug menu (requires font files)",
-         "Отладочное меню игры (нужны файлы шрифтов)", false},
-    };
-    for (int e = 0; e < BbSettings::EffectCount; ++e) {
-        const auto& effect = BbSettings::Effects[e];
-        const Short* name = nullptr;
-        for (const Short& s : shorts) {
-            if (std::strcmp(s.key, effect.key) == 0) name = &s;
-        }
-        if ((name && !name->graphics) || pages.back().rows.size() == pages.back().layout->rows) {
-            continue; // the overlay menu and the launcher have it
-        }
-        // A new effect without a short name: its full label.
-        const bool live = BbSettings::IsHotEffect(e);
-        const std::string help_en = std::string(name ? name->help_en : effect.label) + (live ? "" : " (after a restart)");
-        const std::string help_ru =
-            std::string(name ? name->help_ru : effect.label_ru) + (live ? "" : " (после перезапуска)");
-        row(Field(FirstEffect + e), name ? name->en : effect.label, name ? name->ru : effect.label_ru,
-            help_en.c_str(), help_ru.c_str(), toggle);
+    page("Effects", "Эффекты",
+         "Visual effects & Vulkan 1.3 Remaster Enhancements (all 11 switch live in-game)",
+         "Визуальные эффекты и улучшения ремастера Vulkan 1.3 (все 11 меняются на лету)",
+         ControlsLayout);
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        pages.back().rows.push_back(
+            {Field(FirstEffectsSlot + slot),
+             EffectsSlotName + u32(slot),
+             EffectsSlotHelp + u32(slot),
+             {EffectsSlotVal + u32(slot), EffectsSlotVal + u32(slot)},
+             Kind::Select});
     }
 
     // Unified System -> Controls window: all 6 visible rows scroll vertically across all 20 items
@@ -666,12 +652,15 @@ void AddRows(void* page, const std::vector<Row>& rows) {
 
 std::atomic<int> building_page{-1}; // while the game builds one of our pages (its menu thread)
 void InitDisplayPage(void* page);
+void InitEffectsPage(void* page);
 
 // Called by the game's menu code (guest threads, System V ABI like the game), one set per page.
 template <int P>
 void PS4_SYSV_ABI Rows(void* page, void*) {
     if constexpr (P == 0) {
         InitDisplayPage(page);
+    } else if constexpr (P == 1) {
+        InitEffectsPage(page);
     } else {
         LoadValues();
         AddRows(page, pages[P].rows);
@@ -732,6 +721,11 @@ u8* display_slot_rows[DisplaySlotCount] = {};
 int display_scroll = 0;
 bool display_wrapped_from_top = false;
 
+u8* active_effects_page = nullptr;
+u8* effects_slot_rows[EffectsSlotCount] = {};
+int effects_scroll = 0;
+bool effects_wrapped_from_top = false;
+
 int GetSelectedPageRow(u8* page) {
     if (!page) return 0;
     int sel = *reinterpret_cast<int*>(page + 0xae8);
@@ -745,6 +739,10 @@ int GetSelectedControlsRow() {
 
 int GetSelectedDisplayRow() {
     return GetSelectedPageRow(active_display_page);
+}
+
+int GetSelectedEffectsRow() {
+    return GetSelectedPageRow(active_effects_page);
 }
 
 long long NowSteadyMs() {
@@ -1897,6 +1895,198 @@ void StepDisplaySlotSetting(u8* row, int slot, int delta, bool wrap) {
     }
 }
 
+struct EffectsItemMeta {
+    const char* name_en;
+    const char* name_ru;
+    const char* help_en;
+    const char* help_ru;
+    bool default_on;
+};
+
+constexpr EffectsItemMeta EffectsItems[TotalEffectsItems] = {
+    {"Chromatic Aberration", "Хром. аберрация",
+     "Red-blue color fringing near screen edges (turning it off makes the image cleaner)",
+     "Красно-синяя окантовка по краям кадра (отключение делает картинку заметно чище)", true},
+    {"Depth of Field (DoF)", "Глубина резкости (DoF)",
+     "Cinematic background blur for objects outside the camera focus plane",
+     "Кинематографическое размытие дальнего фона и объектов вне фокуса камеры", true},
+    {"Motion Blur", "Размытие в движении",
+     "Camera and per-object motion blur during fast turns and dodges",
+     "Размытие при резких поворотах камеры и перекатах персонажа", true},
+    {"Ambient Occlusion (SSAO)", "Затенение SSAO",
+     "Soft contact shading in corners, cobblestones, and cloth folds (adds depth)",
+     "Мягкое контактное затенение в углах, щелях брусчатки и складках одежды", true},
+    {"Dynamic Shadows", "Динамические тени",
+     "Real-time shadows cast by lanterns, torches, bonfires, and gunfire",
+     "Тени в реальном времени от фонарей, факелов, костров и выстрелов", true},
+    {"SSR Reflections", "Отражения SSR",
+     "Hidden PS4 screen-space raymarched reflections on puddles, blood, and wet stone",
+     "Скрытая на PS4 трассировка экранных отражений в лужах, крови и мокром камне", false},
+    {"Bloom", "Свечение (Bloom)",
+     "Soft glow halo around lanterns, fire, moonlight, and arcane effects",
+     "Мягкий ореол свечения вокруг фонарей, огня, луны и магии", true},
+    {"Enhanced GTAO / SSAO", "Улучшенный GTAO / SSAO",
+     "Vulkan 1.3 Remaster: Interleaved Gradient Noise (no 64x64 grid) + fine micro-crevice AO",
+     "Ремастер Vulkan 1.3: убирает сетку шума 64x64 от PS4 и добавляет микро-затенение складок", true},
+    {"Contact Micro-Shadows", "Контактные микро-тени",
+     "Vulkan 1.3 Remaster: 12-tap Golden-Angle Vogel soft PCF + 8-step screen-space contact shadows",
+     "Ремастер Vulkan 1.3: мягкие тени (12-Tap Vogel PCF) и трассировка контактных микро-теней", true},
+    {"High-Precision Ultra SSR", "Высокоточный Ultra SSR",
+     "Vulkan 1.3 Remaster: 2x SSR ray step density (1.5 px/step) + 30 Hz dynamic environment cubemap",
+     "Ремастер Vulkan 1.3: 2x плотность лучей SSR (1.5 пикс/шаг) и обновление карты окружения 30 Гц", true},
+    {"True Black & Vibrance", "Глубокий чёрный и сочность",
+     "Vulkan 1.3 Remaster: removes 2015 PS4 LCD grey black-floor haze after 3D LUT + subtle vibrance",
+     "Ремастер Vulkan 1.3: убирает серую пелену старых LCD 2015 года после 3D LUT и добавляет сочность", true},
+};
+
+constexpr int EffectsItemToEffectIdx(int item_idx) {
+    switch (item_idx) {
+    case 0: return 0; // effect_chromatic_aberration
+    case 1: return 1; // effect_dof
+    case 2: return 2; // effect_motion_blur
+    case 3: return 3; // effect_ssao
+    case 4: return 5; // effect_dynamic_shadows (4 is effect_game_aa)
+    case 5: return 6; // effect_ssr
+    case 6: return 7; // effect_bloom
+    default: return -1;
+    }
+}
+
+bool GetEffectsItemActive(int item_idx) {
+    const auto& s = BbSettings::Get();
+    const int e = EffectsItemToEffectIdx(item_idx);
+    if (e >= 0) return s.effects[e].load();
+    switch (item_idx) {
+    case 7: return s.ssao_quality.load();
+    case 8: return s.contact_shadows.load();
+    case 9: return s.ssr_quality.load();
+    case 10: return s.true_black_hdr.load();
+    default: return false;
+    }
+}
+
+void SetEffectsItemActive(int item_idx, bool active) {
+    auto& s = BbSettings::Get();
+    const int e = EffectsItemToEffectIdx(item_idx);
+    if (e >= 0) {
+        s.effects[e] = active;
+        values[FirstEffect + e] = active ? 1 : 0;
+        applied[FirstEffect + e] = active ? 1 : 0;
+        bytes[FirstEffect + e] = u8(active ? 1 : 0);
+    } else {
+        switch (item_idx) {
+        case 7: s.ssao_quality = active; break;
+        case 8: s.contact_shadows = active; break;
+        case 9: s.ssr_quality = active; break;
+        case 10: s.true_black_hdr = active; break;
+        default: break;
+        }
+    }
+    BbGuestHooks::ApplyGameEffects();
+    BbSettings::Save();
+}
+
+void BuildEffectsSlotChoices(int slot, std::vector<u32>& out_choices, int& out_selected_idx) {
+    out_choices.clear();
+    const int item_idx = std::clamp(effects_scroll + slot, 0, TotalEffectsItems - 1);
+    const u32 base_id = EffectsSlotChoices + u32(slot * 4);
+    SetDynamic(base_id + 0, "Off", "Выкл");
+    SetDynamic(base_id + 1, "On", "Вкл");
+    out_choices.push_back(base_id + 0);
+    out_choices.push_back(base_id + 1);
+    out_selected_idx = GetEffectsItemActive(item_idx) ? 1 : 0;
+}
+
+void RefreshEffectsSlotTexts(int slot) {
+    const int item_idx = std::clamp(effects_scroll + slot, 0, TotalEffectsItems - 1);
+    const auto& meta = EffectsItems[item_idx];
+    SetDynamic(EffectsSlotName + u32(slot), meta.name_en, meta.name_ru);
+    SetDynamic(EffectsSlotHelp + u32(slot), meta.help_en, meta.help_ru);
+    const bool on = GetEffectsItemActive(item_idx);
+    SetDynamic(EffectsSlotVal + u32(slot), on ? "On" : "Off", on ? "Вкл" : "Выкл");
+}
+
+void SyncEffectsSlotSliderWidget(u8* row, int slot, bool is_focused) {
+    SyncPageSlotSliderWidget(active_effects_page, row, slot, -1, is_focused);
+}
+
+void UpdateEffectsSlotRowDisplay(u8* row, int slot) {
+    if (!row) return;
+    std::vector<u32> choice_ids;
+    int selected_idx = 0;
+    BuildEffectsSlotChoices(slot, choice_ids, selected_idx);
+    PopulateSelectRowChoices(row, FirstEffectsSlot + slot, choice_ids, selected_idx);
+    const int sel = GetSelectedEffectsRow();
+    SyncEffectsSlotSliderWidget(row, slot, slot == sel);
+}
+
+void RefreshEffectsPage() {
+    effects_scroll = std::clamp(effects_scroll, 0, MaxEffectsScroll);
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        RefreshEffectsSlotTexts(slot);
+    }
+    if (active_effects_page) {
+        u8* const rows_begin = *reinterpret_cast<u8**>(active_effects_page + 0xe58);
+        u8* const rows_end = *reinterpret_cast<u8**>(active_effects_page + 0xe60);
+        if (rows_begin && rows_end && rows_end - rows_begin >= EffectsSlotCount * 0x90) {
+            for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+                u8* const entry = rows_begin + slot * 0x90;
+                *reinterpret_cast<const char16_t**>(entry + 0x00) = TextOf(EffectsSlotName + u32(slot));
+                *reinterpret_cast<const char16_t**>(entry + 0x40) = TextOf(EffectsSlotHelp + u32(slot));
+                u8* const widget = *reinterpret_cast<u8**>(entry + 0x80);
+                if (widget) {
+                    effects_slot_rows[slot] = widget;
+                }
+            }
+        }
+        Game<void (PS4_SYSV_ABI*)(void*)>(ListDraw)(active_effects_page + 0xa70);
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageHelpBar)(active_effects_page);
+    }
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        UpdateEffectsSlotRowDisplay(effects_slot_rows[slot], slot);
+    }
+}
+
+void InitEffectsPage(void* page) {
+    active_effects_page = static_cast<u8*>(page);
+    effects_scroll = 0;
+    effects_wrapped_from_top = false;
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        effects_slot_rows[slot] = nullptr;
+    }
+    LoadValues();
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        RefreshEffectsSlotTexts(slot);
+    }
+    AddRows(page, pages[1].rows);
+    u8* const rows_begin = *reinterpret_cast<u8**>(active_effects_page + 0xe58);
+    u8* const rows_end = *reinterpret_cast<u8**>(active_effects_page + 0xe60);
+    if (rows_begin && rows_end && rows_end - rows_begin >= EffectsSlotCount * 0x90) {
+        for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+            effects_slot_rows[slot] = *reinterpret_cast<u8**>(rows_begin + slot * 0x90 + 0x80);
+            UpdateEffectsSlotRowDisplay(effects_slot_rows[slot], slot);
+        }
+    }
+}
+
+void ApplyEffectsSlotChoiceIndex(u8* row, int slot, int choice_idx) {
+    const int item_idx = std::clamp(effects_scroll + slot, 0, TotalEffectsItems - 1);
+    const bool new_active = (choice_idx != 0);
+    if (new_active != GetEffectsItemActive(item_idx)) {
+        SetEffectsItemActive(item_idx, new_active);
+    }
+    RefreshEffectsSlotTexts(slot);
+    UpdateEffectsSlotRowDisplay(row, slot);
+}
+
+void StepEffectsSlotSetting(u8* row, int slot, int delta) {
+    if (delta == 0) return;
+    const int item_idx = std::clamp(effects_scroll + slot, 0, TotalEffectsItems - 1);
+    const bool cur = GetEffectsItemActive(item_idx);
+    PlayMenuStepSound();
+    ApplyEffectsSlotChoiceIndex(row, slot, cur ? 0 : 1);
+}
+
 void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_text) {
     std::string primary, alt;
     SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
@@ -2130,6 +2320,12 @@ void SyncAllDisplaySliders(int new_sel) {
     }
 }
 
+void SyncAllEffectsSliders(int new_sel) {
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        SyncEffectsSlotSliderWidget(effects_slot_rows[slot], slot, slot == new_sel);
+    }
+}
+
 void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time) {
     in_controls_page.store(page == active_controls_page, std::memory_order_relaxed);
     if (page == active_controls_page) {
@@ -2153,6 +2349,12 @@ void PS4_SYSV_ABI OptionsPageNavigateHook(u8* page, u8* input, float frame_time)
         HandleScrollablePageNavigate(page, input, frame_time, DisplaySlotCount, MaxDisplayScroll,
                                      display_scroll, display_wrapped_from_top, display_slot_rows,
                                      &RefreshDisplayPage, &SyncAllDisplaySliders);
+        return;
+    }
+    if (page == active_effects_page) {
+        HandleScrollablePageNavigate(page, input, frame_time, EffectsSlotCount, MaxEffectsScroll,
+                                     effects_scroll, effects_wrapped_from_top, effects_slot_rows,
+                                     &RefreshEffectsPage, &SyncAllEffectsSliders);
         return;
     }
     options_page_navigate_original(page, input, frame_time);
@@ -2313,6 +2515,34 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             const int step = HorizontalMenuStep(in);
             if (step != 0) {
                 StepSlotSetting(row, slot, step, false);
+                return 0;
+            }
+        }
+        return row_input_original(row, a1, a2, a3, a4, a5, frame_time);
+    }
+    if (val_ptr >= &values[FirstEffectsSlot] &&
+        val_ptr < &values[int(FirstEffectsSlot) + EffectsSlotCount]) {
+        const int slot = int(val_ptr - &values[FirstEffectsSlot]);
+        effects_slot_rows[slot] = row;
+        if (values[FirstEffectsSlot + slot] == DefaultResetSentinel) {
+            for (int i = 0; i < TotalEffectsItems; ++i) {
+                SetEffectsItemActive(i, EffectsItems[i].default_on);
+            }
+            RefreshEffectsPage();
+            return 0;
+        }
+        if (row[0x3c0] != 0) {
+            const u64 res = row_input_original(row, a1, a2, a3, a4, a5, frame_time);
+            if (row[0x3c0] == 0) {
+                ApplyEffectsSlotChoiceIndex(row, slot, values[FirstEffectsSlot + slot]);
+            }
+            return res;
+        }
+        const u8 in = u8(a1);
+        if (in != 0) {
+            const int step = HorizontalMenuStep(in);
+            if (step != 0) {
+                StepEffectsSlotSetting(row, slot, step);
                 return 0;
             }
         }
@@ -2537,6 +2767,9 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
     }
     for (int slot = 0; slot < DisplaySlotCount; ++slot) {
         default_values[FirstDisplaySlot + slot] = DefaultResetSentinel; // triggers default reset on Display page
+    }
+    for (int slot = 0; slot < EffectsSlotCount; ++slot) {
+        default_values[FirstEffectsSlot + slot] = DefaultResetSentinel; // triggers default reset on Effects page
     }
     for (int f = 0; f < FieldCount; ++f) {
         default_bytes[f] = u8(default_values[f]);
