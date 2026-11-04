@@ -407,7 +407,10 @@ EN = {
     "R1 (атака)": "R1 (Light Attack)",
     "L2 (выстрел)": "L2 (Firearm Shot / Parry)",
     "R2 (сильная атака)": "R2 (Heavy Attack)",
+    "L3 (прыжок / шаг / сортировка)": "L3 (Jump / Walk / Sort Inventory)",
     "R3 (захват цели)": "R3 (Lock-On / Reset Camera)",
+    "Крестовина вверх (кровавые пули / колесо вверх)": "D-Pad Up (Blood Bullets +5 QS / Mouse Wheel Up)",
+    "Крестовина вниз (смена предмета / колесо вниз)": "D-Pad Down (Switch Quick Item / Mouse Wheel Down)",
     "Крестовина влево (оружие левой руки)": "D-Pad Left (Switch Left-Hand Weapon)",
     "Крестовина вправо (оружие правой руки)": "D-Pad Right (Switch Right-Hand Weapon)",
     "Options (меню; в меню игры Escape — «назад», Круг)":
@@ -702,7 +705,10 @@ PT_BR = {
     "R1 (атака)": "R1 (Ataque Leve)",
     "L2 (выстрел)": "L2 (Disparo / Parry)",
     "R2 (сильная атака)": "R2 (Ataque Forte)",
+    "L3 (прыжок / шаг / сортировка)": "L3 (Pular / Andar / Ordenar)",
     "R3 (захват цели)": "R3 (Travar Mira / Câmera)",
+    "Крестовина вверх (кровавые пули / колесо вверх)": "Direcional Cima (Balas de Sangue / Roda do Mouse Cima)",
+    "Крестовина вниз (смена предмета / колесо вниз)": "Direcional Baixo (Trocar Item / Roda do Mouse Baixo)",
     "Крестовина влево (оружие левой руки)": "Direcional Esquerdo (Arma da Mão Esquerda)",
     "Крестовина вправо (оружие правой руки)": "Direcional Direito (Arma da Mão Direita)",
     "Options (меню; в меню игры Escape — «назад», Круг)":
@@ -1036,7 +1042,10 @@ ZH_CN = {
     "R1 (атака)": "R1（轻攻击）",
     "L2 (выстрел)": "L2（枪击 / 枪反）",
     "R2 (сильная атака)": "R2（重攻击）",
+    "L3 (прыжок / шаг / сортировка)": "L3（跳跃 / 慢走 / 整理背包）",
     "R3 (захват цели)": "R3（锁定目标 / 重置视角）",
+    "Крестовина вверх (кровавые пули / колесо вверх)": "方向键上（血弹 +5 / 鼠标滚轮向上）",
+    "Крестовина вниз (смена предмета / колесо вниз)": "方向键下（切换道具 / 鼠标滚轮向下）",
     "Крестовина влево (оружие левой руки)": "方向键左（切换左手武器）",
     "Крестовина вправо (оружие правой руки)": "方向键右（切换右手武器）",
     "Options (меню; в меню игры Escape — «назад», Круг)":

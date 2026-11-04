@@ -660,6 +660,14 @@ int OnEvent(const void* sdl_event, void* sdl_window) {
     default:
         break;
     }
+    if (BbGameMenu::CapturesInput() && event.type == SDL_EVENT_MOUSE_WHEEL) {
+        const float notches =
+            event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -event.wheel.y : event.wheel.y;
+        if (notches != 0.0f) {
+            BbGameMenu::NotifyWheelCapture(notches > 0.0f ? 1 : -1);
+        }
+        return 1;
+    }
     const bool ours = !bbgpu_mouse_captured() && !BbOverlay::MenuOpen() &&
                       !BbGameMenu::CapturesInput() && !BbGameMenu::InCaptureCooldown() && InMenu();
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT) {

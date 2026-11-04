@@ -247,8 +247,16 @@ struct DynamicText {
     char16_t english[DynamicLength]{}, russian[DynamicLength]{};
 };
 constexpr u32 OutputSlots = 12;   ///< BbSettings::OutputList
-constexpr int ControlsSlotCount = 6; ///< all 6 visible rows in Controls scroll across 20 items
-constexpr int TotalControlsItems = BbSettings::KeyActionCount + 7; ///< 13 keybinds + Mouse Speed + 6 native settings
+constexpr int ControlsSlotCount = 6; ///< all 6 visible rows in Controls scroll across all items
+constexpr int FirstControlSettingItem = BbSettings::KeyActionCount;
+constexpr int ItemMouseSpeed = FirstControlSettingItem + 0;
+constexpr int ItemVibration = FirstControlSettingItem + 1;
+constexpr int ItemCameraSens = FirstControlSettingItem + 2;
+constexpr int ItemCameraX = FirstControlSettingItem + 3;
+constexpr int ItemCameraY = FirstControlSettingItem + 4;
+constexpr int ItemAutoTarget = FirstControlSettingItem + 5;
+constexpr int ItemCameraAdjust = FirstControlSettingItem + 6;
+constexpr int TotalControlsItems = BbSettings::KeyActionCount + 7; ///< 26 keybinds + Mouse Speed + 6 native settings
 constexpr int MaxControlsScroll = TotalControlsItems - ControlsSlotCount;
 constexpr int DisplaySlotCount = 6; ///< all 6 visible rows in Display scroll across 9 items
 constexpr int TotalDisplayItems = 9;
@@ -697,6 +705,7 @@ void* const factories[MaxPages] = {
 // ---- Unified System -> Controls Window (Keybinds + Mouse + Camera/Controller) ----
 enum class CapturePhase { WaitInitialRelease, WaitPressAndRelease, WaitEscapeRelease };
 std::atomic<int> capturing_action{-1};
+std::atomic<int> captured_wheel{0};
 int capturing_slot = -1;
 bool capturing_alt = false; ///< false: Primary Key 1, true: Alt Key 2
 CapturePhase capture_phase = CapturePhase::WaitInitialRelease;
@@ -848,7 +857,7 @@ void RefreshSlotTexts(int slot) {
         return;
     }
 
-    if (item_idx == 13) {
+    if (item_idx == ItemMouseSpeed) {
         SetDynamic(name_id, "Mouse Speed", "Чувствит. мыши");
         SetDynamic(help_id,
                    "Mouse camera sensitivity (Left/Right): 0 mouse look off, 5 default (1.0x), 10 fast (2.0x)",
@@ -859,7 +868,7 @@ void RefreshSlotTexts(int slot) {
         return;
     }
 
-    if (item_idx == 14) {
+    if (item_idx == ItemVibration) {
         SetDynamic(name_id, "Controller Vibration", "Вибрация геймпада");
         SetDynamic(help_id,
                    "Controller vibration strength (Left/Right): 0 off, 10 strongest",
@@ -870,7 +879,7 @@ void RefreshSlotTexts(int slot) {
         return;
     }
 
-    if (item_idx == 15) {
+    if (item_idx == ItemCameraSens) {
         SetDynamic(name_id, "Camera Sensitivity", "Скорость камеры");
         SetDynamic(help_id, "Gamepad & lock-on camera rotation speed (Left/Right: 0 .. 10)",
                    "Скорость вращения камеры (Влево/Вправо: 0 .. 10)");
@@ -880,25 +889,25 @@ void RefreshSlotTexts(int slot) {
         return;
     }
 
-    if (item_idx == 16) {
+    if (item_idx == ItemCameraX) {
         SetDynamic(name_id, "Camera X-Axis", "Камера по оси X");
         SetDynamic(help_id, "Horizontal camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по горизонтали (Влево/Вправо)");
         const bool inv = active_game_settings && active_game_settings[0xa] == 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
-    } else if (item_idx == 17) {
+    } else if (item_idx == ItemCameraY) {
         SetDynamic(name_id, "Camera Y-Axis", "Камера по оси Y");
         SetDynamic(help_id, "Vertical camera rotation direction (Left/Right to toggle)",
                    "Направление вращения камеры по вертикали (Влево/Вправо)");
         const bool inv = active_game_settings && active_game_settings[0x9] == 0;
         SetDynamic(val_id, inv ? "Inverted" : "Normal", inv ? "Инверсия" : "Обычная");
-    } else if (item_idx == 18) {
+    } else if (item_idx == ItemAutoTarget) {
         SetDynamic(name_id, "Auto Target Switch", "Автосмена цели");
         SetDynamic(help_id, "Automatically switch lock-on target when current target is defeated",
                    "Автоматическое переключение захвата цели после гибели текущей цели");
         const bool on = !active_game_settings || active_game_settings[0xb] != 0;
         SetDynamic(val_id, on ? "On" : "Off", on ? "Вкл" : "Выкл");
-    } else if (item_idx == 19) {
+    } else if (item_idx == ItemCameraAdjust) {
         SetDynamic(name_id, "Camera Auto-Adjust", "Автокоррекция камеры");
         SetDynamic(help_id, "Automatically adjust camera when colliding with walls",
                    "Автоматический обход стен при движении камеры");
@@ -908,13 +917,13 @@ void RefreshSlotTexts(int slot) {
 }
 
 int GetItemSliderValue(int item_idx) {
-    if (item_idx == 13) {
+    if (item_idx == ItemMouseSpeed) {
         return CurrentMouseSpeedStep();
     }
-    if (item_idx == 14) {
+    if (item_idx == ItemVibration) {
         return active_game_settings ? std::clamp(int(active_game_settings[0x1]), 0, 10) : 10;
     }
-    if (item_idx == 15) {
+    if (item_idx == ItemCameraSens) {
         return active_game_settings ? std::clamp(int(active_game_settings[0x0]), 0, 10) : 5;
     }
     return -1;
@@ -1065,19 +1074,19 @@ void BuildControlsSlotChoices(int slot, std::vector<u32>& out_choices, int& out_
         SetDynamic(id, en, ru);
         out_choices.push_back(id);
     };
-    if (item_idx == 16) {
+    if (item_idx == ItemCameraX) {
         add_choice("Normal", "Обычная");
         add_choice("Inverted", "Инверсия");
         out_selected_idx = (active_game_settings && active_game_settings[0xa] == 0) ? 1 : 0;
-    } else if (item_idx == 17) {
+    } else if (item_idx == ItemCameraY) {
         add_choice("Normal", "Обычная");
         add_choice("Inverted", "Инверсия");
         out_selected_idx = (active_game_settings && active_game_settings[0x9] == 0) ? 1 : 0;
-    } else if (item_idx == 18) {
+    } else if (item_idx == ItemAutoTarget) {
         add_choice("Off", "Выкл");
         add_choice("On", "Вкл");
         out_selected_idx = (!active_game_settings || active_game_settings[0xb] != 0) ? 1 : 0;
-    } else if (item_idx == 19) {
+    } else if (item_idx == ItemCameraAdjust) {
         add_choice("Off", "Выкл");
         add_choice("On", "Вкл");
         out_selected_idx = (!active_game_settings || active_game_settings[0xc] != 0) ? 1 : 0;
@@ -1087,7 +1096,7 @@ void BuildControlsSlotChoices(int slot, std::vector<u32>& out_choices, int& out_
 void UpdateSlotRowDisplay(u8* row, int slot) {
     if (!row) return;
     const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
-    if (item_idx >= 16) {
+    if (item_idx >= ItemCameraX) {
         std::vector<u32> choice_ids;
         int selected_idx = 0;
         BuildControlsSlotChoices(slot, choice_ids, selected_idx);
@@ -1130,13 +1139,13 @@ void RefreshControlsPage() {
 void ApplyControlsSlotChoiceIndex(u8* row, int slot, int choice_idx) {
     const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
     const int idx = std::clamp(choice_idx, 0, 1);
-    if (item_idx == 16 && active_game_settings) {
+    if (item_idx == ItemCameraX && active_game_settings) {
         active_game_settings[0xa] = idx == 0 ? 1 : 0; // 1 = Normal, 0 = Inverted
-    } else if (item_idx == 17 && active_game_settings) {
+    } else if (item_idx == ItemCameraY && active_game_settings) {
         active_game_settings[0x9] = idx == 0 ? 1 : 0; // 1 = Normal, 0 = Inverted
-    } else if (item_idx == 18 && active_game_settings) {
+    } else if (item_idx == ItemAutoTarget && active_game_settings) {
         active_game_settings[0xb] = idx == 1 ? 1 : 0; // 1 = On, 0 = Off
-    } else if (item_idx == 19 && active_game_settings) {
+    } else if (item_idx == ItemCameraAdjust && active_game_settings) {
         active_game_settings[0xc] = idx == 1 ? 1 : 0; // 1 = On, 0 = Off
     }
     RefreshSlotTexts(slot);
@@ -1145,25 +1154,25 @@ void ApplyControlsSlotChoiceIndex(u8* row, int slot, int choice_idx) {
 
 void StepSlotSetting(u8* row, int slot, int delta, bool wrap) {
     const int item_idx = std::clamp(controls_scroll + slot, 0, TotalControlsItems - 1);
-    if (item_idx == 13) {
+    if (item_idx == ItemMouseSpeed) {
         int step = CurrentMouseSpeedStep() + delta;
         step = wrap ? (step + MouseSensSteps) % MouseSensSteps : std::clamp(step, 0, MouseSensSteps - 1);
         SetMouseSpeedStep(step);
-    } else if (item_idx == 14 && active_game_settings) {
+    } else if (item_idx == ItemVibration && active_game_settings) {
         int vib = int(active_game_settings[0x1]) + delta;
         vib = wrap ? (vib + 11) % 11 : std::clamp(vib, 0, 10);
         active_game_settings[0x1] = u8(vib);
-    } else if (item_idx == 15 && active_game_settings) {
+    } else if (item_idx == ItemCameraSens && active_game_settings) {
         int sens = int(active_game_settings[0x0]) + delta;
         sens = wrap ? (sens + 11) % 11 : std::clamp(sens, 0, 10);
         active_game_settings[0x0] = u8(sens);
-    } else if (item_idx == 16 && active_game_settings) {
+    } else if (item_idx == ItemCameraX && active_game_settings) {
         active_game_settings[0xa] = active_game_settings[0xa] ? 0 : 1;
-    } else if (item_idx == 17 && active_game_settings) {
+    } else if (item_idx == ItemCameraY && active_game_settings) {
         active_game_settings[0x9] = active_game_settings[0x9] ? 0 : 1;
-    } else if (item_idx == 18 && active_game_settings) {
+    } else if (item_idx == ItemAutoTarget && active_game_settings) {
         active_game_settings[0xb] = active_game_settings[0xb] ? 0 : 1;
-    } else if (item_idx == 19 && active_game_settings) {
+    } else if (item_idx == ItemCameraAdjust && active_game_settings) {
         active_game_settings[0xc] = active_game_settings[0xc] ? 0 : 1;
     }
     PlayMenuClickSound();
@@ -1839,15 +1848,17 @@ void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_tex
 void StepKeyCapture(u8* row, int slot, int k) {
     last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
     bool escape_down = false;
-    const std::vector<std::string> down = CollectDownTokens(&escape_down);
+    std::vector<std::string> down = CollectDownTokens(&escape_down);
 
     if (capture_phase == CapturePhase::WaitInitialRelease) {
+        captured_wheel.store(0, std::memory_order_relaxed);
         if (!escape_down && down.empty()) {
             capture_phase = CapturePhase::WaitPressAndRelease;
         }
         return;
     }
     if (capture_phase == CapturePhase::WaitEscapeRelease) {
+        captured_wheel.store(0, std::memory_order_relaxed);
         if (!escape_down && down.empty()) {
             RefreshSlotTexts(slot);
             UpdateSlotRowDisplay(row, slot);
@@ -1859,6 +1870,20 @@ void StepKeyCapture(u8* row, int slot, int k) {
     if (escape_down) {
         capture_phase = CapturePhase::WaitEscapeRelease;
         return;
+    }
+    const int wheel_dir = captured_wheel.exchange(0, std::memory_order_relaxed);
+    if (wheel_dir != 0) {
+        const std::string wheel_tok = wheel_dir > 0 ? "Wheel Up" : "Wheel Down";
+        for (const std::string& tok : down) {
+            if (IsModifierToken(tok) && captured_tokens.size() < 2 &&
+                std::find(captured_tokens.begin(), captured_tokens.end(), tok) == captured_tokens.end()) {
+                captured_tokens.push_back(tok);
+            }
+        }
+        if (std::find(captured_tokens.begin(), captured_tokens.end(), wheel_tok) == captured_tokens.end()) {
+            captured_tokens.push_back(wheel_tok);
+        }
+        down.clear(); // Commit wheel binding immediately
     }
     for (const std::string& tok : down) {
         if (captured_tokens.size() < 3 &&
@@ -2135,6 +2160,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
                     if (right || confirm) {
                         PlayMenuClickSound();
                         captured_tokens.clear();
+                        captured_wheel.store(0, std::memory_order_relaxed);
                         last_capture_preview.clear();
                         capture_phase = CapturePhase::WaitInitialRelease;
                         last_capture_step_ms.store(NowSteadyMs(), std::memory_order_relaxed);
@@ -2147,7 +2173,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             return 0;
         }
-        if (item_idx >= 13 && item_idx <= 15) {
+        if (item_idx >= ItemMouseSpeed && item_idx <= ItemCameraSens) {
             // Slider row (Mouse Speed, Camera Sensitivity, Controller Vibration)
             const u8 in = u8(a1);
             if (in != 0 && capturing_action.load(std::memory_order_relaxed) < 0 && !InCaptureCooldown()) {
@@ -2160,7 +2186,7 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             return 0;
         }
-        // Camera & Target multi-choice row (item_idx 16..19): supports both pop-up dropdown and Left/Right step.
+        // Camera & Target multi-choice row (ItemCameraX..ItemCameraAdjust): supports both pop-up dropdown and Left/Right step.
         if (row[0x3c0] != 0) {
             const u64 res = row_input_original(row, a1, a2, a3, a4, a5, frame_time);
             if (row[0x3c0] == 0) {
@@ -2421,6 +2447,12 @@ bool CapturesInput() {
 
 bool InCaptureCooldown() {
     return NowSteadyMs() < capture_cooldown_ms.load(std::memory_order_relaxed);
+}
+
+void NotifyWheelCapture(int dir) {
+    if (capturing_action.load(std::memory_order_relaxed) >= 0 && dir != 0) {
+        captured_wheel.store(dir > 0 ? 1 : -1, std::memory_order_relaxed);
+    }
 }
 
 void Poll() {

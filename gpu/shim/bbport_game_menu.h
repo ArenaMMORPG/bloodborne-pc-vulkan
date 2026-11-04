@@ -20,4 +20,7 @@ bool CapturesInput();
 
 /// True during the brief post-capture cooldown window so stale latched keys are zeroed in OnPad.
 bool InCaptureCooldown();
+
+/// Window thread: notifies the Controls capture loop of a mouse wheel scroll (+1 Up, -1 Down).
+void NotifyWheelCapture(int dir);
 } // namespace BbGameMenu

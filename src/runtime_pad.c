@@ -458,7 +458,7 @@ static void load_bindings(void) {
     static const struct { int input, sc; } nav_keys[] = {
         {IN_UP, SDL_SCANCODE_UP}, {IN_DOWN, SDL_SCANCODE_DOWN},
         {IN_LEFT, SDL_SCANCODE_LEFT}, {IN_RIGHT, SDL_SCANCODE_RIGHT},
-        {IN_CROSS, SDL_SCANCODE_RETURN},
+        {IN_CROSS, SDL_SCANCODE_RETURN}, {IN_OPTIONS, SDL_SCANCODE_ESCAPE},
     };
     for (size_t i = 0; i < sizeof(nav_keys) / sizeof(*nav_keys); ++i) {
         Binding *b = &bindings[nav_keys[i].input];

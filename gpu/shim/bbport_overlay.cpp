@@ -65,6 +65,7 @@ bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
 int rebinding_action = -1; // >= 0 while waiting for a key/mouse press to rebind KeyAction
 bool rebind_wait_initial_release = false;
+int rebind_wheel_dir = 0; // +1 Wheel Up, -1 Wheel Down
 std::vector<std::string> rebind_tokens;
 float base_scale = 1.0f;
 // The game's text dialog (ImeDialog, the character name), typed on the keyboard: drawn while it
@@ -867,13 +868,33 @@ void Menu() {
             if (mb & SDL_BUTTON_X2MASK) down.emplace_back("Mouse 5");
 
             if (rebind_wait_initial_release) {
+                rebind_wheel_dir = 0;
                 if (!esc_down && down.empty()) {
                     rebind_wait_initial_release = false;
                 }
             } else if (esc_down) {
+                rebind_wheel_dir = 0;
                 rebind_tokens.clear();
                 rebinding_action = -1;
             } else {
+                if (rebind_wheel_dir != 0) {
+                    const std::string wheel_tok = rebind_wheel_dir > 0 ? "Wheel Up" : "Wheel Down";
+                    rebind_wheel_dir = 0;
+                    auto is_mod = [](const std::string& t) {
+                        return t == "Left Shift" || t == "Right Shift" || t == "Left Ctrl" ||
+                               t == "Right Ctrl" || t == "Left Alt" || t == "Right Alt";
+                    };
+                    for (const std::string& tok : down) {
+                        if (is_mod(tok) && rebind_tokens.size() < 2 &&
+                            std::find(rebind_tokens.begin(), rebind_tokens.end(), tok) == rebind_tokens.end()) {
+                            rebind_tokens.push_back(tok);
+                        }
+                    }
+                    if (std::find(rebind_tokens.begin(), rebind_tokens.end(), wheel_tok) == rebind_tokens.end()) {
+                        rebind_tokens.push_back(wheel_tok);
+                    }
+                    down.clear();
+                }
                 for (const std::string& tok : down) {
                     if (rebind_tokens.size() < 3 &&
                         std::find(rebind_tokens.begin(), rebind_tokens.end(), tok) == rebind_tokens.end()) {
@@ -926,10 +947,12 @@ void Menu() {
             if (ImGui::Button(btn_label, ImVec2(230.0f * base_scale, 0.0f))) {
                 if (waiting) {
                     rebinding_action = -1;
+                    rebind_wheel_dir = 0;
                     rebind_tokens.clear();
                 } else {
                     rebinding_action = k;
                     rebind_wait_initial_release = true;
+                    rebind_wheel_dir = 0;
                     rebind_tokens.clear();
                 }
             }
@@ -2106,6 +2129,14 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_MOUSE_WHEEL:
         if (!is_open) {
             return false;
+        }
+        if (rebinding_action >= 0) {
+            const float notches =
+                event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -event.wheel.y : event.wheel.y;
+            if (notches != 0.0f) {
+                rebind_wheel_dir = notches > 0.0f ? 1 : -1;
+            }
+            return true;
         }
         io.AddMouseWheelEvent(event.wheel.x, event.wheel.y);
         return true;

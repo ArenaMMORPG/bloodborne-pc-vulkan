@@ -21,13 +21,13 @@ namespace {
 
 constexpr KeyActionDef kKeyDefs[KeyActionCount] = {
     {"key.r1", "Attack (R1)", "Обычный удар (R1)",
-     "Right-hand weapon light attack (R1). Select & press any key/mouse button (or 2+ keys)",
-     "Быстрый удар оружием в правой руке (R1). Выберите и нажмите любую клавишу/кнопку мыши (или 2+)",
+     "Right-hand weapon light attack (R1). Select & press any key/mouse button/wheel (or 2+ keys)",
+     "Быстрый удар оружием в правой руке (R1). Выберите и нажмите любую клавишу/кнопку/колесо мыши",
      "Mouse Left"},
     {"key.r2", "Strong Attack (R2)", "Сильный удар (R2)",
      "Right-hand heavy / charged attack (R2). Hold from behind for visceral backstab",
      "Сильная / заряженная атака (R2). Удерживайте со спины для оглушения",
-     "Left Shift+Mouse Left"},
+     "Left Shift+Mouse Left, Mouse 4"},
     {"key.l2", "Firearm / Parry (L2)", "Выстрел / Парирование (L2)",
      "Left-hand firearm shot or two-handed L2 attack (parry enemy attacks)",
      "Выстрел из пистолета в левой руке или особая атака L2 (парирование врагов)",
@@ -35,7 +35,7 @@ constexpr KeyActionDef kKeyDefs[KeyActionCount] = {
     {"key.l1", "Transform Weapon (L1)", "Трансформация (L1)",
      "Trick weapon transformation (L1). Press after dodge or R1 for transform attack",
      "Трансформация оружия-обманки (L1). После удара или уворота — атака с трансформацией",
-     "E"},
+     "E, Mouse 5"},
     {"key.dodge", "Dodge / Backstep", "Уклонение / Отскок",
      "Quickstep / Roll (with WASD) or Backstep (standing still). Instant response",
      "Отскок / Перекат (с WASD) или шаг назад (стоя на месте). Срабатывает без задержки",
@@ -60,6 +60,14 @@ constexpr KeyActionDef kKeyDefs[KeyActionCount] = {
      "Lock camera onto enemy or reset camera forward (R3). Switch target: move mouse",
      "Захват цели камерой или центрирование камеры (R3). Смена цели: движение мыши",
      "C, Mouse Middle"},
+    {"key.down", "Switch Quick Item (Down)", "Смена предмета (Вниз)",
+     "Cycle through equipped quick items / Hunter Tools (D-Pad Down / Mouse Wheel Down)",
+     "Переключение выбранного быстрого предмета / магии (Крестовина вниз / Колесо мыши вниз)",
+     "Wheel Down, 4"},
+    {"key.up", "Blood Bullets (Up)", "Кровавые пули (Вверх)",
+     "Create +5 emergency Quicksilver Bullets using HP (D-Pad Up / Mouse Wheel Up)",
+     "Создать +5 экстренных ртутных пуль за счёт здоровья (Крестовина вверх / Колесо мыши вверх)",
+     "Wheel Up, 3"},
     {"key.right", "Switch Right Weapon", "Смена правого оружия",
      "Cycle between right-hand trick weapons (D-Pad Right)",
      "Переключение оружия в правой руке (Крестовина вправо)",
@@ -68,10 +76,54 @@ constexpr KeyActionDef kKeyDefs[KeyActionCount] = {
      "Cycle between left-hand firearms / torches (D-Pad Left)",
      "Переключение пистолета / факела в левой руке (Крестовина влево)",
      "1"},
-    {"key.touchpad", "Gestures / Touchpad", "Жесты / Тачпад",
-     "Gestures menu. Personal Effects: Backspace | Items: Wheel/3/4",
-     "Меню жестов. Личные вещи: Backspace | Предметы: Колесо мыши / 3 / 4",
+    {"key.touchpad", "Gestures (Left Pad)", "Жесты (Левый тачпад)",
+     "Open Gestures menu (Left side of Touchpad)",
+     "Открыть меню жестов (Левая сторона тачпада)",
      "G"},
+    {"key.touchpad_right", "Personal Effects (Right)", "Личные вещи (Правый)",
+     "Open Personal Effects quick belt (Right side of Touchpad)",
+     "Быстрое меню личных вещей (Правая сторона тачпада)",
+     "Backspace"},
+    {"key.l3", "Jump / Sort (L3)", "Прыжок / Сортировка (L3)",
+     "Left Stick Click (L3): sort inventory items in menus, or L3 jump when configured",
+     "Нажатие левого стика (L3): сортировка инвентаря в меню или прыжок на L3",
+     "Left Ctrl"},
+    {"key.options", "System Menu (Options)", "Меню системы (Options)",
+     "Open main equipment / inventory / system menu (Options; Escape always works too)",
+     "Открыть главное меню экипировки, инвентаря и настроек (Options; Escape работает всегда)",
+     "Escape"},
+    {"key.move_up", "Move Forward", "Движение вперёд",
+     "Move character forward (Left Stick Up)",
+     "Движение персонажа вперёд (Левый стик вверх)",
+     "W"},
+    {"key.move_down", "Move Backward", "Движение назад",
+     "Move character backward (Left Stick Down)",
+     "Движение персонажа назад (Левый стик вниз)",
+     "S"},
+    {"key.move_left", "Move Left", "Движение влево",
+     "Strafe / move character left (Left Stick Left)",
+     "Движение персонажа влево (Левый стик влево)",
+     "A"},
+    {"key.move_right", "Move Right", "Движение вправо",
+     "Strafe / move character right (Left Stick Right)",
+     "Движение персонажа вправо (Левый стик вправо)",
+     "D"},
+    {"key.look_up", "Camera Up (Key)", "Камера вверх (Кл.)",
+     "Rotate camera up using keyboard (Right Stick Up)",
+     "Поворот камеры вверх с клавиатуры (Правый стик вверх)",
+     "I"},
+    {"key.look_down", "Camera Down (Key)", "Камера вниз (Кл.)",
+     "Rotate camera down using keyboard (Right Stick Down)",
+     "Поворот камеры вниз с клавиатуры (Правый стик вниз)",
+     "K"},
+    {"key.look_left", "Camera Left (Key)", "Камера влево (Кл.)",
+     "Rotate camera left using keyboard (Right Stick Left)",
+     "Поворот камеры влево с клавиатуры (Правый стик влево)",
+     "J"},
+    {"key.look_right", "Camera Right (Key)", "Камера вправо (Кл.)",
+     "Rotate camera right using keyboard (Right Stick Right)",
+     "Поворот камеры вправо с клавиатуры (Правый стик вправо)",
+     "L"},
 };
 
 std::mutex key_mutex;
@@ -185,10 +237,15 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                 } else {
                     trimmed.clear();
                 }
-                if (trimmed == "E, Mouse X2") trimmed = "E";
-                else if (trimmed == "Left Shift+Mouse Left, Mouse X1") trimmed = "Left Shift+Mouse Left";
+                if (trimmed == "E, Mouse X2" || trimmed == "E") trimmed = "E, Mouse 5";
+                else if (trimmed == "Left Shift+Mouse Left, Mouse X1" || trimmed == "Left Shift+Mouse Left")
+                    trimmed = "Left Shift+Mouse Left, Mouse 4";
                 else if (trimmed == "Tab, R") trimmed = "R, Tab";
                 else if (trimmed == "F, Return") trimmed = "F, Enter";
+                else if (trimmed == "3, Up, Wheel Up" || trimmed == "Wheel Up, 3, Up") trimmed = "Wheel Up, 3";
+                else if (trimmed == "4, Down, Wheel Down" || trimmed == "Wheel Down, 4, Down") trimmed = "Wheel Down, 4";
+                else if (trimmed == "1, Left") trimmed = "1";
+                else if (trimmed == "2, Right") trimmed = "2";
                 if (!trimmed.empty()) {
                     std::scoped_lock lock{key_mutex};
                     key_bindings[k] = trimmed;
