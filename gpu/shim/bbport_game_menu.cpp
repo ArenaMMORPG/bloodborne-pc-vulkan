@@ -768,18 +768,6 @@ std::string JoinBinding(const std::string& primary, const std::string& alt) {
     return primary + "," + alt;
 }
 
-/// True when the menu Confirm signal was caused by pressing the bare keyboard `F` key
-/// (as opposed to Enter, Mouse Left Click, or Gamepad Cross).
-bool IsBareKeyboardF() {
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) return false;
-    int num_keys = 0;
-    const bool* keys = SDL_GetKeyboardState(&num_keys);
-    if (!keys || num_keys <= SDL_SCANCODE_F || !keys[SDL_SCANCODE_F]) return false;
-    if (num_keys > SDL_SCANCODE_RETURN && keys[SDL_SCANCODE_RETURN]) return false;
-    if (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) return false;
-    return true;
-}
-
 std::vector<std::string> CollectDownTokens(bool* escape_down) {
     std::vector<std::string> out;
     if (escape_down) *escape_down = false;
@@ -848,9 +836,9 @@ void RefreshSlotTexts(int slot) {
         const auto& def = BbSettings::GetKeyActionDef(k);
         SetDynamic(name_id, def.name_en, def.name_ru);
         const std::string help_en =
-            std::string(def.help_en) + "  [Click / Enter: Rebind (Del=Clear) | Right: +Alt Key]";
+            std::string(def.help_en) + "  [Click / F / Enter: Rebind | Right Arrow: +Alt Key | Del: Clear]";
         const std::string help_ru =
-            std::string(def.help_ru) + "  [Клик / Enter: Назначить (Del=Убрать) | Вправо: +Альт. кл.]";
+            std::string(def.help_ru) + "  [Клик / F / Enter: Назначить | Стрелка Вправо: +2-я кл. | Del: Убрать]";
         SetDynamic(help_id, help_en.c_str(), help_ru.c_str());
         const std::string raw = BbSettings::GetKeyBinding(k);
         const std::string en = BbSettings::FormatKeyBinding(raw, false);
@@ -1833,13 +1821,13 @@ void ShowCapturePrompt(u8* row, int slot, int k, const std::string& captured_tex
     SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
     std::string en, ru;
     if (!capturing_alt) {
-        en = captured_text.empty() ? "[ Press key (Del=Clear)... ]" : ("[ " + captured_text + " ... ]");
-        ru = captured_text.empty() ? "[ Нажмите кл. (Del=Убрать)... ]" : ("[ " + captured_text + " ... ]");
+        en = captured_text.empty() ? "[ Press key (Right=+Alt, Del=Clear) ]" : ("[ " + captured_text + " ... ]");
+        ru = captured_text.empty() ? "[ Нажмите кл. (Вправо=+2-я, Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
     } else {
         const std::string a_en =
             captured_text.empty() ? "[ +Alt Key (Del=Clear) ]" : ("[ " + captured_text + " ... ]");
         const std::string a_ru =
-            captured_text.empty() ? "[ +Альт. кл. (Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
+            captured_text.empty() ? "[ +2-я кл. (Del=Убрать) ]" : ("[ " + captured_text + " ... ]");
         en = BbSettings::FormatKeyBinding(primary, false) + " / " + a_en;
         ru = BbSettings::FormatKeyBinding(primary, true) + " / " + a_ru;
     }
@@ -1912,6 +1900,14 @@ void StepKeyCapture(u8* row, int slot, int k) {
         for (std::size_t i = 0; i < captured_tokens.size(); ++i) {
             if (i > 0) new_binding += "+";
             new_binding += captured_tokens[i];
+        }
+        if (!capturing_alt && new_binding == "Right") {
+            capturing_alt = true;
+            captured_tokens.clear();
+            last_capture_preview.clear();
+            PlayMenuClickSound();
+            ShowCapturePrompt(row, slot, k, {});
+            return;
         }
         std::string primary, alt;
         SplitBinding(BbSettings::GetKeyBinding(k), primary, alt);
@@ -1986,9 +1982,18 @@ void HandleScrollablePageNavigate(u8* page, u8* input, float frame_time, int slo
         return;
     }
     const int hover_sel = BbMenuPointer::PostHoverCursor(page + 0xa70, pre_sel);
-    const int new_sel = GetSelectedPageRow(page);
+    int new_sel = GetSelectedPageRow(page);
+    if (pre_sel == slot_count && hover_sel >= 0 && hover_sel < slot_count && new_sel == slot_count) {
+        // Mouse pointer moved from the Defaults button onto one of the 6 list rows: activate that row.
+        *reinterpret_cast<int*>(page + 0xae8) = -1;
+        new_sel = hover_sel;
+        wrapped_from_top = false;
+        Game<void (PS4_SYSV_ABI*)(void*)>(UpdatePageHelpBar)(page);
+        sync_sliders_fn(new_sel);
+        return;
+    }
     if (new_sel != hover_sel) {
-        if (hover_sel == slot_count - 1 && new_sel == slot_count && scroll < max_scroll) {
+        if (pre_sel == slot_count - 1 && hover_sel == slot_count - 1 && new_sel == slot_count && scroll < max_scroll) {
             ++scroll;
             wrapped_from_top = false;
             *reinterpret_cast<int*>(page + 0xae8) = -1;
@@ -1997,7 +2002,7 @@ void HandleScrollablePageNavigate(u8* page, u8* input, float frame_time, int slo
             refresh_fn();
             return;
         }
-        if (hover_sel == 0 && new_sel == slot_count) {
+        if (pre_sel == 0 && hover_sel == 0 && new_sel == slot_count) {
             if (scroll > 0) {
                 --scroll;
                 wrapped_from_top = false;
@@ -2156,11 +2161,18 @@ u64 PS4_SYSV_ABI RowInputHook(u8* row, u64 a1, u64 a2, u64 a3, u64 a4, u64 a5, d
             }
             if (active_k < 0 && !InCaptureCooldown()) {
                 const u8 in = u8(a1);
-                if (in != 0) {
-                    const bool right = Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+                const bool is_focused = (in != 0) || (slot == GetSelectedControlsRow());
+                if (is_focused) {
+                    bool right = (in != 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsRightPressed)(&in);
+                    if (!right && SDL_WasInit(SDL_INIT_VIDEO)) {
+                        int num_keys = 0;
+                        const bool* keys = SDL_GetKeyboardState(&num_keys);
+                        if (keys && num_keys > SDL_SCANCODE_RIGHT && keys[SDL_SCANCODE_RIGHT]) {
+                            right = true;
+                        }
+                    }
                     const bool confirm =
-                        !right && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in) &&
-                        !IsBareKeyboardF();
+                        !right && (in != 0) && Game<bool (PS4_SYSV_ABI*)(const u8*)>(IsConfirmPressed)(&in);
                     if (right || confirm) {
                         PlayMenuClickSound();
                         captured_tokens.clear();
