@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "bbport_copy.h"
+#include "bbport_sections.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
@@ -414,6 +415,7 @@ void Scheduler::SignalAfterHostCopies(std::function<void()> signal, bool force_k
 
 void Scheduler::WaitPendingFrame() {
     if (const u64 tick = pending_frame_wait_tick.exchange(0, std::memory_order_acq_rel)) {
+        BbSections::PauseADecodeScope pause_decode;
         BbStats::WaitTimer timer{BbStats::present_wait_ns};
         Wait(tick);
     }
@@ -425,6 +427,7 @@ void Scheduler::WaitDeferredSignals() {
         BbToggle::Disabled(BbToggle::OrderedGuestWrites)) {
         return;
     }
+    BbSections::PauseADecodeScope pause_decode;
     BbStats::WaitTimer timer{BbStats::host_copies_wait_ns};
     KickRecording(true);
     while (deferred_signals_done->load(std::memory_order_acquire) < issued) {
@@ -706,6 +709,7 @@ void Scheduler::SyncRecording() {
         return;
     }
     KickRecording(true);
+    BbSections::PauseADecodeScope pause_decode;
     BbStats::WaitTimer timer{BbStats::sync_recording_ns};
     std::unique_lock lk{recorder_mutex};
     recorder_idle_cv.wait(lk, [this] { return RecordingIdle(); });
@@ -922,6 +926,7 @@ void Scheduler::Wait(u64 tick) {
     if (tick >= CurrentTick()) {
         Flush(); // the tick is the one being recorded: nothing would ever signal it
     }
+    BbSections::PauseADecodeScope pause_decode;
     BbWaitTrace::Scope trace;
     BbStats::WaitTimer timer{BbStats::tick_wait_ns};
     work_semaphore.Wait(tick);

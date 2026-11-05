@@ -112,6 +112,11 @@
 #include "bbgpu/shaders/ps_998b035e_frag.h"
 #include "bbgpu/shaders/ps_a0e88f56_noclip_frag.h"
 #include "bbgpu/shaders/ps_a0e88f56_cldist_frag.h"
+#include "bbgpu/shaders/ps_86e96401_frag.h"
+#include "bbgpu/shaders/ps_4b766f62_frag.h"
+#include "bbgpu/shaders/ps_3c2b7974_frag.h"
+#include "bbgpu/shaders/ps_474f0123_frag.h"
+#include "bbgpu/shaders/ps_483f5dc1_frag.h"
 
 namespace Shader::Backend::SPIRV {
 
@@ -173,7 +178,7 @@ struct NativeShaderCandidate {
     const char* label;
 };
 
-constexpr std::array<NativeShaderCandidate, 102> kNativeRegistry{{
+constexpr std::array<NativeShaderCandidate, 107> kNativeRegistry{{
     {0x000000000f61fd27ull, PS_0F61FD27_VSM_BLUR_FRAG, "ps_0f61fd27_vsm_blur"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_CLDIST_FRAG, "ps_1ae03d75_vsm_moment_cldist"},
     {0x000000001ae03d75ull, PS_1AE03D75_VSM_MOMENT_NOCLIP_FRAG, "ps_1ae03d75_vsm_moment_noclip"},
@@ -276,6 +281,11 @@ constexpr std::array<NativeShaderCandidate, 102> kNativeRegistry{{
     {0x00000000998b035eull, PS_998B035E_FRAG, "ps_998b035e_gbuf6_alpha"},
     {0x00000000a0e88f56ull, PS_A0E88F56_NOCLIP_FRAG, "ps_a0e88f56_csm_depth_noclip"},
     {0x00000000a0e88f56ull, PS_A0E88F56_CLDIST_FRAG, "ps_a0e88f56_vsm_depth_cldist"},
+    {0x0000000086e96401ull, PS_86E96401_FRAG, "ps_86e96401_yebis_copy"},
+    {0x000000004b766f62ull, PS_4B766F62_FRAG, "ps_4b766f62_yebis_tap1"},
+    {0x000000003c2b7974ull, PS_3C2B7974_FRAG, "ps_3c2b7974_yebis_tap3"},
+    {0x00000000474f0123ull, PS_474F0123_FRAG, "ps_474f0123_yebis_tap4"},
+    {0x00000000483f5dc1ull, PS_483F5DC1_FRAG, "ps_483f5dc1_yebis_tap5"},
 }};
 
 struct DescSlot {
@@ -287,6 +297,7 @@ struct DescSlot {
 struct SpvInterfaceSig {
     u32 exec_model = 0xFFFFFFFFu;
     bool has_per_vertex_input = false;
+    bool bgra_export = false;
     u64 in_loc_mask = 0;
     u64 out_loc_mask = 0;
     std::array<u8, 64> in_interp{};
@@ -326,6 +337,7 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
         u32 sc;
     };
     std::vector<VarRec> global_vars;
+    std::vector<u32> store_vals;
     bool in_func = false;
 
     for (size_t pos = 5; pos < spv.size();) {
@@ -354,6 +366,9 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
             case kOpStore:
                 if (wc >= 3 && w[1] < bound) {
                     var_used[w[1]] = 1u;
+                    if (store_vals.size() < 4u) {
+                        store_vals.push_back(w[2]);
+                    }
                 }
                 break;
             case kOpExtInst:
@@ -530,6 +545,9 @@ bool ExtractInterfaceSig(std::span<const u32> spv, SpvInterfaceSig& sig) {
     std::ranges::sort(sig.descs, [](const DescSlot& a, const DescSlot& b) {
         return (a.set != b.set) ? (a.set < b.set) : (a.binding < b.binding);
     });
+    if (store_vals.size() >= 3u && store_vals[0] > store_vals[2]) {
+        sig.bgra_export = true;
+    }
     return true;
 }
 
@@ -564,7 +582,7 @@ u32 NativeShadersMinIdx() noexcept {
 }
 
 u32 NativeShadersMaxIdx() noexcept {
-    static const u32 max_idx = ParseEnvU32("BB_NATIVE_SHADER_MAX", 101u);
+    static const u32 max_idx = ParseEnvU32("BB_NATIVE_SHADER_MAX", 106u);
     return max_idx;
 }
 
@@ -599,6 +617,9 @@ bool TryReplaceWithNativeShader(u64 pgm_hash, const std::vector<u32>& ref_spv,
 
     SpvInterfaceSig ref_sig{};
     if (!ExtractInterfaceSig(ref_spv, ref_sig) || ref_sig.has_per_vertex_input) {
+        return false;
+    }
+    if (pgm_hash == 0x000000004b766f62ull && ref_sig.bgra_export) {
         return false;
     }
 

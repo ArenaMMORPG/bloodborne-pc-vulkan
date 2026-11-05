@@ -222,7 +222,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "mouse_sensitivity") {
         v.mouse_sensitivity = Clamp(f, 0.05f, 20.0f);
     } else if (key == "dlss_preset") {
-        v.dlss_preset = (i == 0 || (i >= 10 && i <= 13)) ? i : 11;
+        v.dlss_preset = (i == 0 || i == 5 || i == 6 || (i >= 10 && i <= 13)) ? i : 11;
     } else if (key == "anisotropic") {
         v.anisotropic = (i >= 16) ? 16 : (i >= 8) ? 8 : (i >= 4) ? 4 : 0;
     } else if (key == "fps_limit") {
@@ -603,7 +603,7 @@ int EffectiveUpscaler() {
     if (aa == AaTaa) {
         return UpscalerTaa;
     }
-    if (aa == AaDlaa) {
+    if (aa == AaDlaa || aa == AaDlaaCnn) {
         return v.dlss_supported.load(std::memory_order_relaxed) ? UpscalerDlss : UpscalerTaa;
     }
     return UpscalerOff;
@@ -744,7 +744,7 @@ const char* UpscalerName(int upscaler) {
 }
 
 const char* AaModeName(int aa) {
-    static constexpr const char* names[AaCount] = {"off", "fxaa", "taa", "dlaa"};
+    static constexpr const char* names[AaCount] = {"off", "fxaa", "taa", "dlaa", "dlaa3"};
     return names[std::clamp(aa, 0, AaCount - 1)];
 }
 

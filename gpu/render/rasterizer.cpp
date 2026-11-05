@@ -2154,6 +2154,10 @@ void Rasterizer::NoteCopyIntoMemory(VAddr address, u64 size) {
     if (size == 0 || !OnStageA()) {
         return;
     }
+    if (VideoCore::DirectBuffers::IsTransientCueHeap(address, size) ||
+        VideoCore::DirectBuffers::IsNativeOwnedAddress(address)) {
+        return;
+    }
     copies_into_memory[num_copies_into_memory++ % copies_into_memory.size()] = {address,
                                                                                address + size};
     if (num_copies_into_memory % copies_into_memory.size() == 0) {

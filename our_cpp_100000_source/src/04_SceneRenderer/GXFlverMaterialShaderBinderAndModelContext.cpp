@@ -1424,12 +1424,13 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
 
     void* cur_src = dst_tex;
     // When src_tex == nullptr (SSR glossy mip-pyramid in sub_22b1530), Deferred Light PBR PS
-    // (ps_3fe9e964) clamps the SSR reflection mip LOD to min(6.0, 6.5 - gloss * 6.5), so mips 7..11
-    // (10x5 down to 1x1) are never sampled. Capping at 7 levels (mips 0..6) eliminates 10 redundant
-    // RenderPasses per frame, and rendering mip 6 directly from mip 5's temp_rt into mip_surfs[6]
-    // eliminates 1 more RenderPass (22 -> 11 RenderPasses/frame).
+    // (ps_3fe9e964) clamps the SSR reflection mip LOD to min(5.0, 6.5 - gloss * 6.5), so mips 6..11
+    // (40x22 down to 1x1) are never sampled. Capping at 6 levels (mips 0..5, down to 80x45),
+    // copying temp_rt into dst_tex mips 1..4 via EmitCopyTextureRegion (vkCmdCopyImage), and
+    // rendering mip 5 directly from mip 4's temp_rt into mip_surfs[5] reduces the SSR mip-pyramid
+    // from 22 RenderPasses down to 5 RenderPasses/frame.
     const std::uint32_t loop_mip_levels =
-        (src_tex == nullptr && mip_levels > 7U) ? 7U : mip_levels;
+        (src_tex == nullptr && mip_levels > 6U) ? 6U : mip_levels;
     if (loop_mip_levels >= 2U) {
         void* rt_state = static_cast<std::uint8_t*>(render_ctx) + 0x1728;
         void* temp_rt = nullptr;
@@ -1539,38 +1540,9 @@ extern "C" bool sub_21c2100(void* self, void* src_tex, void* dst_tex) {
                 std::uint32_t target_mip = (mip_levels != 0) ? mip : 0U;
                 sub_2168880(MemRef<void*>(render_ctx, 0x08), nullptr, dst_res, target_mip, 0, 0, 0, tmp_res, 0, 0);
             } else if (dst_mip_cap > mip) {
-                void** mip_surfs = MemRef<void**>(dst_tex, 0x60);
-                sub_e46f40(rt_state, mip_surfs[mip], 0, 1);
-                MemRef<void*>(render_ctx, 0x1ec0) = sub_e47840(rt_state);
-                sub_21a1c50(render_ctx);
-
-                void* tmp_srv = MemRef<void*>(temp_rt, 0x48);
-                MemRef<void*>(render_ctx, 0x788) = tmp_srv;
-                MemRef<std::uint32_t>(render_ctx, 0x960) = 0;
-                if (MemRef<std::uint32_t>(render_ctx, 0x964) <= 1U) {
-                    MemRef<std::uint32_t>(render_ctx, 0x964) = 1U;
-                }
-                cb = MemRef<void*>(render_ctx, 0x08);
-                MemRef<std::uint64_t>(cb, 0x1968) |= 1ULL;
-                MemRef<void*>(cb, 0xd128) = tmp_srv;
-
-                std::memcpy(quad_verts, kQuadVertices, sizeof(quad_verts));
-                VCall<void(*)(void*, std::uint32_t, std::uint32_t, const void*, std::uint32_t)>(&draw_helper, 0x00)(
-                    &draw_helper, 5, 4, quad_verts, 0x30);
-
-                MemRef<void*>(render_ctx, 0x788) = nullptr;
-                MemRef<std::uint32_t>(render_ctx, 0x960) = 0;
-                if (MemRef<std::uint32_t>(render_ctx, 0x964) <= 1U) {
-                    MemRef<std::uint32_t>(render_ctx, 0x964) = 1U;
-                }
-                cb = MemRef<void*>(render_ctx, 0x08);
-                MemRef<std::uint64_t>(cb, 0x1968) |= 1ULL;
-                MemRef<void*>(cb, 0xd128) = nullptr;
-
-                sub_219fcf0(render_ctx);
-                sub_e47290(rt_state, 1);
-                MemRef<void*>(render_ctx, 0x1ec0) = sub_e47840(rt_state);
-                MemRef<std::uint8_t>(render_ctx, 0x1670) &= 0xfeU;
+                void* dst_res = VCall<void*(*)(void*)>(dst_tex, 0x28)(dst_tex);
+                void* tmp_res = VCall<void*(*)(void*)>(temp_rt, 0x28)(temp_rt);
+                sub_2168880(MemRef<void*>(render_ctx, 0x08), nullptr, dst_res, mip, 0, 0, 0, tmp_res, 0, 0);
             }
 
             if (cur_src != temp_rt) {

@@ -329,19 +329,24 @@ void Rasterizer::WaitForPendingReads(VAddr address, u64 size) {
             draw_pipe->WaitResolved(resolving);
         }
     }
+    const u64 active_untracked_sb =
+        untracked_reads_packet > stage_b_retired ? untracked_reads_packet : 0;
     const u64 min_stage_b = std::max(untracked_reads_packet, stage_b_retired) + 1;
     const u64 packet =
         size == 0
             ? 0
-            : std::max(untracked_reads_packet,
+            : std::max(active_untracked_sb,
                        pending_reads.Newest(address, size, min_stage_b));
     static const bool guest_in_place = VideoCore::GuestInPlace();
     const u64 gpu_packet = [&]() -> u64 {
         if (!guest_in_place || size == 0) {
             return 0;
         }
-        const u64 min_gpu = std::max(untracked_reads_packet, AdvanceGpuRetiredPacket()) + 1;
-        return std::max(untracked_reads_packet,
+        const u64 gpu_retired = AdvanceGpuRetiredPacket();
+        const u64 active_untracked_gpu =
+            untracked_reads_packet > gpu_retired ? untracked_reads_packet : 0;
+        const u64 min_gpu = std::max(untracked_reads_packet, gpu_retired) + 1;
+        return std::max(active_untracked_gpu,
                         pending_gpu_reads.Newest(address, size, min_gpu));
     }();
     if (!ConstRamPipe() || !UseDrawPipe() || size == 0) {
@@ -424,6 +429,7 @@ void Rasterizer::WaitForInPlaceReads(u64 packet) {
         },
         &data, sizeof(data), BbToggle::PipelinedTasks, false);
     DrainDrawPipe(DrawPipe::ReasonConstRam);
+    BbSections::PauseADecodeScope pause_decode;
     const u64 start = __rdtsc();
     semaphore->Wait(tick);
     ++constram_gpu_waits;
@@ -581,6 +587,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     VideoCore::DirectBuffers::GetTransientCueHeapBounds(cue_base, cue_end);
     const bool cue_gpu_modified = VideoCore::DirectBuffers::IsCueHeapEverGpuModified();
     const bool has_const_ram = buffer_cache.IsConstRamRange(0, (1ULL << 40) - 1);
+    const bool cue_has_const_ram =
+        has_const_ram && cue_end > cue_base &&
+        buffer_cache.IsConstRamRange(cue_base, cue_end - cue_base);
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
         if (desc.IsSpecial()) {
@@ -610,7 +619,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         // `NativeOwnedBitmap` or `ExactBufferTable`, so check `cueHeap` bounds first before
         // probing native buffer tables or bitmaps.
         if (!desc.is_written && stage_a_bypass && !constants_in_place && v7_fast_const &&
-            !is_copy_shader && !cue_gpu_modified && !has_const_ram &&
+            !is_copy_shader && !cue_gpu_modified && !cue_has_const_ram &&
             address >= cue_base && address < cue_end) {
             const u64 cue_size =
                 (unclamped_size > VideoCore::BufferCache::STREAM_THRESHOLD)

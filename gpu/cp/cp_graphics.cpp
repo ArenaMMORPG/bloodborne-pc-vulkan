@@ -659,7 +659,6 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                                        BbToggle::PipelinedMemoryWrites, false)) {
                                 rasterizer->NotePendingGpuWrite(args.dst_va, args.byte_size);
                             }
-                            rasterizer->NoteCopyIntoMemory(args.dst_va, args.byte_size);
                         }
                     }
                     break;
@@ -676,11 +675,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkCopyTextureRegionTask, body + 2u,
                                 sizeof(DirectVk::CopyTextureRegionArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_va && args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_va && args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -695,11 +691,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkDecompressDepthTask, body + 2u,
                                 sizeof(DirectVk::DecompressDepthArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_va && args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_va && args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -714,11 +707,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkEliminateFastClearTask, body + 2u,
                                 sizeof(DirectVk::EliminateFastClearArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_va && args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_va && args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -736,11 +726,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkResolveColorTask, body + 2u,
                                 sizeof(DirectVk::ResolveColorArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -757,11 +744,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkUploadTextureTask, body + 2u,
                                 sizeof(DirectVk::UploadTextureArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_va && args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_va && args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -776,11 +760,8 @@ CommandProcessor::Step CommandProcessor::Graphics(Work& work, Level& level, cons
                                 &Tasks::DirectVkClearDepthStencilTask, body + 2u,
                                 sizeof(DirectVk::ClearDepthStencilArgs),
                                 BbToggle::PipelinedMemoryWrites, false);
-                            if (args.dst_va && args.dst_byte_size) {
-                                if (queued) {
-                                    rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                                }
-                                rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                            if (args.dst_va && args.dst_byte_size && queued) {
+                                rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                             }
                         }
                     }
@@ -1318,18 +1299,21 @@ bool CommandProcessor::WaitRegMemGraphics(Work& work, const u32* body, bool retr
         work.wait_start = std::chrono::steady_clock::now();
         work.wait_met_at_once = wait.Test(regs.reg_array.data());
     }
-    while (!wait.Test(regs.reg_array.data())) {
-        // The value may come from a fence the recording thread has yet to write: let it catch up
-        // before yielding to the other queues.
-        if (rasterizer && !rasterizer->DrawPipeIdle()) {
-            rasterizer->DrainDrawPipe(u32(Op::WaitRegMem));
-            continue;
+    {
+        BbSections::PauseADecodeScope pause_decode;
+        while (!wait.Test(regs.reg_array.data())) {
+            // The value may come from a fence the recording thread has yet to write: let it catch up
+            // before yielding to the other queues.
+            if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                rasterizer->DrainDrawPipe(u32(Op::WaitRegMem));
+                continue;
+            }
+            // BB_HONEST_LABELS: a fence from another queue may wait for work not submitted yet.
+            if (rasterizer && rasterizer->HasUnsubmittedSignals()) {
+                rasterizer->Flush();
+            }
+            return false;
         }
-        // BB_HONEST_LABELS: a fence from another queue may wait for work not submitted yet.
-        if (rasterizer && rasterizer->HasUnsubmittedSignals()) {
-            rasterizer->Flush();
-        }
-        return false;
     }
     if (stats) {
         Diagnostics::NoteWait(work.wait_met_at_once ? 2 : 3,

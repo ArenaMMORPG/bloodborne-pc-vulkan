@@ -74,7 +74,7 @@ void main() {
     float t159 = t156.w;
     float t163 = t129 * 6.5;
     float t165 = 6.5 - t163;
-    float t167 = min(6.0, t165);
+    float t167 = min(5.0, t165);
     vec4 t172 = texture(sampler2D(fs_img5, fs_samp0), t124);
     float t173 = t172.x;
     float t174 = t172.y;

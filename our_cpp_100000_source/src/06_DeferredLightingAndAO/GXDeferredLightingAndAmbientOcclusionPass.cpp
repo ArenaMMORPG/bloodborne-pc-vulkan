@@ -578,7 +578,9 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             uint8_t* p3B = static_cast<uint8_t*>(sub_21f68b0(*reinterpret_cast<void**>(selfBytes + 0x5988), viewBytes + 0x2b28));
             sub_e809e0(evalBuf, p3A + 0x10, p3B + 0x10, w3);
             if (pYebisState[0x3200] == 0) {
-                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x130) = *reinterpret_cast<uint32_t*>(evalBuf + 0x00);
+                const bool bloomOn = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom);
+                *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x130) =
+                    bloomOn ? *reinterpret_cast<uint32_t*>(evalBuf + 0x00) : 0u;
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x144) = *reinterpret_cast<uint32_t*>(evalBuf + 0x20);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x148) = *reinterpret_cast<uint32_t*>(evalBuf + 0x2c);
                 *reinterpret_cast<uint32_t*>(pGlobalPostCfg + 0x14c) = *reinterpret_cast<uint32_t*>(evalBuf + 0x28);
@@ -818,7 +820,7 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             bHasPassA = (viewBytes[0x1bd1] != 0) ? 1 : 0;
         }
 
-        if (viewBytes[0x296b] != 0) {
+        if (viewBytes[0x296b] != 0 && gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom)) {
             float wB = *reinterpret_cast<float*>(viewBytes + 0x2b74);
             uint8_t* pBA = static_cast<uint8_t*>(sub_e74bd0(*reinterpret_cast<void**>(selfBytes + 0x59c0), viewBytes + 0x2ad0));
             uint8_t* pBB = static_cast<uint8_t*>(sub_e74bd0(*reinterpret_cast<void**>(selfBytes + 0x59c0), viewBytes + 0x2b38));
@@ -830,7 +832,7 @@ __attribute__((noinline)) void sub_229e990(void* pSelf, void* pRenderDev, void* 
             sub_e5a010(viewBytes + 0x2430, passCtx, 0x34, 0x0a, pSubBlock130);
         }
 
-        if (viewBytes[0x2979] != 0) {
+        if (viewBytes[0x2979] != 0 && gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom)) {
             float wC = *reinterpret_cast<float*>(viewBytes + 0x2b70);
             uint8_t* pCA = static_cast<uint8_t*>(sub_e7b3b0(*reinterpret_cast<void**>(selfBytes + 0x59b8), viewBytes + 0x2ac8));
             uint8_t* pCB = static_cast<uint8_t*>(sub_e7b3b0(*reinterpret_cast<void**>(selfBytes + 0x59b8), viewBytes + 0x2b30));

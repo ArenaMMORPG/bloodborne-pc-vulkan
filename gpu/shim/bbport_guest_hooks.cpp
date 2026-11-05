@@ -268,7 +268,14 @@ struct HotFlag {
     int effect;
     std::uint32_t offset;
 };
-constexpr std::array<HotFlag, 4> hot_flags = {{{2, 0x2969}, {3, 0x2968}, {4, 0x296a}, {5, 0x296e}}};
+constexpr std::array<HotFlag, 6> hot_flags = {{
+    {2, 0x2969}, // Motion Blur velocity mask
+    {3, 0x2968}, // SSAO
+    {4, 0x296a}, // In-game AA (FXAA)
+    {5, 0x296e}, // Dynamic Shadows (local point/spot shadows)
+    {7, 0x296b}, // Light Shafts / God Rays pass
+    {7, 0x2979}, // Glow / Bloom pre-pass (PointSampleColor1 + Sample13WeightforGlow)
+}};
 
 /// Writes `size` bytes of code from the last to the first (the first byte, an opcode, is the
 /// one that makes the new code reachable).

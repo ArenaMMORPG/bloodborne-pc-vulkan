@@ -2278,15 +2278,16 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         sub_bb3670(ppfxCtx, vigPower, vigFovDep);
 
         // 0x21d72cb..0x21d75bc: Glare / Bloom & Anamorphic Lens Flare (V5.1 Native Bloom Toggle)
+        const bool bloomEnabled = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom);
         sub_bb2840(ppfxCtx,
-                   1,
-                   *reinterpret_cast<const float*>(param + 0x0dc),
+                   bloomEnabled ? 1 : 0,
+                   bloomEnabled ? *reinterpret_cast<const float*>(param + 0x0dc) : 0.0f,
                    *reinterpret_cast<const float*>(param + 0x0e0),
                    *reinterpret_cast<const float*>(param + 0x244));
 
-        const int32_t glareShape = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectBloom)
+        const int32_t glareShape = bloomEnabled
                                        ? *reinterpret_cast<const int32_t*>(param + 0x0d8)
-                                       : 0;
+                                       : -1;
         if (glareShape == 14) {
             alignas(32) uint8_t customGlare[0x48] = {};
             *reinterpret_cast<float*>(customGlare + 0x00)    = *reinterpret_cast<const float*>(param + 0x308);
@@ -2312,7 +2313,9 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
             sub_bb2850(ppfxCtx, glareShape);
         }
 
-        sub_bb40e0(ppfxCtx, *reinterpret_cast<const int32_t*>(param + 0x0e4));
+        const int32_t rawBloomLevels = *reinterpret_cast<const int32_t*>(param + 0x0e4);
+        const int32_t bloomLevels = (rawBloomLevels <= 0 || rawBloomLevels > 4) ? 4 : rawBloomLevels;
+        sub_bb40e0(ppfxCtx, bloomLevels);
         sub_bb3c10(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0e8));
         sub_bb4130(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0ec));
         sub_bb4100(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0f0));
@@ -2321,24 +2324,26 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         sub_bb4110(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0f8));
         sub_bb3c30(ppfxCtx, *reinterpret_cast<const float*>(param + 0x0fc));
         sub_bb41a0(ppfxCtx, *reinterpret_cast<const float*>(param + 0x100));
-        sub_bb4160(ppfxCtx, (*reinterpret_cast<const int32_t*>(param + 0x104) != 0) ? 1u : 0u);
+        sub_bb4160(ppfxCtx, (bloomEnabled && *reinterpret_cast<const int32_t*>(param + 0x104) != 0) ? 1u : 0u);
         sub_bb4180(ppfxCtx,
                    *reinterpret_cast<const float*>(param + 0x108),
                    *reinterpret_cast<const float*>(param + 0x10c));
 
         const auto* flareSrc = reinterpret_cast<const float*>(director + 0x26c0);
         const auto* ghostSrc = reinterpret_cast<const float*>(director + 0x26e0);
+        const float flareAlpha = bloomEnabled ? flareSrc[3] : 0.0f;
+        const float ghostAlpha = bloomEnabled ? ghostSrc[3] : 0.0f;
         const float flareColor[4] = {
-            flareSrc[0] * flareSrc[3], flareSrc[1] * flareSrc[3], flareSrc[2] * flareSrc[3], flareSrc[3]
+            flareSrc[0] * flareAlpha, flareSrc[1] * flareAlpha, flareSrc[2] * flareAlpha, flareAlpha
         };
         const float ghostColor[4] = {
-            ghostSrc[0] * ghostSrc[3], ghostSrc[1] * ghostSrc[3], ghostSrc[2] * ghostSrc[3], ghostSrc[3]
+            ghostSrc[0] * ghostAlpha, ghostSrc[1] * ghostAlpha, ghostSrc[2] * ghostAlpha, ghostAlpha
         };
         sub_bb4190(ppfxCtx, flareColor, ghostColor);
 
         // 0x21d75bc..0x21d7a7f: Light Shafts & Sun Screen-Space Projection
         sub_bb28a0(ppfxCtx, 0);
-        sub_bb28d0(ppfxCtx, 0, (*reinterpret_cast<const int32_t*>(param + 0x130) != 0) ? 1u : 0u);
+        sub_bb28d0(ppfxCtx, 0, (bloomEnabled && *reinterpret_cast<const int32_t*>(param + 0x130) != 0) ? 1u : 0u);
 
         alignas(16) float viewProjMtx[16];
         sub_21aaa90(viewProjMtx, sceneView);

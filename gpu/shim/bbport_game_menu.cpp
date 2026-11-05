@@ -1225,6 +1225,7 @@ enum NativeAaMode : int {
     AaFxaa = 1,
     AaTaa = 2,
     AaDlaa = 3,
+    AaDlaaCnn = 4,
 };
 
 enum DisplayUpscalerChoice : int {
@@ -1232,7 +1233,7 @@ enum DisplayUpscalerChoice : int {
     DispUpDlss4 = 1,   // Preset K = 11 (DLSS 4.0 Transformer)
     DispUpDlss45M = 2, // Preset M = 13 (DLSS 4.5 2nd-Gen Transformer)
     DispUpDlss45L = 3, // Preset L = 12 (DLSS 4.5 2nd-Gen Transformer Ultra)
-    DispUpDlss3 = 4,   // Preset 0 (Driver Default / Auto)
+    DispUpDlss3 = 4,   // Preset F = 6 (DLSS 3.7 CNN Fast / Low Load)
     DispUpFsr31 = 5,
     DispUpFsr4 = 6,
     DispUpFsr411 = 7,
@@ -1269,10 +1270,10 @@ void SyncDisplayStateFromSettings() {
     if (up == BbSettings::UpscalerOff || up == BbSettings::UpscalerTaa) {
         disp_upscaler_choice = DispUpOff;
     } else if (up == BbSettings::UpscalerDlss) {
-        disp_upscaler_choice = dlss_p == 13   ? DispUpDlss45M
-                               : dlss_p == 12 ? DispUpDlss45L
-                               : dlss_p == 0  ? DispUpDlss3
-                                              : DispUpDlss4;
+        disp_upscaler_choice = dlss_p == 13                           ? DispUpDlss45M
+                               : dlss_p == 12                         ? DispUpDlss45L
+                               : (dlss_p == 6 || dlss_p == 5 || dlss_p == 0) ? DispUpDlss3
+                                                                      : DispUpDlss4;
     } else if (up == BbSettings::UpscalerFsr4) {
         disp_upscaler_choice = DispUpFsr4;
     } else if (up == BbSettings::UpscalerFsr411) {
@@ -1368,8 +1369,8 @@ void UpscalerChoiceLabels(DisplayUpscalerChoice c, const char*& out_en, const ch
         out_ru = "DLSS 4 (Preset K)";
         break;
     case DispUpDlss3:
-        out_en = "DLSS (Auto Preset)";
-        out_ru = "DLSS (Авто пресет)";
+        out_en = "DLSS 3.7 CNN (Fast)";
+        out_ru = "DLSS 3.7 CNN (Быстрый)";
         break;
     case DispUpFsr4:
         out_en = "FSR 4";
@@ -1473,7 +1474,8 @@ void BuildDisplaySlotChoices(int slot, std::vector<u32>& out_choices, int& out_s
         add_choice("FXAA", "FXAA");
         add_choice("TAA", "TAA");
         if (s.dlss_supported.load()) {
-            add_choice("DLAA (DLSS 4)", "DLAA (DLSS 4)");
+            add_choice("DLAA 4 (Transformer)", "DLAA 4 (Трансформер)");
+            add_choice("DLAA 3 (CNN Fast)", "DLAA 3 (CNN Быстрый)");
         }
         out_selected_idx = std::clamp(disp_aa_mode, 0, int(out_choices.size()) - 1);
         return;
@@ -1585,16 +1587,18 @@ void RefreshDisplaySlotTexts(int slot) {
     if (item_idx == 3) {
         SetDynamic(name_id, "Anti-Aliasing", "Сглаживание");
         SetDynamic(help_id,
-                   "Anti-Aliasing mode when Upscaler is Off (Off / FXAA / TAA / DLAA 4 Transformer)",
-                   "Режим сглаживания (Выкл / FXAA / TAA / DLAA 4 Трансформер)");
+                   "Anti-Aliasing mode when Upscaler is Off (Off / FXAA / TAA / DLAA 4 Transformer / DLAA 3 CNN Fast)",
+                   "Режим сглаживания (Выкл / FXAA / TAA / DLAA 4 Трансформер / DLAA 3 CNN Быстрый)");
         if (disp_aa_mode == AaOff) {
             SetDynamic(val_id, "Off", "Выкл");
         } else if (disp_aa_mode == AaFxaa) {
             SetDynamic(val_id, "FXAA", "FXAA");
         } else if (disp_aa_mode == AaTaa) {
             SetDynamic(val_id, "TAA", "TAA");
+        } else if (disp_aa_mode == AaDlaaCnn) {
+            SetDynamic(val_id, "DLAA 3 (CNN Fast)", "DLAA 3 (CNN Быстрый)");
         } else {
-            SetDynamic(val_id, "DLAA (DLSS 4)", "DLAA (DLSS 4)");
+            SetDynamic(val_id, "DLAA 4 (Transformer)", "DLAA 4 (Трансформер)");
         }
         return;
     }
@@ -1791,6 +1795,7 @@ void ApplyDisplaySlotChoiceIndex(u8* row, int slot, int choice_idx) {
         std::vector<int> modes = {AaOff, AaFxaa, AaTaa};
         if (s.dlss_supported.load()) {
             modes.push_back(AaDlaa);
+            modes.push_back(AaDlaaCnn);
         }
         const int new_mode = modes[std::clamp(choice_idx, 0, int(modes.size()) - 1)];
         if (new_mode != disp_aa_mode) {
@@ -2855,7 +2860,7 @@ void Poll() {
                 break;
             case DispUpDlss3:
                 target_upscaler = BbSettings::UpscalerDlss;
-                target_dlss_preset = 0;
+                target_dlss_preset = 6;
                 break;
             case DispUpFsr4:
                 target_upscaler = BbSettings::UpscalerFsr4;

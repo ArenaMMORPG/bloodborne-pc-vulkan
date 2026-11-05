@@ -271,7 +271,6 @@ CommandProcessor::Step CommandProcessor::Compute(Work& work, Level& level, const
                                                BbToggle::PipelinedMemoryWrites, false)) {
                         rasterizer->NotePendingGpuWrite(args.dst_va, args.byte_size);
                     }
-                    rasterizer->NoteCopyIntoMemory(args.dst_va, args.byte_size);
                 }
             } else if (vk_op == DirectVk::Op::CopyTextureRegion && body_words == 34u) {
                 DirectVk::CopyTextureRegionArgs args{};
@@ -284,11 +283,8 @@ CommandProcessor::Step CommandProcessor::Compute(Work& work, Level& level, const
                         &Tasks::DirectVkCopyTextureRegionTask, body + 2u,
                         sizeof(DirectVk::CopyTextureRegionArgs),
                         BbToggle::PipelinedMemoryWrites, false);
-                    if (args.dst_va && args.dst_byte_size) {
-                        if (queued) {
-                            rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                        }
-                        rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                    if (args.dst_va && args.dst_byte_size && queued) {
+                        rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                     }
                 }
             } else if (vk_op == DirectVk::Op::UploadTextureSubresource && body_words == 26u) {
@@ -301,11 +297,8 @@ CommandProcessor::Step CommandProcessor::Compute(Work& work, Level& level, const
                         &Tasks::DirectVkUploadTextureTask, body + 2u,
                         sizeof(DirectVk::UploadTextureArgs),
                         BbToggle::PipelinedMemoryWrites, false);
-                    if (args.dst_va && args.dst_byte_size) {
-                        if (queued) {
-                            rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
-                        }
-                        rasterizer->NoteCopyIntoMemory(args.dst_va, args.dst_byte_size);
+                    if (args.dst_va && args.dst_byte_size && queued) {
+                        rasterizer->NotePendingGpuWrite(args.dst_va, args.dst_byte_size);
                     }
                 }
             } else if (vk_op == DirectVk::Op::DispatchDirect && body_words == 5u) {

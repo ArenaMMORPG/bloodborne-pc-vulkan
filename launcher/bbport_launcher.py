@@ -75,7 +75,8 @@ UI_LANGUAGES = [("Как в системе", ""), ("Русский", "ru"), ("En
                 ("简体中文", "zh_CN")]
 ANTI_ALIASING = [("FXAA (Субпиксельное сглаживание)", "fxaa"),
                  ("TAA (Темпоральное сглаживание)", "taa"),
-                 ("DLAA (Нативное DLSS 100%)", "dlaa"),
+                 ("DLAA 4 (Нативное DLSS 100%)", "dlaa"),
+                 ("DLAA 3 (CNN Быстрый 100%)", "dlaa3"),
                  ("Выкл.", "off")]
 UPSCALERS = [("Выключен (Native 100%)", "off"), ("DLSS (NVIDIA RTX)", "dlss"),
              ("FSR 3.1", "fsr3"), ("FSR 4", "fsr4"), ("FSR 4.1.1", "fsr411")]
@@ -858,7 +859,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         raw_up = self.ini.get("upscaler", "off")
         raw_preset = int(self.ini.get("preset", "0") or 0)
         raw_aa = self.ini.get("aa_mode", "")
-        if raw_aa in ("off", "fxaa", "taa", "dlaa"):
+        if raw_aa in ("off", "fxaa", "taa", "dlaa", "dlaa3"):
             init_aa = raw_aa
         elif raw_up == "taa":
             init_aa = "taa"
@@ -869,7 +870,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         init_up = raw_up if raw_up in ("off", "dlss", "fsr3", "fsr4", "fsr411") else "off"
         self.aa_row = combo_row(
             tr("Сглаживание"),
-            tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA — нативное DLSS в 100% разрешении"),
+            tr("FXAA — субпиксельное, TAA — нативное темпоральное, DLAA 4 / 3 — нативное DLSS в 100% разрешении (Трансформер / CNN)"),
             ANTI_ALIASING, init_aa)
         upscaler.add(self.aa_row)
         self.upscaler_row = combo_row(tr("Апскейлер"), None, UPSCALERS, init_up)
@@ -1250,7 +1251,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                 "DLSS не найден: выберите библиотеку NVIDIA ниже (и нужна сборка с мостом DLSS). Игра включит FSR 3.1")
         else:
             hint = None
-        is_active = value != "off" or aa in ("taa", "dlaa")
+        is_active = value != "off" or aa in ("taa", "dlaa", "dlaa3")
         self.preset_row.set_sensitive(value != "off")
         if hasattr(self, "dlss_preset_row"):
             self.dlss_preset_row.set_sensitive(value == "dlss" or aa == "dlaa")
@@ -1544,7 +1545,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             except ValueError:
                 raw_preset = 0
             raw_aa = self.ini.get("aa_mode", "")
-            if raw_aa in ("off", "fxaa", "taa", "dlaa"):
+            if raw_aa in ("off", "fxaa", "taa", "dlaa", "dlaa3"):
                 init_aa = raw_aa
             elif raw_up == "taa":
                 init_aa = "taa"

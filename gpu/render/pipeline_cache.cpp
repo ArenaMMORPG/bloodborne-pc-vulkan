@@ -1081,7 +1081,7 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
     }
 
     const u64 cur_epoch = DirectShaders::InvalidationEpoch();
-    const bool epoch_valid = (first_match->shader_epoch == cur_epoch && !program_write_sync);
+    const bool epoch_valid = (first_match->shader_epoch == cur_epoch);
 
     const auto verify_code_hash = [&](VAddr base, u64 expected_hash) -> bool {
         if (base == 0) {
@@ -1106,11 +1106,19 @@ const GraphicsPipeline* PipelineCache::TryFastSelect(const DrawIndirectParams& p
         if (!code) {
             return nullptr;
         }
-        if (st_slot && st_slot->last_fetch_code == code && st_slot->last_cached_fetch &&
+        if (st_slot && st_slot->last_cached_fetch &&
             !BbToggle::Disabled(BbToggle::FetchShaderCache)) {
-            if (epoch_valid ||
-                std::memcmp(code, st_slot->last_cached_fetch->words.data(),
-                            st_slot->last_cached_fetch->words.size() * sizeof(u32)) == 0) {
+            if (st_slot->last_fetch_code == code) {
+                if (epoch_valid ||
+                    std::memcmp(code, st_slot->last_cached_fetch->words.data(),
+                                st_slot->last_cached_fetch->words.size() * sizeof(u32)) == 0) {
+                    return &st_slot->last_cached_fetch->data;
+                }
+            } else if (!st_slot->last_cached_fetch->words.empty() &&
+                       code[0] == st_slot->last_cached_fetch->words[0] &&
+                       std::memcmp(code, st_slot->last_cached_fetch->words.data(),
+                                   st_slot->last_cached_fetch->words.size() * sizeof(u32)) == 0) {
+                st_slot->last_fetch_code = code;
                 return &st_slot->last_cached_fetch->data;
             }
         }

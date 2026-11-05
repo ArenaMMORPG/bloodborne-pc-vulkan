@@ -428,11 +428,14 @@ void Menu() {
             BbSettings::MenuText("Off", "Выкл"),
             BbSettings::MenuText("FXAA (Subpixel AA)", "FXAA (Субпиксельное сглаживание)"),
             BbSettings::MenuText("TAA (Temporal AA)", "TAA (Темпоральное сглаживание)"),
-            BbSettings::MenuText("DLAA (DLSS Native 100%)", "DLAA (Нативное DLSS 100%)")};
+            BbSettings::MenuText("DLAA 4 (DLSS 4 Transformer 100%)", "DLAA 4 (DLSS 4 Трансформер 100%)"),
+            BbSettings::MenuText("DLAA 3 (DLSS 3.7 CNN Fast 100%)", "DLAA 3 (DLSS 3.7 CNN Быстрый 100%)")};
         const int aa_mode = std::clamp(s.aa_mode.load(), 0, BbSettings::AaCount - 1);
         if (ImGui::BeginCombo(BbSettings::MenuText("Anti-Aliasing", "Сглаживание"), aa_labels[aa_mode])) {
             for (int i = 0; i < BbSettings::AaCount; ++i) {
-                const bool supported = i == BbSettings::AaDlaa ? s.dlss_supported.load() : true;
+                const bool supported =
+                    (i == BbSettings::AaDlaa || i == BbSettings::AaDlaaCnn) ? s.dlss_supported.load()
+                                                                            : true;
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Selectable(aa_labels[i], i == aa_mode)) {
                     s.aa_mode_chosen = true;
@@ -489,13 +492,23 @@ void Menu() {
                                  "DLSS 4.5 (Трансформер 2-го пок. Ultra — Preset L)"),
             BbSettings::MenuText("DLSS 4.0 (Vision Transformer — Preset K)",
                                  "DLSS 4.0 (Vision Transformer — Preset K)"),
+            BbSettings::MenuText("DLSS 3.7 (Fast CNN / Low Load — Preset F)",
+                                 "DLSS 3.7 (Быстрый CNN / Низкая нагрузка — Preset F)"),
             BbSettings::MenuText("DLSS (Driver Default / Auto Preset)",
                                  "DLSS (Авто пресет драйвера)")};
         const int cur_dlss_p = s.dlss_preset.load();
-        int dlss_model_idx = cur_dlss_p == 13 ? 0 : cur_dlss_p == 12 ? 1 : cur_dlss_p == 0 ? 3 : 2;
+        int dlss_model_idx = cur_dlss_p == 13                        ? 0
+                             : cur_dlss_p == 12                      ? 1
+                             : (cur_dlss_p == 6 || cur_dlss_p == 5)  ? 3
+                             : cur_dlss_p == 0                       ? 4
+                                                                     : 2;
         if (ImGui::Combo(BbSettings::MenuText("DLSS Model", "Модель DLSS"), &dlss_model_idx,
-                         dlss_models, 4)) {
-            const int new_p = dlss_model_idx == 0 ? 13 : dlss_model_idx == 1 ? 12 : dlss_model_idx == 2 ? 11 : 0;
+                         dlss_models, 5)) {
+            const int new_p = dlss_model_idx == 0   ? 13
+                              : dlss_model_idx == 1 ? 12
+                              : dlss_model_idx == 2 ? 11
+                              : dlss_model_idx == 3 ? 6
+                                                    : 0;
             Store(s.dlss_preset, new_p, true);
         }
     }
@@ -1782,6 +1795,11 @@ void FpsCounter() {
     const int rw = s.active_render_width.load(std::memory_order_relaxed);
     const int rh = s.active_render_height.load(std::memory_order_relaxed);
     const int eff_up = BbSettings::EffectiveUpscaler();
+    const int cur_p = s.dlss_preset.load(std::memory_order_relaxed);
+    const bool dlaa_cnn =
+        (s.upscaler.load(std::memory_order_relaxed) == BbSettings::UpscalerOff &&
+         s.aa_mode.load(std::memory_order_relaxed) == BbSettings::AaDlaaCnn) ||
+        cur_p == 6 || cur_p == 5;
     const char* upscaler_str =
         eff_up == BbSettings::UpscalerFsr3     ? "FSR 3.1"
         : eff_up == BbSettings::UpscalerFsr4   ? "FSR 4"
@@ -1789,11 +1807,12 @@ void FpsCounter() {
         : eff_up == BbSettings::UpscalerTaa    ? "TAA"
         : eff_up == BbSettings::UpscalerDlss
             ? (BbSettings::RenderPreset() == BbSettings::NativeAA
-                   ? "DLAA 4"
-                   : (s.dlss_preset.load(std::memory_order_relaxed) == 13   ? "DLSS 4.5 M"
-                      : s.dlss_preset.load(std::memory_order_relaxed) == 12 ? "DLSS 4.5 L"
-                      : s.dlss_preset.load(std::memory_order_relaxed) != 0  ? "DLSS 4 K"
-                                                                            : "DLSS Auto"))
+                   ? (dlaa_cnn ? "DLAA 3 CNN" : "DLAA 4")
+                   : (cur_p == 13                   ? "DLSS 4.5 M"
+                      : cur_p == 12                 ? "DLSS 4.5 L"
+                      : (cur_p == 6 || cur_p == 5)  ? "DLSS 3 CNN"
+                      : cur_p != 0                  ? "DLSS 4 K"
+                                                    : "DLSS Auto"))
             : (s.effects[4].load(std::memory_order_relaxed) ? "FXAA" : "Off");
 
     const float now_fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : h.fps;

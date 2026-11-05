@@ -449,6 +449,14 @@ void OnFlipStats() {
         const double draws_per_frame = frames ? double(all_draws - window_draws) / frames : 0.0;
         window_draws = all_draws;
         window_gpu_us = gpu_us;
+        static u64 win_idle_ns = 0, win_sync_rec_ns = 0, win_host_copy_ns = 0,
+                   win_copy_thr_ns = 0, win_tick_wait_ns = 0;
+        const auto win_delta = [](const std::atomic<u64>& cnt, u64& last) -> u64 {
+            const u64 cur = cnt.load(std::memory_order_relaxed);
+            const u64 d = cur >= last ? cur - last : cur;
+            last = cur;
+            return d;
+        };
         std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
                     "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
                     "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
@@ -459,13 +467,13 @@ void OnFlipStats() {
                     compile_ns / 1e6, static_cast<unsigned long long>(direct),
                     faults / window, static_cast<long long>(BbStats::hot_pages.load()),
                     us_per_draw, draws_per_frame,
-                    BbStats::gpu_idle_ns.exchange(0) / (window * 1e7),
-                    BbStats::sync_recording_ns.exchange(0) / (window * 1e7),
-                    BbStats::host_copies_wait_ns.exchange(0) / (window * 1e7),
+                    win_delta(BbStats::gpu_idle_ns, win_idle_ns) / (window * 1e7),
+                    win_delta(BbStats::sync_recording_ns, win_sync_rec_ns) / (window * 1e7),
+                    win_delta(BbStats::host_copies_wait_ns, win_host_copy_ns) / (window * 1e7),
                     frames ? double(BbStats::host_copy_waits.exchange(0)) / frames : 0.0,
                     frames ? double(BbStats::host_copy_waits_skipped.exchange(0)) / frames : 0.0,
-                    BbStats::copy_threads_wait_ns.exchange(0) / (window * 1e7),
-                    BbStats::tick_wait_ns.exchange(0) / (window * 1e7),
+                    win_delta(BbStats::copy_threads_wait_ns, win_copy_thr_ns) / (window * 1e7),
+                    win_delta(BbStats::tick_wait_ns, win_tick_wait_ns) / (window * 1e7),
                     frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                     frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
         if (faults > 0 || IsVerboseStats()) {
