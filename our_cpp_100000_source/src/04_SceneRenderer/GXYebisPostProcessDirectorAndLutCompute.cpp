@@ -1901,15 +1901,6 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
                 (srv1Bytes == nullptr || std::memcmp(s_lastSrv1TSharp, srv1Bytes + 0x10, 32) == 0);
 
             if (!lut3dUnchanged) {
-                s_lastLut3dUav = uav3d;
-                s_lastLutSrv0  = srv0;
-                s_lastLutSrv1  = srv1;
-                s_lastLutBlend = blend0;
-                std::memcpy(s_lastSrv0TSharp, srv0Bytes + 0x10, 32);
-                if (srv1Bytes != nullptr) {
-                    std::memcpy(s_lastSrv1TSharp, srv1Bytes + 0x10, 32);
-                }
-
                 auto* gnm   = *reinterpret_cast<uint8_t**>(devCtx + 0x008);
                 sub_2168a20(gnm, gnm + 0xb730, uav3d, 0, 0, director + 0x078, 0, 0);
 
@@ -1966,6 +1957,15 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
                 }
 
                 if (csEntry != nullptr) {
+                    s_lastLut3dUav = uav3d;
+                    s_lastLutSrv0  = srv0;
+                    s_lastLutSrv1  = srv1;
+                    s_lastLutBlend = blend0;
+                    std::memcpy(s_lastSrv0TSharp, srv0Bytes + 0x10, 32);
+                    if (srv1Bytes != nullptr) {
+                        std::memcpy(s_lastSrv1TSharp, srv1Bytes + 0x10, 32);
+                    }
+
                     void* csObj = *reinterpret_cast<void**>(csEntry + 0x010);
                     *reinterpret_cast<void**>(devCtx + 0x1608) = csObj;
                     *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = csObj;
@@ -2528,9 +2528,10 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         }
 
         // 0x21d7d23..0x21d7fb8: Motion Blur & Velocity Buffer
-        sub_bb3870(ppfxCtx,
-                   (velWrap != nullptr && *reinterpret_cast<const int32_t*>(param + 0x1dc) != 0) ? 1u : 0u);
-        sub_bb38b0(ppfxCtx, param[0x204]);
+        const bool mbAllowed = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectMotionBlur) &&
+                               (*reinterpret_cast<const int32_t*>(param + 0x1dc) != 0);
+        sub_bb3870(ppfxCtx, (velWrap != nullptr && mbAllowed) ? 1u : 0u);
+        sub_bb38b0(ppfxCtx, mbAllowed ? param[0x204] : 0u);
         const int32_t mbType = ((resetFlags & 2u) != 0u)
                                    ? 1
                                    : *reinterpret_cast<const int32_t*>(param + 0x1e0);
@@ -2599,7 +2600,9 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
                        *reinterpret_cast<const float*>(param + 0x214));
         }
         sub_bb34e0(ppfxCtx, *reinterpret_cast<const float*>(param + 0x218));
-        sub_bb37f0(ppfxCtx, (*reinterpret_cast<const int32_t*>(param + 0x220) != 0) ? 1u : 0u);
+        const bool aaAllowed = gx_direct_vk::IsEffectEnabled(gx_direct_vk::kEffectGameAa) &&
+                               (*reinterpret_cast<const int32_t*>(param + 0x220) != 0);
+        sub_bb37f0(ppfxCtx, aaAllowed ? 1u : 0u);
 
         const float clearGrey[4] = {
             BitsToFloat(0x3ec0c0c1u),
@@ -3249,12 +3252,9 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
         const float c3_scale = sub_bb2dc0(savedPpfxCtx, 0, 3, 1.0f) - c3_0;
         const float c0_0     = sub_bb2dc0(savedPpfxCtx, 0, 0, 0.0f);
         const float c0_scale = sub_bb2dc0(savedPpfxCtx, 0, 0, 1.0f) - c0_0;
-        const auto* ppfxBytes = static_cast<const uint8_t*>(savedPpfxCtx);
-        const uint8_t* pView0 = (ppfxBytes != nullptr && *reinterpret_cast<const int32_t*>(ppfxBytes + 0x008) > 0)
-            ? *reinterpret_cast<const uint8_t* const*>(ppfxBytes + 0x010)
-            : nullptr;
-        const float viewNearZ = pView0 ? *reinterpret_cast<const float*>(pView0 + 0x00c) : 0.1f;
-        const float viewFarZ  = pView0 ? *reinterpret_cast<const float*>(pView0 + 0x010) : 1000.0f;
+        const auto* pPostEffect = *reinterpret_cast<const uint8_t* const*>(GX_VMA(0x5465ed0ULL));
+        const float viewNearZ = pPostEffect ? *reinterpret_cast<const float*>(pPostEffect + 0x57c) : 0.1f;
+        const float viewFarZ  = pPostEffect ? *reinterpret_cast<const float*>(pPostEffect + 0x580) : 1000.0f;
         const float negNearFar   = (-0.0f - viewNearZ) * viewFarZ;
         const float farMinusNear = viewFarZ - viewNearZ;
 
@@ -3274,7 +3274,7 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
             const float normDepth  = (i > 0x7fd) ? f1 : clampedT;
             const float baseCoc    = normDepth * c3_scale + c3_0;
             const float d0         = normDepth * c0_scale + c0_0;
-            const float linearDist = pView0
+            const float linearDist = pPostEffect
                 ? (negNearFar / (d0 * farMinusNear - viewFarZ))
                 : sub_bb2dc0(savedPpfxCtx, 0, 7, normDepth);
 
@@ -3330,11 +3330,6 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
             (std::memcmp(s_lastCocLut, cocLutOut, sizeof(s_lastCocLut)) == 0);
 
         if (!dofLutUnchanged) {
-            s_dofLutInitialized = true;
-            s_lastDofUav = dofUav;
-            s_lastDofCb  = dofCb;
-            std::memcpy(s_lastCocLut, cocLutOut, sizeof(s_lastCocLut));
-
             sub_2168a20(gnm, gnm + 0xb730, dofUav, 0, 0, director + 0x0c0, 0, 0);
 
             *reinterpret_cast<void**>(devCtx + 0x1510) = dofUav;
@@ -3385,6 +3380,11 @@ void sub_21d5f80(void* self, void* renderCmdCtx, void* filterParam) {
             auto* csEntry = static_cast<uint8_t*>(
                 sub_2274e20(curResBank + 0x9a8, reinterpret_cast<const char16_t*>(GX_VMA(0x49c3b7cULL))));
             if (csEntry != nullptr) {
+                s_dofLutInitialized = true;
+                s_lastDofUav = dofUav;
+                s_lastDofCb  = dofCb;
+                std::memcpy(s_lastCocLut, cocLutOut, sizeof(s_lastCocLut));
+
                 void* csObj = *reinterpret_cast<void**>(csEntry + 0x010);
                 *reinterpret_cast<void**>(devCtx + 0x1608) = csObj;
                 *reinterpret_cast<void**>(*reinterpret_cast<uint8_t**>(devCtx + 0x008) + 0xda90) = csObj;

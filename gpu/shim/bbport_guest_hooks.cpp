@@ -329,21 +329,21 @@ void ApplyHotEffects(bool force, u64 fresh = 0) {
         __atomic_store_n(lod_ptr, want_lod, __ATOMIC_RELAXED);
     }
     // V5.1: Chromatic Aberration (0x229e990 + 0x21d5f80), DoF (0x21d5f80), and Bloom (0x21d5f80)
-    // read BbSettings::Get().effects[...] natively in C++20 without mid-function binary patching.
-    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {
-        for (auto& code : hot_code) {
-            if (!code.ready) {
-                continue;
-            }
-            const int want = settings.effects[code.effect].load(std::memory_order_relaxed) ? 1 : 0;
-            if (!force && effects_applied[code.effect].load() == want) {
-                continue;
-            }
-            effects_applied[code.effect].store(want);
-            const bool use_patch = (want != 0) == code.patch_when_on;
-            WriteHotCode(ImageBase + code.offset, use_patch ? code.patch.data() : code.original.data(), code.size,
-                         code.data);
+    // read BbSettings::Get().effects[...] natively in C++20. We also keep the mid-function
+    // boot.bin patches synced (>4 KB past function entry trampolines) so live toggling works
+    // identically even when 04_SceneRenderer or 06_DeferredLightingAndAO is disabled via BB_GX_MODULES.
+    for (auto& code : hot_code) {
+        if (!code.ready) {
+            continue;
         }
+        const int want = settings.effects[code.effect].load(std::memory_order_relaxed) ? 1 : 0;
+        if (!force && effects_applied[code.effect].load() == want) {
+            continue;
+        }
+        effects_applied[code.effect].store(want);
+        const bool use_patch = (want != 0) == code.patch_when_on;
+        WriteHotCode(ImageBase + code.offset, use_patch ? code.patch.data() : code.original.data(), code.size,
+                     code.data);
     }
     const std::size_t count = std::min(effects_object_count.load(std::memory_order_acquire), MaxEffectObjects);
     std::size_t live_objects = 0;
@@ -485,16 +485,14 @@ bool InstallHotEffects() {
     if (std::memcmp(reinterpret_cast<const void*>(address), tail.data(), tail.size())) {
         return false; // another game version, or the patches changed it
     }
-    // The code effects: the game's own bytes, taken before anything is written (skipped under V5.1 native C++20 PostFX).
-    if (!gx_direct_vk::EnabledV5Sub(gx_direct_vk::kV5Sub_NativePostFx)) {
-        for (auto& code : hot_code) {
-            const u8* at = reinterpret_cast<const u8*>(ImageBase + code.offset);
-            if (std::memcmp(at, code.patch.data(), code.size) == 0) {
-                continue; // the startup patch is in (or the bytes are the same): left as it is
-            }
-            std::memcpy(code.original.data(), at, code.size);
-            code.ready = true;
+    // The code effects: the game's own bytes, taken before anything is written.
+    for (auto& code : hot_code) {
+        const u8* at = reinterpret_cast<const u8*>(ImageBase + code.offset);
+        if (std::memcmp(at, code.patch.data(), code.size) == 0) {
+            continue; // the startup patch is in (or the bytes are the same): left as it is
         }
+        std::memcpy(code.original.data(), at, code.size);
+        code.ready = true;
     }
     Emitter e;
     e.SaveVolatile();
